@@ -1,0 +1,9 @@
+## ESP Component Manager - pulls dependencies from the ESP Component Registry
+## The BSP (Board Support Package) is the key dependency. It automatically
+## pulls in everything needed: LCD driver, touch driver, LVGL, audio codec, etc.
+dependencies:
+  espressif/esp32_p4_function_ev_board:
+    version: "^3"
+  ## Pin esp_lvgl_port to avoid assert(dsi_cfg != NULL) incompatibility with BSP 3.0.1
+  espressif/esp_lvgl_port:
+    version: "~2.4.0"

@@ -1,0 +1,20 @@
+# ESP32-P4 Function EV Board V1.5.2 - Default Configuration
+#
+# Chip revision: ECO2 (pre-rev3 silicon)
+# Rev <3.0 and >=3.0 are mutually exclusive in ESP-IDF — must select this first
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_1=y
+CONFIG_ESP32P4_REV_MIN_FULL=1
+CONFIG_ESP_REV_MIN_FULL=1
+
+# PSRAM - required for the LCD framebuffer (the display is 1280x800,
+# which needs more RAM than the chip has internally)
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# Flash - the board has 16MB flash
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Enable larger LVGL font so Hello World looks good on the 1280x800 display
+CONFIG_LV_FONT_MONTSERRAT_48=y
