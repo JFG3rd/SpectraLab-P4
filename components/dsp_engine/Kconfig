@@ -1,0 +1,62 @@
+menu "DSP Engine"
+
+    config DSP_ENGINE_DEFAULT_FFT_SIZE
+        int "Default FFT size (power of two)"
+        default 4096
+        range 512 16384
+        help
+            Default FFT window length in samples. Must be a power of two.
+            Larger sizes improve frequency resolution but increase latency
+            and PSRAM usage.  4096 gives 11.6 Hz/bin at 48 kHz.
+
+    config DSP_ENGINE_DEFAULT_SAMPLE_RATE
+        int "Default sample rate (Hz)"
+        default 48000
+        help
+            Audio sample rate used when the source has not yet negotiated
+            a rate.  Must match the I2S or USB audio configuration.
+
+    config DSP_ENGINE_TASK_STACK_SIZE
+        int "DSP engine task stack size (bytes)"
+        default 8192
+        help
+            Stack depth for the FreeRTOS DSP processing task.  The task
+            uses floating-point math so it needs at least 6 KB.
+
+    config DSP_ENGINE_TASK_PRIORITY
+        int "DSP engine task priority"
+        default 20
+        range 1 24
+        help
+            FreeRTOS priority for the DSP task.  Should be below the audio
+            capture task (22) but above the UI update task (7).
+
+    config DSP_ENGINE_TASK_CORE
+        int "DSP engine task CPU core"
+        default 1
+        range 0 1
+        help
+            CPU core affinity for the DSP task.  Core 1 is preferred to
+            leave core 0 for the LVGL port task and UI updates.
+
+    config DSP_ENGINE_RING_BUF_MULTIPLIER
+        int "Ring buffer size multiplier (× FFT size)"
+        default 4
+        range 2 8
+        help
+            The ring buffer between the audio capture task and the DSP task
+            is allocated as (multiplier × fft_size × sizeof(int16_t)) bytes.
+            4× provides enough depth to absorb scheduling jitter at 48 kHz
+            without stalling the USB or I2S DMA.
+
+    config DSP_ENGINE_FRAME_POOL_SIZE
+        int "Number of pre-allocated output frame slots"
+        default 8
+        range 4 16
+        help
+            The DSP engine maintains a fixed pool of output frames in PSRAM.
+            Consumers retain frames via dsp_frame_retain(); the frame returns
+            to the pool when all consumers release it.  Increase if consumers
+            are slow (e.g. HTTP chunked transfer) to avoid dropped frames.
+
+endmenu

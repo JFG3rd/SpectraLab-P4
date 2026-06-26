@@ -7,14 +7,69 @@ CONFIG_ESP32P4_REV_MIN_1=y
 CONFIG_ESP32P4_REV_MIN_FULL=1
 CONFIG_ESP_REV_MIN_FULL=1
 
-# PSRAM - required for the LCD framebuffer (the display is 1280x800,
-# which needs more RAM than the chip has internally)
+# PSRAM — P4 Function EV Board uses HEX-8 mode (NOT OCT).
+# The generated sdkconfig confirms CONFIG_SPIRAM_MODE_HEX=y; using OCT
+# causes PSRAM init to fail and all PSRAM allocations to crash.
 CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_MODE_HEX=y
 CONFIG_SPIRAM_SPEED_200M=y
+# Keep small allocs (≤32 KB) in internal SRAM; push large FFT tables to PSRAM
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=32768
 
-# Flash - the board has 16MB flash
+# Flash — 16 MB on this board
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
-# Enable larger LVGL font so Hello World looks good on the 1280x800 display
+# Custom partition table: adds OTA slots + SPIFFS for web assets and cal files
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# FreeRTOS — 1 kHz tick for accurate audio timing (pdMS_TO_TICKS precision)
+CONFIG_FREERTOS_HZ=1000
+
+# Stack overflow detection
+CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY=y
+
+# Allow FreeRTOS task stacks in PSRAM for DSP/audio tasks
+CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
+
+# Increase main task stack — app_main orchestrates heavy component init
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# System event queue — needs more headroom with WiFi + USB + audio events
+CONFIG_SYSTEM_EVENT_QUEUE_SIZE=64
+
+# Watchdog — increase timeout; 16384-pt FFT twiddle table init can take >5 s
+# on first boot (coefficient table generation + PSRAM write)
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+# USB Host — bias hardware scheduler toward isochronous IN (microphone)
+CONFIG_USB_HOST_HW_BUFFER_BIAS_IN=y
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=512
+
+# I2S — place ISR handler in IRAM to meet strict DMA timing
+CONFIG_I2S_ISR_IRAM_SAFE=y
+
+# HTTP server — WebSocket support for browser-based spectrum viewer
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=2048
+
+# LWIP tuning for WebSocket connections (4 clients × 32 KB window)
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_TCP_WND_DEFAULT=32768
+CONFIG_TCP_SND_BUF_DEFAULT=32768
+
+# mDNS — allow up to 5 service advertisements (HTTP, WebSocket, ...)
+CONFIG_MDNS_MAX_SERVICES=5
+
+# NVS — strict error checking for configuration storage
+CONFIG_NVS_ASSERT_ERROR_CHECK=y
+
+# OTA — require HTTPS for firmware updates
+CONFIG_OTA_ALLOW_HTTP=n
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+
+# LVGL fonts used by the spectrum analyzer UI
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_48=y

@@ -1,0 +1,19 @@
+idf_component_register(
+    SRCS
+        "src/audio_source.c"
+        "src/audio_i2s.c"
+        "src/audio_usb.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_INCLUDE_DIRS
+        "src"
+    REQUIRES
+        freertos
+        esp_common
+        heap
+        driver
+        log
+        esp32_p4_function_ev_board
+    # usb host added here when Phase 2 UAC1 driver is implemented:
+    # PRIV_REQUIRES usb
+)

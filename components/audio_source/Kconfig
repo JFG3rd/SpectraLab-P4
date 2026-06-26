@@ -1,0 +1,114 @@
+menu "Audio Source"
+
+    choice AUDIO_SOURCE_PRIMARY
+        prompt "Primary audio input"
+        default AUDIO_SOURCE_PRIMARY_I2S
+        help
+            Select the preferred audio input.  The firmware tries the primary
+            source first.  If it is unavailable and a fallback is configured,
+            it switches automatically.
+
+        config AUDIO_SOURCE_PRIMARY_USB
+            bool "USB Audio Class (UAC1) microphone"
+            help
+                Use a USB microphone as the primary input.  Requires USB Host
+                to be enabled and a UAC1-compatible device to be attached.
+
+        config AUDIO_SOURCE_PRIMARY_I2S
+            bool "I2S via ES8311 codec (onboard)"
+            help
+                Use the onboard ES8311 codec connected to the ESP32-P4 I2S
+                peripheral.  This is always available if the codec is wired.
+    endchoice
+
+    config AUDIO_SOURCE_SAMPLE_RATE
+        int "Default sample rate (Hz)"
+        default 48000
+        help
+            Audio capture sample rate.  Must be supported by the active
+            source.  The ES8311 driver is reconfigured when this changes.
+            Valid values: 8000, 16000, 44100, 48000, 96000.
+
+    config AUDIO_SOURCE_BIT_DEPTH
+        int "Bit depth"
+        default 16
+        range 16 32
+        help
+            ADC resolution in bits.  The ES8311 codec supports 16, 18, 20,
+            and 24 bits.  All internal processing uses 16-bit signed integers.
+
+    config AUDIO_SOURCE_I2S_MCLK_GPIO
+        int "I2S master clock GPIO"
+        default 13
+        help
+            GPIO connected to the ES8311 MCLK input.  On the ESP32-P4
+            Function EV Board rev 1.5.2 this is GPIO 13.
+
+    config AUDIO_SOURCE_I2S_BCLK_GPIO
+        int "I2S bit clock GPIO"
+        default 12
+        help
+            GPIO connected to the ES8311 BCLK (serial clock).  GPIO 12.
+
+    config AUDIO_SOURCE_I2S_WS_GPIO
+        int "I2S word select (LRCK) GPIO"
+        default 10
+        help
+            GPIO connected to the ES8311 LRCK (left/right clock).  GPIO 10.
+
+    config AUDIO_SOURCE_I2S_DOUT_GPIO
+        int "I2S data out GPIO (ESP32→codec)"
+        default 9
+        help
+            GPIO connected to the ES8311 SDIN (playback path, not used for
+            recording but must be valid).  GPIO 9.
+
+    config AUDIO_SOURCE_I2S_DIN_GPIO
+        int "I2S data in GPIO (codec→ESP32)"
+        default 11
+        help
+            GPIO connected to the ES8311 SDOUT (microphone capture data).
+            GPIO 11.
+
+    config AUDIO_SOURCE_ES8311_I2C_ADDR
+        hex "ES8311 I2C address"
+        default 0x18
+        help
+            7-bit I2C address of the ES8311 codec.  0x18 when the ADDR pin
+            is tied to ground; 0x19 when tied to VDD.
+
+    config AUDIO_SOURCE_READER_TASK_STACK
+        int "Audio reader task stack size (bytes)"
+        default 4096
+
+    config AUDIO_SOURCE_READER_TASK_PRIORITY
+        int "Audio reader task priority"
+        default 22
+        range 1 24
+        help
+            Priority for the I2S DMA reader task.  Must be high (≥20) to
+            avoid missing DMA frames under load.  Same priority or higher
+            than the DSP task.
+
+    config AUDIO_SOURCE_READER_TASK_CORE
+        int "Audio reader task CPU core"
+        default 0
+        range 0 1
+
+    config AUDIO_SOURCE_DMA_BUF_FRAMES
+        int "I2S DMA buffer size (frames per buffer)"
+        default 256
+        help
+            Number of audio frames (samples) per I2S DMA buffer.
+            Larger values reduce CPU overhead but increase latency.
+            256 frames at 48 kHz = 5.3 ms.
+
+    config AUDIO_SOURCE_DMA_BUF_COUNT
+        int "Number of I2S DMA buffers"
+        default 4
+        range 2 8
+        help
+            Total DMA buffers allocated by the I2S driver.  The I2S peripheral
+            ping-pongs between these.  4 buffers provide 21 ms of headroom.
+
+endmenu

@@ -1,0 +1,20 @@
+idf_component_register(
+    SRCS
+        "src/dsp_engine.c"
+        "src/window_fn.c"
+        "src/fft_processor.c"
+        "src/spl_meter.c"
+        "src/averaging.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_INCLUDE_DIRS
+        "src"
+    REQUIRES
+        freertos
+        esp_common
+        esp_timer
+        heap
+        log
+    PRIV_REQUIRES
+        esp-dsp
+)

@@ -1,0 +1,25 @@
+idf_component_register(
+    SRCS
+        "src/display_ui.c"
+        "src/display_init.c"
+        "src/screen_spectrum.c"
+        "src/screen_settings.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_INCLUDE_DIRS
+        "src"
+    REQUIRES
+        freertos
+        esp_common
+        heap
+        log
+        esp_timer
+        driver
+        esp32_p4_function_ev_board
+        esp_lvgl_port
+        lvgl
+        dsp_engine
+        esp_ldo_regulator
+        esp_lcd_mipi_dsi
+        esp_lcd_ek79007
+)

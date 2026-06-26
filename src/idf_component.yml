@@ -1,9 +1,39 @@
-## ESP Component Manager - pulls dependencies from the ESP Component Registry
-## The BSP (Board Support Package) is the key dependency. It automatically
-## pulls in everything needed: LCD driver, touch driver, LVGL, audio codec, etc.
+## ESP Component Manager — managed dependency manifest
+##
+## Changes from original:
+##   + espressif/esp-dsp  : FFT engine (dsps_fft2r_fc32, window functions)
+##   + espressif/mdns     : mDNS service advertisement for web UI discovery
+##
+## Note: WiFi on ESP32-P4 routes through a companion ESP32-C5 chip via SDIO.
+## The esp_wifi_remote + esp_hosted components are needed for Phase 2 (web
+## interface). They are commented out here because they require companion
+## firmware that must be provisioned separately; uncomment when ready.
+##
+## Note: espressif/es8311 component is NOT used. ES8311 initialization is
+## performed via direct I2C register writes (legacy driver/i2c.h API) to
+## remain compatible with the BSP's legacy I2C initialization.
+##
 dependencies:
   espressif/esp32_p4_function_ev_board:
     version: "^3"
-  ## Pin esp_lvgl_port to avoid assert(dsi_cfg != NULL) incompatibility with BSP 3.0.1
+
+  ## Pin esp_lvgl_port to 2.4.x — avoids assert(dsi_cfg != NULL) incompatibility
+  ## with BSP 3.0.1 that is fixed in 2.4.0 but broken again in 3.x.
   espressif/esp_lvgl_port:
     version: "~2.4.0"
+
+  ## FFT library — provides dsps_fft2r_fc32 (radix-2 complex FFT, float32).
+  ## Supports power-of-two sizes from 16 to 16384 with PSRAM coefficient tables.
+  espressif/esp-dsp:
+    version: "^1"
+
+  ## mDNS — Phase 2, but declared here so the component manager resolves it
+  ## before the web_server component is added.
+  espressif/mdns:
+    version: "^1"
+
+  ## Phase 2: WiFi via ESP32-C5 companion chip (uncomment when ready)
+  # espressif/esp_wifi_remote:
+  #   version: "^0"
+  # espressif/esp_hosted:
+  #   version: "^0"
