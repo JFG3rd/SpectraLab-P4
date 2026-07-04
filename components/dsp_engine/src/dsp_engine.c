@@ -56,11 +56,20 @@ static volatile uint32_t s_cfg_gen = 0;   /* bumped by set_config; task re-deriv
 static volatile uint32_t s_sample_rate = CONFIG_DSP_ENGINE_DEFAULT_SAMPLE_RATE;  /* live source rate */
 
 /* ── noise floor calibration state ───────────────────────────── */
-static float    *s_noise_floor_db;      /* PSRAM [bin_count] — stored baseline */
-static float    *s_noise_accum;         /* PSRAM [bin_count] — running mean    */
-static bool      s_noise_floor_valid;
+static float    *s_noise_floor_db;      /* PSRAM [bin_count] — stored baseline (dB) */
+static float    *s_noise_accum;         /* PSRAM [bin_count] — mean POWER during capture */
+static bool      s_noise_floor_valid;   /* baseline usable for the CURRENT source */
+static bool      s_nf_has_data;         /* baseline buffer holds a real capture */
+static int       s_nf_source;           /* audio source the baseline was captured with */
+static volatile int s_current_source;   /* live source id (0=I2S, 1=USB) */
 static volatile bool s_noise_capture_active;
 static uint32_t  s_noise_capture_count;
+
+/* Subtract slightly MORE than the measured mean so frame-to-frame noise
+ * fluctuation above the mean still nets out (~+0.8 dB of headroom).
+ * Without it, acoustic room noise — which varies far more per frame than
+ * codec self-noise — constantly pokes through the subtraction. */
+#define NF_MARGIN  1.2f
 
 /* ── live ambient noise subtraction state ─────────────────────── */
 /* Operates independently of the static noise floor feature above.
@@ -77,6 +86,7 @@ static volatile bool s_ambient_needs_init; /* warm-start estimate on first activ
 #define NVS_NS_CAL            "spectrum_cal"
 #define NVS_KEY_NF_FFT_SIZE   "nf_fft_size"
 #define NVS_KEY_NF_DATA       "nf_data"
+#define NVS_KEY_NF_SOURCE     "nf_source"
 
 const dsp_config_t dsp_config_default = {
     .fft_size            = FFT_SIZE_4096,
@@ -126,6 +136,7 @@ static esp_err_t _save_noise_floor_to_nvs(uint32_t bin_count, uint32_t fft_size)
     esp_err_t err = nvs_open(NVS_NS_CAL, NVS_READWRITE, &h);
     if (err != ESP_OK) { ESP_LOGW(TAG, "nvs_open: %s", esp_err_to_name(err)); return err; }
     nvs_set_u32(h, NVS_KEY_NF_FFT_SIZE, fft_size);
+    nvs_set_u8(h, NVS_KEY_NF_SOURCE, (uint8_t)s_nf_source);
     err = nvs_set_blob(h, NVS_KEY_NF_DATA, s_noise_floor_db, bin_count * sizeof(float));
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
@@ -148,12 +159,19 @@ static void _load_noise_floor_from_nvs(uint32_t bin_count, uint32_t fft_size)
         return;
     }
 
+    uint8_t stored_src = 0;   /* legacy baselines default to I2S */
+    nvs_get_u8(h, NVS_KEY_NF_SOURCE, &stored_src);
+
     size_t needed = bin_count * sizeof(float);
     esp_err_t err = nvs_get_blob(h, NVS_KEY_NF_DATA, s_noise_floor_db, &needed);
     nvs_close(h);
     if (err == ESP_OK) {
-        s_noise_floor_valid = true;
-        ESP_LOGI(TAG, "noise floor loaded from NVS (%lu bins)", bin_count);
+        s_nf_has_data       = true;
+        s_nf_source         = stored_src;
+        /* boot source is I2S (0); valid only if the baseline matches */
+        s_noise_floor_valid = (s_nf_source == s_current_source);
+        ESP_LOGI(TAG, "noise floor loaded from NVS (%lu bins, source %u)",
+                 bin_count, stored_src);
     }
 }
 
@@ -217,6 +235,7 @@ static void dsp_task(void *arg)
                  * baseline just restored from NVS at boot. */
                 if (!first_cfg) {
                     s_noise_floor_valid    = false;
+                    s_nf_has_data          = false;   /* bin layout changed */
                     s_noise_capture_active = false;
                     s_ambient_needs_init   = true;
                 }
@@ -255,18 +274,30 @@ static void dsp_task(void *arg)
                                    bin_count, norm_factor) != ESP_OK)
             continue;
 
-        /* Noise floor capture — accumulate incremental running mean of raw FFT */
+        /* Noise floor capture — accumulate the running mean in linear POWER,
+         * not dB. A mean of dB values is a geometric mean of power, which is
+         * biased LOW by the frame-to-frame variance of the noise: negligible
+         * for steady codec hiss, but several dB for real acoustic room noise
+         * (USB measurement mic) — the resulting baseline under-subtracted
+         * badly. Convert to dB only once at completion. */
         if (s_noise_capture_active) {
             float inv = 1.0f / (float)(s_noise_capture_count + 1);
-            for (uint32_t k = 0; k < bin_count; k++)
-                s_noise_accum[k] += (s_magnitude_db[k] - s_noise_accum[k]) * inv;
+            for (uint32_t k = 0; k < bin_count; k++) {
+                float pwr = powf(10.0f, s_magnitude_db[k] * 0.1f);
+                s_noise_accum[k] += (pwr - s_noise_accum[k]) * inv;
+            }
             if (++s_noise_capture_count >= NOISE_CAPTURE_FRAMES) {
-                memcpy(s_noise_floor_db, s_noise_accum, bin_count * sizeof(float));
+                for (uint32_t k = 0; k < bin_count; k++)
+                    s_noise_floor_db[k] = (s_noise_accum[k] > 1e-12f)
+                                          ? 10.0f * log10f(s_noise_accum[k]) : -120.0f;
                 memset(s_noise_accum, 0, bin_count * sizeof(float));
+                s_nf_source            = s_current_source;
+                s_nf_has_data          = true;
                 s_noise_floor_valid    = true;
                 s_noise_capture_active = false;
                 s_noise_capture_count  = 0;
                 _save_noise_floor_to_nvs(bin_count, fft_size);
+                ESP_LOGI(TAG, "noise floor captured (source %d)", s_nf_source);
             }
         }
 
@@ -276,11 +307,17 @@ static void dsp_task(void *arg)
          * (-70) − (-70) = 0 dBFS (full scale), so a signal AT the noise floor
          * mapped to the MAXIMUM bar height instead of the minimum. Converting
          * to linear first gives: signal == noise → net = 0 → −120 dBFS floor. */
-        if (cur_cfg.noise_floor_enabled && s_noise_floor_valid) {
+        bool nf_sub_active = cur_cfg.noise_floor_enabled && s_noise_floor_valid;
+        static bool nf_sub_was_active = false;
+        if (nf_sub_active != nf_sub_was_active) {
+            ESP_LOGI(TAG, "noise floor subtraction %s", nf_sub_active ? "ACTIVE" : "inactive");
+            nf_sub_was_active = nf_sub_active;
+        }
+        if (nf_sub_active) {
             for (uint32_t k = 0; k < bin_count; k++) {
                 float sig_pwr = powf(10.0f, s_magnitude_db[k]    * 0.1f);
                 float nf_pwr  = powf(10.0f, s_noise_floor_db[k]  * 0.1f);
-                float net     = sig_pwr - nf_pwr;
+                float net     = sig_pwr - nf_pwr * NF_MARGIN;
                 s_magnitude_db[k] = (net > 0.0f) ? (10.0f * log10f(net)) : -120.0f;
             }
         }
@@ -444,17 +481,24 @@ esp_err_t dsp_engine_register_consumer(dsp_consumer_cb_t cb, void *ctx)
     return ESP_OK;
 }
 
-void dsp_engine_notify_source_changed(void)
+void dsp_engine_notify_source_changed(int source_id)
 {
     /* A noise-floor baseline belongs to ONE microphone: subtracting the
      * ES8311's self-noise from a UMIK-1 spectrum (or vice versa) skews
-     * everything. Invalidate the in-RAM baseline and restart the ambient
-     * estimator; the NVS copy is untouched and returns on reboot. */
+     * everything. The baseline stays in RAM tagged with its source, so a
+     * brief USB re-enumeration blip (USB→I2S→USB) restores it instead of
+     * silently discarding a good capture. */
+    s_current_source       = source_id;
     s_noise_capture_active = false;
     s_ambient_needs_init   = true;
-    if (s_noise_floor_valid) {
-        s_noise_floor_valid = false;
-        ESP_LOGI(TAG, "audio source changed — recapture the noise floor with the new mic");
+
+    bool valid_now = s_nf_has_data && (s_nf_source == source_id);
+    if (valid_now != s_noise_floor_valid) {
+        s_noise_floor_valid = valid_now;
+        if (valid_now)
+            ESP_LOGI(TAG, "source %d back — noise floor baseline restored", source_id);
+        else
+            ESP_LOGI(TAG, "source changed to %d — recapture the noise floor with this mic", source_id);
     }
 }
 
@@ -537,6 +581,7 @@ esp_err_t dsp_engine_clear_noise_floor(void)
 {
     s_noise_capture_active = false;
     s_noise_floor_valid    = false;
+    s_nf_has_data          = false;
     if (s_noise_floor_db)
         memset(s_noise_floor_db, 0, ((uint32_t)s_cfg.fft_size / 2) * sizeof(float));
 

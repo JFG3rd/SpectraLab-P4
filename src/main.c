@@ -53,7 +53,7 @@ static void on_audio_source_changed(audio_source_type_t active,
 {
     (void)ctx;
     if (sample_rate > 0) dsp_engine_set_sample_rate(sample_rate);
-    dsp_engine_notify_source_changed();   /* NF baseline + ambient are per-mic */
+    dsp_engine_notify_source_changed((int)active);   /* NF baseline + ambient are per-mic */
     /* Called from the USB worker task — take the LVGL lock */
     display_ui_lock();
     display_ui_set_source_status(active == AUDIO_SOURCE_USB);

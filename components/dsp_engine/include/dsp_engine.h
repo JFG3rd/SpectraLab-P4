@@ -73,10 +73,12 @@ void      dsp_engine_deinit(void);
  * The frequency table is rebuilt at the next frame boundary. */
 void      dsp_engine_set_sample_rate(uint32_t sample_rate_hz);
 
-/* Tell the engine the microphone itself changed (I2S <-> USB hot-swap):
- * invalidates the noise-floor baseline (it belongs to the previous mic)
- * and restarts the ambient noise estimator. */
-void      dsp_engine_notify_source_changed(void);
+/* Tell the engine the microphone itself changed (I2S <-> USB hot-swap).
+ * source_id: 0 = I2S, 1 = USB (audio_source_type_t values). The noise
+ * floor baseline is tagged with the source it was captured on: it is
+ * suspended while a different mic is active and restored when the same
+ * one returns. Also restarts the ambient noise estimator. */
+void      dsp_engine_notify_source_changed(int source_id);
 
 /* Noise floor calibration — async capture of ~64 frames in quiet conditions.
  * Subtracts the captured baseline per-bin when noise_floor_enabled is true. */
