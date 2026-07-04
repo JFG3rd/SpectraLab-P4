@@ -187,6 +187,8 @@ static void dsp_task(void *arg)
             my_gen  = s_cfg_gen;
             portEXIT_CRITICAL(&s_cfg_mux);
 
+            bool first_cfg = (fft_size == 0);   /* task's initial pickup */
+
             uint32_t new_size = (uint32_t)cur_cfg.fft_size;
             if (!fft_size_valid(new_size))
                 new_size = fft_size_valid(fft_size) ? fft_size : 4096;
@@ -210,10 +212,14 @@ static void dsp_task(void *arg)
 
             if (size_changed || rate_changed) {
                 build_frequency_table(s_frequency_hz, bin_count, fft_size, rate);
-                /* Baselines are per-FFT-size/rate — stale data is nonsense */
-                s_noise_floor_valid    = false;
-                s_noise_capture_active = false;
-                s_ambient_needs_init   = true;
+                /* Baselines are per-FFT-size/rate — stale data is nonsense.
+                 * But NOT on the task's first pickup: that would wipe the
+                 * baseline just restored from NVS at boot. */
+                if (!first_cfg) {
+                    s_noise_floor_valid    = false;
+                    s_noise_capture_active = false;
+                    s_ambient_needs_init   = true;
+                }
                 ESP_LOGI(TAG, "FFT %lu @ %lu Hz", fft_size, rate);
             }
         }
@@ -436,6 +442,20 @@ esp_err_t dsp_engine_register_consumer(dsp_consumer_cb_t cb, void *ctx)
     s_consumers[s_num_consumers].ctx = ctx;
     s_num_consumers++;
     return ESP_OK;
+}
+
+void dsp_engine_notify_source_changed(void)
+{
+    /* A noise-floor baseline belongs to ONE microphone: subtracting the
+     * ES8311's self-noise from a UMIK-1 spectrum (or vice versa) skews
+     * everything. Invalidate the in-RAM baseline and restart the ambient
+     * estimator; the NVS copy is untouched and returns on reboot. */
+    s_noise_capture_active = false;
+    s_ambient_needs_init   = true;
+    if (s_noise_floor_valid) {
+        s_noise_floor_valid = false;
+        ESP_LOGI(TAG, "audio source changed — recapture the noise floor with the new mic");
+    }
 }
 
 void dsp_engine_set_sample_rate(uint32_t sample_rate_hz)
