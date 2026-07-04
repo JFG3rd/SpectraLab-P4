@@ -53,7 +53,7 @@ static void saveas_commit(void)
         settings_t cfg;
         screen_settings_collect(&cfg);
         esp_err_t r = settings_mgr_save_named(&cfg, name);
-        if (r == ESP_OK) snprintf(msg, sizeof(msg), "Saved '%s' \xE2\x9C\x93", name);
+        if (r == ESP_OK) snprintf(msg, sizeof(msg), "Saved '%s' " LV_SYMBOL_OK, name);
         else             snprintf(msg, sizeof(msg), "Save failed (%s)", esp_err_to_name(r));
         screen_settings_set_status(msg);
         screen_settings_load();
@@ -66,7 +66,7 @@ static void saveas_commit(void)
         if (r == ESP_OK) s_selected[0] = '\0';
         files_refresh();
         lv_label_set_text(s_files_status,
-                          r == ESP_OK ? "Renamed \xE2\x9C\x93" : "Rename failed");
+                          r == ESP_OK ? "Renamed " LV_SYMBOL_OK : "Rename failed");
         lv_screen_load(s_files_screen);
     }
 }
@@ -222,7 +222,7 @@ static void files_load_btn_cb(lv_event_t *e)
     }
     screen_settings_apply_loaded(&cfg);
     char msg[64];
-    snprintf(msg, sizeof(msg), "Loaded '%s' \xE2\x9C\x93", s_selected);
+    snprintf(msg, sizeof(msg), "Loaded '%s' " LV_SYMBOL_OK, s_selected);
     screen_settings_set_status(msg);
     screen_settings_load();
 }
@@ -243,7 +243,7 @@ static void delete_confirm_cb(lv_event_t *e)
     lv_obj_t *mbox = (lv_obj_t *)lv_event_get_user_data(e);
     esp_err_t r = settings_mgr_delete_named(s_selected);
     lv_label_set_text(s_files_status,
-                      r == ESP_OK ? "Deleted \xE2\x9C\x93" : "Delete failed");
+                      r == ESP_OK ? "Deleted " LV_SYMBOL_OK : "Delete failed");
     if (r == ESP_OK) s_selected[0] = '\0';
     files_refresh();
     lv_msgbox_close(mbox);

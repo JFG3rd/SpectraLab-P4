@@ -73,7 +73,7 @@ static float     s_ambient_margin  = 1.1f; /* subtract margin × estimate       
 static volatile bool s_ambient_needs_init; /* warm-start estimate on first active frame */
 #define AMBIENT_ALPHA_DOWN  0.15f           /* convergence speed when cur < estimate   */
 #define AMBIENT_ALPHA_UP    0.003f          /* ~5 s time constant for upward drift     */
-#define NOISE_CAPTURE_FRAMES  64U       /* ~3 s at 4096 FFT / 50% OVL / 48 kHz */
+#define NOISE_CAPTURE_FRAMES  120U      /* ~5 s at 4096 FFT / 50% OVL / 48 kHz */
 #define NVS_NS_CAL            "spectrum_cal"
 #define NVS_KEY_NF_FFT_SIZE   "nf_fft_size"
 #define NVS_KEY_NF_DATA       "nf_data"
@@ -534,6 +534,11 @@ esp_err_t dsp_engine_clear_noise_floor(void)
 bool dsp_engine_has_noise_floor(void)
 {
     return s_noise_floor_valid;
+}
+
+bool dsp_engine_noise_capture_active(void)
+{
+    return s_noise_capture_active;
 }
 
 /* ── live ambient noise subtraction — public API ─────────────── */

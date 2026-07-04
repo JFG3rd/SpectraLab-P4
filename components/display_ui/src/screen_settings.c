@@ -230,12 +230,30 @@ static void back_btn_cb(lv_event_t *e)
     screen_spectrum_load();
 }
 
+/* Poll the DSP engine while a noise-floor capture runs so the status
+ * label flips to "Calibrated" by itself (previously it only refreshed
+ * the next time the settings screen was opened). */
+static lv_timer_t *s_nf_poll_timer;
+
+static void nf_poll_cb(lv_timer_t *t)
+{
+    if (dsp_engine_noise_capture_active()) return;   /* still running */
+    lv_label_set_text(s_lbl_nf_status,
+                      dsp_engine_has_noise_floor() ? "Calibrated " LV_SYMBOL_OK
+                                                   : "Capture failed");
+    lv_obj_remove_state(s_btn_nf_capture, LV_STATE_DISABLED);
+    lv_timer_delete(t);
+    s_nf_poll_timer = NULL;
+}
+
 static void capture_btn_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     dsp_engine_start_noise_floor_capture();
-    lv_label_set_text(s_lbl_nf_status, "Capturing...  (~3 s)");
+    lv_label_set_text(s_lbl_nf_status, "Capturing...  (~5 s)");
     lv_obj_add_state(s_btn_nf_capture, LV_STATE_DISABLED);
+    if (s_nf_poll_timer == NULL)
+        s_nf_poll_timer = lv_timer_create(nf_poll_cb, 500, NULL);
 }
 
 static void clear_btn_cb(lv_event_t *e)
@@ -298,7 +316,7 @@ static void sd_format_btn_cb(lv_event_t *e)
     s_format_armed = false;
     esp_err_t r = settings_mgr_format_sd();
     lv_label_set_text(s_lbl_sd_status,
-        r == ESP_OK ? "SD: Formatted \xE2\x9C\x93" : "SD: Format failed");
+        r == ESP_OK ? "SD: Formatted " LV_SYMBOL_OK : "SD: Format failed");
 }
 
 static lv_obj_t *make_labeled_dropdown(lv_obj_t *parent, const char *label_txt,
@@ -421,7 +439,7 @@ esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
     /* Noise floor status label */
     s_lbl_nf_status = lv_label_create(s_screen);
     lv_label_set_text(s_lbl_nf_status,
-                      dsp_engine_has_noise_floor() ? "Calibrated \xE2\x9C\x93" : "Not calibrated");
+                      dsp_engine_has_noise_floor() ? "Calibrated " LV_SYMBOL_OK : "Not calibrated");
     lv_obj_set_style_text_color(s_lbl_nf_status, lv_color_hex(0x88AACC), 0);
     lv_obj_set_style_text_font(s_lbl_nf_status, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(s_lbl_nf_status, 20, 360);
@@ -607,7 +625,7 @@ void screen_settings_load(void)
     /* Refresh noise floor status each time the screen opens */
     if (s_lbl_nf_status) {
         lv_label_set_text(s_lbl_nf_status,
-                          dsp_engine_has_noise_floor() ? "Calibrated \xE2\x9C\x93" : "Not calibrated");
+                          dsp_engine_has_noise_floor() ? "Calibrated " LV_SYMBOL_OK : "Not calibrated");
     }
     if (s_btn_nf_capture)
         lv_obj_remove_state(s_btn_nf_capture, LV_STATE_DISABLED);

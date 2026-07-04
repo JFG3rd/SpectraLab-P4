@@ -253,7 +253,7 @@ static void peak_hold_btn_cb(lv_event_t *e)
     if (s_peak_hold_enabled) {
         for (int i = 0; i < NUM_BARS; i++) s_peak_hold_db[i] = DB_MIN;
     }
-    if (s_btn_pk_lbl) lv_label_set_text(s_btn_pk_lbl, s_peak_hold_enabled ? "PK\xE2\x9C\x93" : "PK");
+    if (s_btn_pk_lbl) lv_label_set_text(s_btn_pk_lbl, s_peak_hold_enabled ? "PK " LV_SYMBOL_OK : "PK");
 }
 
 static void max_hold_btn_cb(lv_event_t *e)
@@ -261,7 +261,7 @@ static void max_hold_btn_cb(lv_event_t *e)
     (void)e;
     s_max_hold_enabled = !s_max_hold_enabled;
     for (int i = 0; i < NUM_BARS; i++) s_max_hold_db[i] = DB_MIN;
-    if (s_btn_mx_lbl) lv_label_set_text(s_btn_mx_lbl, s_max_hold_enabled ? "MX\xE2\x9C\x93" : "MX");
+    if (s_btn_mx_lbl) lv_label_set_text(s_btn_mx_lbl, s_max_hold_enabled ? "MX " LV_SYMBOL_OK : "MX");
     if (s_btn_rst) {
         if (s_max_hold_enabled) lv_obj_remove_state(s_btn_rst, LV_STATE_DISABLED);
         else                    lv_obj_add_state(s_btn_rst, LV_STATE_DISABLED);
@@ -1206,14 +1206,14 @@ void screen_spectrum_set_source_status(bool usb_active)
 {
     if (s_lbl_source_status == NULL) return;
     lv_label_set_text(s_lbl_source_status,
-                      usb_active ? "\xE2\x97\x89 USB MIC" : "");
+                      usb_active ? LV_SYMBOL_USB " USB MIC" : "");
 }
 
 void screen_spectrum_set_ambient_status(bool active)
 {
     if (s_lbl_ambient_status == NULL) return;
     lv_label_set_text(s_lbl_ambient_status,
-                      active ? "\xE2\x97\x89 Ambient NF live" : "");
+                      active ? LV_SYMBOL_AUDIO " Ambient NF live" : "");
 }
 
 void screen_spectrum_set_peak_hold(bool enabled)
@@ -1222,7 +1222,7 @@ void screen_spectrum_set_peak_hold(bool enabled)
     if (enabled) {
         for (int i = 0; i < NUM_BARS; i++) s_peak_hold_db[i] = DB_MIN;
     }
-    if (s_btn_pk_lbl) lv_label_set_text(s_btn_pk_lbl, enabled ? "PK\xE2\x9C\x93" : "PK");
+    if (s_btn_pk_lbl) lv_label_set_text(s_btn_pk_lbl, enabled ? "PK " LV_SYMBOL_OK : "PK");
 }
 
 bool screen_spectrum_get_peak_hold(void)
@@ -1262,7 +1262,7 @@ void screen_spectrum_set_max_hold(bool enabled)
 {
     s_max_hold_enabled = enabled;
     for (int i = 0; i < NUM_BARS; i++) s_max_hold_db[i] = DB_MIN;
-    if (s_btn_mx_lbl) lv_label_set_text(s_btn_mx_lbl, enabled ? "MX\xE2\x9C\x93" : "MX");
+    if (s_btn_mx_lbl) lv_label_set_text(s_btn_mx_lbl, enabled ? "MX " LV_SYMBOL_OK : "MX");
     if (s_btn_rst) {
         if (enabled) lv_obj_remove_state(s_btn_rst, LV_STATE_DISABLED);
         else         lv_obj_add_state(s_btn_rst, LV_STATE_DISABLED);

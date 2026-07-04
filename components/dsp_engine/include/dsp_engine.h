@@ -78,6 +78,7 @@ void      dsp_engine_set_sample_rate(uint32_t sample_rate_hz);
 esp_err_t dsp_engine_start_noise_floor_capture(void);
 esp_err_t dsp_engine_clear_noise_floor(void);
 bool      dsp_engine_has_noise_floor(void);
+bool      dsp_engine_noise_capture_active(void);   /* true while capturing */
 
 /* Live ambient noise subtraction — continuously tracks a rolling per-bin
  * noise estimate in linear power domain and subtracts it each frame.
