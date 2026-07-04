@@ -1,6 +1,7 @@
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
+#include <math.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -145,11 +146,19 @@ static esp_err_t _save_to_sd(const settings_t *cfg)
     const char *tmp = SD_DIR "/settings.tmp";
     FILE *f = fopen(tmp, "w");
     if (!f) { free(json); return ESP_FAIL; }
-    fputs(json, f);
-    fclose(f);
+    bool write_ok = (fputs(json, f) != EOF);
+    write_ok = (fclose(f) == 0) && write_ok;
     free(json);
+    if (!write_ok) {
+        /* full/failing card: keep the previous good file, drop the temp */
+        unlink(tmp);
+        ESP_LOGW(TAG, "settings SD write failed — keeping previous file");
+        return ESP_FAIL;
+    }
 
-    rename(tmp, SD_SETTINGS);
+    /* FATFS rename() fails if the target exists — remove it first */
+    unlink(SD_SETTINGS);
+    if (rename(tmp, SD_SETTINGS) != 0) return ESP_FAIL;
     ESP_LOGI(TAG, "settings saved to SD: %s", SD_SETTINGS);
     return ESP_OK;
 }
@@ -169,9 +178,10 @@ static esp_err_t _load_from_sd(settings_t *out)
 
     char *buf = malloc((size_t)len + 1);
     if (!buf) { fclose(f); return ESP_ERR_NO_MEM; }
-    fread(buf, 1, (size_t)len, f);
-    buf[len] = '\0';
+    size_t rd = fread(buf, 1, (size_t)len, f);
     fclose(f);
+    if (rd != (size_t)len) { free(buf); return ESP_FAIL; }
+    buf[len] = '\0';
 
     bool ok = _json_to_settings(buf, out);
     free(buf);
@@ -206,6 +216,65 @@ static esp_err_t _load_from_nvs(settings_t *out)
 
 /* ── public API ────────────────────────────────────────────────── */
 
+/* ── settings sanitization ─────────────────────────────────────────
+ * Persisted data (SD card JSON, NVS blob) is untrusted input: the card
+ * can be edited on a PC, corrupted, or written by different firmware.
+ * Clamp/snap every field to a safe value so bad data can never reach
+ * allocation sizes, enum-indexed tables, or codec registers. */
+
+static float _clampf(float v, float lo, float hi, float dflt)
+{
+    if (!isfinite(v)) return dflt;
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static int _clampi(int v, int lo, int hi, int dflt_unused)
+{
+    (void)dflt_unused;
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static void settings_sanitize(settings_t *s)
+{
+    /* fft_size: must be a supported power of two */
+    switch ((uint32_t)s->dsp.fft_size) {
+    case 512: case 1024: case 2048: case 4096: case 8192: case 16384: break;
+    default:  s->dsp.fft_size = FFT_SIZE_4096; break;
+    }
+
+    if ((unsigned)s->dsp.window    > WIN_KAISER)    s->dsp.window    = WIN_HANN;
+    if ((unsigned)s->dsp.averaging > AVG_MAX_HOLD)  s->dsp.averaging = AVG_EXPONENTIAL;
+
+    switch (s->dsp.overlap_pct) {
+    case 0: case 25: case 50: case 75: break;
+    default: s->dsp.overlap_pct = 50; break;
+    }
+
+    s->dsp.avg_alpha           = _clampf(s->dsp.avg_alpha, 0.01f, 1.0f, 0.3f);
+    s->dsp.kaiser_beta         = _clampf(s->dsp.kaiser_beta, 0.0f, 30.0f, 6.0f);
+    s->dsp.mic_sensitivity_dbv = _clampf(s->dsp.mic_sensitivity_dbv, -120.0f, 20.0f, -38.0f);
+    s->dsp.adc_full_scale_dbv  = _clampf(s->dsp.adc_full_scale_dbv, -60.0f, 60.0f, 0.0f);
+    s->dsp.reference_pa        = _clampf(s->dsp.reference_pa, 1e-6f, 100.0f, 1.0f);
+
+    /* mic gain: snap into the ES8311's 0/6/12/…/42 dB steps */
+    s->mic_gain_db = _clampi(s->mic_gain_db, 0, 42, 6);
+    s->mic_gain_db = (s->mic_gain_db / 6) * 6;
+
+    if ((unsigned)s->color_scheme > COLOR_SCHEME_RED_NEON)
+        s->color_scheme = COLOR_SCHEME_DARK;
+    if (s->display_mode < 0 || s->display_mode >= DISPLAY_MODE_COUNT)
+        s->display_mode = DISPLAY_MODE_BARS;
+
+    s->bar_decay_db_per_frame  = _clampf(s->bar_decay_db_per_frame, 0.0f, 20.0f, 0.0f);
+    s->peak_decay_db_per_frame = _clampf(s->peak_decay_db_per_frame, 0.05f, 5.0f, 0.25f);
+    s->screen_brightness       = _clampi(s->screen_brightness, 10, 100, 100);
+    s->db_range                = _clampi(s->db_range, 60, 120, 120);
+}
+
 static void _set_defaults(settings_t *out)
 {
     out->dsp                      = dsp_config_default;
@@ -230,11 +299,15 @@ esp_err_t settings_mgr_load(settings_t *out)
     _set_defaults(out);
 
     /* Priority 1: SD card JSON */
-    if (_load_from_sd(out) == ESP_OK) return ESP_OK;
+    if (_load_from_sd(out) == ESP_OK) {
+        settings_sanitize(out);
+        return ESP_OK;
+    }
 
     /* Priority 2: NVS blob backup */
     if (_load_from_nvs(out) == ESP_OK) {
         ESP_LOGI(TAG, "settings loaded from NVS");
+        settings_sanitize(out);
         return ESP_OK;
     }
 
@@ -297,9 +370,10 @@ esp_err_t settings_mgr_save_named(const settings_t *cfg, const char *name)
     const char *tmp = SD_DIR "/preset.tmp";
     FILE *f = fopen(tmp, "w");
     if (!f) { free(json); return ESP_FAIL; }
-    fputs(json, f);
-    fclose(f);
+    bool write_ok = (fputs(json, f) != EOF);
+    write_ok = (fclose(f) == 0) && write_ok;
     free(json);
+    if (!write_ok) { unlink(tmp); return ESP_FAIL; }
 
     char path[sizeof(SD_DIR) + SETTINGS_NAME_MAX + 8];
     _preset_path(path, sizeof(path), safe);
@@ -332,13 +406,15 @@ esp_err_t settings_mgr_load_named(settings_t *out, const char *name)
 
     char *buf = malloc((size_t)len + 1);
     if (!buf) { fclose(f); return ESP_ERR_NO_MEM; }
-    fread(buf, 1, (size_t)len, f);
-    buf[len] = '\0';
+    size_t rd = fread(buf, 1, (size_t)len, f);
     fclose(f);
+    if (rd != (size_t)len) { free(buf); return ESP_FAIL; }
+    buf[len] = '\0';
 
     bool ok = _json_to_settings(buf, out);
     free(buf);
     if (!ok) { ESP_LOGW(TAG, "preset '%s': JSON parse failed", safe); return ESP_FAIL; }
+    settings_sanitize(out);
     ESP_LOGI(TAG, "preset loaded: %s", path);
     return ESP_OK;
 }
@@ -438,14 +514,15 @@ esp_err_t settings_mgr_load_noise_floor_bin(float *out,
     if (!f) return ESP_ERR_NOT_FOUND;
 
     nf_header_t hdr;
-    fread(&hdr, sizeof(hdr), 1, f);
+    if (fread(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return ESP_FAIL; }
     if (hdr.magic != SD_NOISE_MAGIC || hdr.fft_size != fft_size || hdr.bin_count != bin_count) {
         fclose(f);
         ESP_LOGW(TAG, "noise floor SD: header mismatch, discarding");
         return ESP_ERR_INVALID_STATE;
     }
-    fread(out, sizeof(float), bin_count, f);
+    size_t rd = fread(out, sizeof(float), bin_count, f);
     fclose(f);
+    if (rd != bin_count) return ESP_FAIL;
     ESP_LOGI(TAG, "noise floor loaded from SD (%lu bins)", bin_count);
     return ESP_OK;
 }

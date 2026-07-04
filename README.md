@@ -36,7 +36,7 @@ Analog Mic ──► ES8311 ──► I2S DMA ──► DSP Engine ──► LVG
 
 ## Roadmap (Phase 2)
 
-- **USB Audio Class (UAC1)** microphone as primary source, hot-swap with fallback to I2S
+- **USB Audio Class (UAC1)** microphone as primary source (nad dirac microphone) with upload of mic calibration file, hot-swap with fallback to I2S
 - **WiFi** via ESP32-C5 companion chip (SDIO) — AP mode out of the box
 - **WebSocket web UI** — live spectrum stream at 192.168.4.1
 - **REST API** — GET/PUT config, OTA firmware update, CSV export
@@ -44,6 +44,27 @@ Analog Mic ──► ES8311 ──► I2S DMA ──► DSP Engine ──► LVG
 - **SD card** — continuous recording and CSV spectrum exports
 - **mDNS** — `spectrumanalyzer.local` service discovery
 - **GitHub Actions CI** — ESP-IDF 5.5 build + host-side unit tests
+
+### Security Notes (Phase 2 requirements)
+
+Phase 1 treats all persisted input as untrusted: settings loaded from the SD
+card or NVS are sanitized (`settings_sanitize()` in settings_mgr) before any
+value reaches an allocation size, an enum-indexed table, or a codec register,
+and the DSP engine independently validates FFT sizes and allocates all
+buffers at the maximum size so config changes can never overflow them.
+Phase 2 grows the attack surface considerably and must follow the same rule
+— every external input is hostile until proven otherwise:
+
+- **Calibration-file upload (USB/REST):** enforce a max file size and row
+  count before parsing; validate every float with `isfinite()`; never trust
+  length fields inside the file; fuzz the CSV/JSON parser host-side.
+- **WiFi AP:** WPA2 with a per-device generated password — never an open AP;
+  no debug/telnet endpoints in release builds.
+- **REST API:** rate-limit; reuse `settings_sanitize()` for any config PUT;
+  reject oversized bodies before buffering.
+- **OTA:** signed firmware images only (`CONFIG_SECURE_SIGNED_APPS_*`) with
+  anti-rollback; never flash an unauthenticated upload.
+- **WebSocket:** treat frames as untrusted input; bound all queue sizes.
 
 ---
 

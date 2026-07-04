@@ -206,6 +206,9 @@ static void spectrum_timer_cb(lv_timer_t *timer)
 
 /* ── public API ───────────────────────────────────────────────── */
 
+void display_ui_lock(void)   { bsp_display_lock(0); }
+void display_ui_unlock(void) { bsp_display_unlock(); }
+
 esp_err_t display_ui_init(void)
 {
     ESP_RETURN_ON_FALSE(!s_initialized, ESP_ERR_INVALID_STATE, TAG, "already initialized");

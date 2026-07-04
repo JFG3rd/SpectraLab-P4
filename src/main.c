@@ -70,6 +70,10 @@ void app_main(void)
     /* 3. Display UI: LCD hardware init + LVGL port + spectrum screen */
     ESP_LOGI(TAG, "Step 3: display_ui_init");
     ESP_ERROR_CHECK(display_ui_init());
+
+    /* Restore persisted UI state. These touch LVGL objects while the LVGL
+     * task is already running, so hold the rendering lock for the block. */
+    display_ui_lock();
     display_ui_notify_color_scheme(loaded.color_scheme);            /* apply persisted palette */
     display_ui_set_ambient_status(loaded.ambient_noise_enabled);    /* restore ambient indicator */
     display_ui_set_peak_hold(loaded.peak_hold_enabled);             /* restore peak hold state   */
@@ -80,6 +84,7 @@ void app_main(void)
     display_ui_set_db_range(loaded.db_range);                      /* restore display dB range  */
     display_ui_set_display_mode(loaded.display_mode);              /* restore display mode      */
     display_ui_sync_settings(&loaded);   /* sync settings-screen widgets so Back won't revert */
+    display_ui_unlock();
 
     /* 4. DSP engine: FFT pipeline with persisted (or default) config */
     ESP_LOGI(TAG, "Step 4: dsp_engine_init");

@@ -20,6 +20,13 @@ typedef struct {
 
 esp_err_t display_ui_init(void);
 esp_err_t display_ui_push_spectrum(const dsp_result_t *result);
+
+/* Take/release the LVGL rendering lock. Must wrap any display_ui_set_* /
+ * display_ui_sync_settings calls made from OUTSIDE the LVGL task (e.g. the
+ * boot-time restore in main.c). Do NOT use from LVGL event callbacks — the
+ * lock is not recursive. */
+void      display_ui_lock(void);
+void      display_ui_unlock(void);
 void      display_ui_set_status(const display_status_t *status);
 void      display_ui_deinit(void);
 

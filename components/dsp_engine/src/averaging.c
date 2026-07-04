@@ -22,11 +22,11 @@ esp_err_t averaging_init(averaging_state_t *s, averaging_mode_t mode,
     s->state = heap_caps_calloc(bin_count, sizeof(float), MALLOC_CAP_SPIRAM);
     ESP_RETURN_ON_FALSE(s->state != NULL, ESP_ERR_NO_MEM, TAG, "state alloc failed");
 
-    if (mode == AVG_RMS) {
-        s->rms_accum = heap_caps_calloc(bin_count, sizeof(float), MALLOC_CAP_SPIRAM);
-        ESP_RETURN_ON_FALSE(s->rms_accum != NULL, ESP_ERR_NO_MEM, TAG,
-                            "rms_accum alloc failed");
-    }
+    /* Always allocate the RMS accumulator — the averaging mode can change
+     * at runtime, and switching to AVG_RMS later must not hit a NULL. */
+    s->rms_accum = heap_caps_calloc(bin_count, sizeof(float), MALLOC_CAP_SPIRAM);
+    ESP_RETURN_ON_FALSE(s->rms_accum != NULL, ESP_ERR_NO_MEM, TAG,
+                        "rms_accum alloc failed");
 
     /* Initialise state to -120 dBFS so the first frame isn't pulled toward 0 */
     for (uint32_t k = 0; k < bin_count; k++) s->state[k] = -120.0f;

@@ -22,6 +22,14 @@ static const char *TAG = "dsp_engine";
 #define MAX_CONSUMERS    4
 #define RING_BUF_MULT    CONFIG_DSP_ENGINE_RING_BUF_MULTIPLIER
 
+/* All size-dependent buffers are allocated once at the maximum FFT size so
+ * runtime FFT-size changes can NEVER overflow them. (A previous version
+ * allocated at the boot-time size; set_config() then regenerated window
+ * coefficients at a larger size into the smaller buffer — PSRAM heap
+ * corruption that crashed at unrelated later moments.) */
+#define FFT_MAX          16384U
+#define BINS_MAX         (FFT_MAX / 2)
+
 typedef struct {
     dsp_consumer_cb_t cb;
     void             *ctx;
@@ -44,6 +52,7 @@ static consumer_t        s_consumers[MAX_CONSUMERS];
 static uint8_t           s_num_consumers;
 
 static portMUX_TYPE s_cfg_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint32_t s_cfg_gen = 0;   /* bumped by set_config; task re-derives sizes */
 
 /* ── noise floor calibration state ───────────────────────────── */
 static float    *s_noise_floor_db;      /* PSRAM [bin_count] — stored baseline */
@@ -83,6 +92,12 @@ const dsp_config_t dsp_config_default = {
 };
 
 /* ── helpers ──────────────────────────────────────────────────── */
+
+static bool fft_size_valid(uint32_t n)
+{
+    return n == 512 || n == 1024 || n == 2048 || n == 4096 ||
+           n == 8192 || n == 16384;
+}
 
 static uint32_t hop_size_from_overlap(uint32_t fft_size, uint8_t overlap_pct)
 {
@@ -147,19 +162,57 @@ static void dsp_task(void *arg)
 {
     ESP_LOGI(TAG, "DSP task started on core %d", xPortGetCoreID());
 
-    uint32_t fft_size  = (uint32_t)s_cfg.fft_size;
-    uint32_t bin_count = fft_size / 2;
-    uint32_t hop_size  = hop_size_from_overlap(fft_size, s_cfg.overlap_pct);
-
-    float coherent_gain = window_fn_coherent_gain(s_window_coeffs, fft_size);
-    float norm_factor   = 1.0f / ((float)fft_size * coherent_gain);
-
-    /* Accumulation buffer for partial ring-buffer reads */
-    int16_t *accum = heap_caps_malloc(hop_size * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    /* Accumulation buffer sized for the largest possible hop (= FFT_MAX
+     * at 0% overlap) so config changes never need a reallocation. */
+    int16_t *accum = heap_caps_malloc((size_t)FFT_MAX * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     configASSERT(accum != NULL);
     size_t accum_pos = 0;
 
+    dsp_config_t cur_cfg;
+    uint32_t my_gen    = s_cfg_gen - 1;   /* force config pickup on first pass */
+    uint32_t fft_size  = 0;
+    uint32_t bin_count = 0;
+    uint32_t hop_size  = 0;
+    float    norm_factor = 1.0f;
+
     while (s_running) {
+        /* Pick up config changes at frame boundaries (set_config bumps gen
+         * AFTER regenerating the window coefficients, so by the time we see
+         * the new generation the coefficient table is consistent). */
+        if (my_gen != s_cfg_gen) {
+            portENTER_CRITICAL(&s_cfg_mux);
+            cur_cfg = s_cfg;
+            my_gen  = s_cfg_gen;
+            portEXIT_CRITICAL(&s_cfg_mux);
+
+            uint32_t new_size = (uint32_t)cur_cfg.fft_size;
+            if (!fft_size_valid(new_size))
+                new_size = fft_size_valid(fft_size) ? fft_size : 4096;
+            bool size_changed = (new_size != fft_size);
+
+            fft_size    = new_size;
+            bin_count   = fft_size / 2;
+            hop_size    = hop_size_from_overlap(fft_size, cur_cfg.overlap_pct);
+            norm_factor = 1.0f / ((float)fft_size *
+                                  window_fn_coherent_gain(s_window_coeffs, fft_size));
+            accum_pos   = 0;
+            memset(s_overlap_buf, 0, fft_size * sizeof(float));
+
+            /* Averaging mode/alpha live in the state struct (set at init);
+             * apply runtime changes here or they'd never take effect. */
+            s_avg.mode  = cur_cfg.averaging;
+            s_avg.alpha = cur_cfg.avg_alpha;
+
+            if (size_changed) {
+                build_frequency_table(s_frequency_hz, bin_count, fft_size,
+                                      CONFIG_DSP_ENGINE_DEFAULT_SAMPLE_RATE);
+                /* Baselines are per-FFT-size — stale data would be nonsense */
+                s_noise_floor_valid    = false;
+                s_noise_capture_active = false;
+                s_ambient_needs_init   = true;
+                ESP_LOGI(TAG, "FFT size changed to %lu", fft_size);
+            }
+        }
         /* Pull up to (hop_size - accum_pos) samples from ring buffer */
         size_t want_bytes = (hop_size - accum_pos) * sizeof(int16_t);
         size_t got_bytes  = 0;
@@ -206,12 +259,6 @@ static void dsp_task(void *arg)
                 _save_noise_floor_to_nvs(bin_count, fft_size);
             }
         }
-
-        /* Read latest config under spinlock (config can change mid-stream) */
-        dsp_config_t cur_cfg;
-        portENTER_CRITICAL(&s_cfg_mux);
-        cur_cfg = s_cfg;
-        portEXIT_CRITICAL(&s_cfg_mux);
 
         /* Subtract noise floor before averaging.
          *
@@ -296,23 +343,34 @@ esp_err_t dsp_engine_init(const dsp_config_t *cfg)
     ESP_RETURN_ON_FALSE(cfg != NULL, ESP_ERR_INVALID_ARG, TAG, "cfg is NULL");
     ESP_RETURN_ON_FALSE(!s_running, ESP_ERR_INVALID_STATE, TAG, "already running");
 
+    /* Defend against corrupted persisted config: fall back to the default
+     * FFT size rather than allocating/initializing with garbage. */
+    dsp_config_t safe_cfg = *cfg;
+    if (!fft_size_valid((uint32_t)safe_cfg.fft_size)) {
+        ESP_LOGW(TAG, "invalid fft_size %d — using default %d",
+                 (int)safe_cfg.fft_size, (int)dsp_config_default.fft_size);
+        safe_cfg.fft_size = dsp_config_default.fft_size;
+    }
+
     portENTER_CRITICAL(&s_cfg_mux);
-    s_cfg = *cfg;
+    s_cfg = safe_cfg;
+    s_cfg_gen++;
     portEXIT_CRITICAL(&s_cfg_mux);
 
-    uint32_t fft_size  = (uint32_t)cfg->fft_size;
+    uint32_t fft_size  = (uint32_t)safe_cfg.fft_size;
     uint32_t bin_count = fft_size / 2;
-    size_t   rb_size   = (size_t)RING_BUF_MULT * fft_size * sizeof(int16_t);
 
-    /* Allocate PSRAM buffers */
-    s_window_coeffs   = heap_caps_malloc(fft_size * sizeof(float), MALLOC_CAP_SPIRAM);
-    s_overlap_buf     = heap_caps_calloc(fft_size, sizeof(float),  MALLOC_CAP_SPIRAM);
-    s_windowed        = heap_caps_malloc(fft_size * sizeof(float), MALLOC_CAP_SPIRAM);
-    s_magnitude_db    = heap_caps_malloc(bin_count * sizeof(float), MALLOC_CAP_SPIRAM);
-    s_frequency_hz    = heap_caps_malloc(bin_count * sizeof(float), MALLOC_CAP_SPIRAM);
-    s_noise_floor_db  = heap_caps_calloc(bin_count, sizeof(float), MALLOC_CAP_SPIRAM);
-    s_noise_accum     = heap_caps_calloc(bin_count, sizeof(float), MALLOC_CAP_SPIRAM);
-    s_ambient_power   = heap_caps_calloc(bin_count, sizeof(float), MALLOC_CAP_SPIRAM);
+    /* Allocate PSRAM buffers at the MAXIMUM FFT size (~480 KB total of the
+     * 8 MB PSRAM) so runtime FFT-size changes can never overflow them. */
+    size_t rb_size    = (size_t)RING_BUF_MULT * FFT_MAX * sizeof(int16_t);
+    s_window_coeffs   = heap_caps_malloc(FFT_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
+    s_overlap_buf     = heap_caps_calloc(FFT_MAX, sizeof(float),  MALLOC_CAP_SPIRAM);
+    s_windowed        = heap_caps_malloc(FFT_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
+    s_magnitude_db    = heap_caps_malloc(BINS_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
+    s_frequency_hz    = heap_caps_malloc(BINS_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
+    s_noise_floor_db  = heap_caps_calloc(BINS_MAX, sizeof(float), MALLOC_CAP_SPIRAM);
+    s_noise_accum     = heap_caps_calloc(BINS_MAX, sizeof(float), MALLOC_CAP_SPIRAM);
+    s_ambient_power   = heap_caps_calloc(BINS_MAX, sizeof(float), MALLOC_CAP_SPIRAM);
 
     ESP_RETURN_ON_FALSE(s_window_coeffs && s_overlap_buf && s_windowed &&
                         s_magnitude_db  && s_frequency_hz &&
@@ -320,18 +378,18 @@ esp_err_t dsp_engine_init(const dsp_config_t *cfg)
                         ESP_ERR_NO_MEM, TAG, "PSRAM allocation failed");
 
     /* Window coefficients */
-    window_fn_generate(cfg->window, cfg->kaiser_beta, s_window_coeffs, fft_size);
+    window_fn_generate(safe_cfg.window, safe_cfg.kaiser_beta, s_window_coeffs, fft_size);
 
     /* Frequency table */
     build_frequency_table(s_frequency_hz, bin_count, fft_size,
                           CONFIG_DSP_ENGINE_DEFAULT_SAMPLE_RATE);
 
-    /* Averaging state */
-    ESP_RETURN_ON_ERROR(averaging_init(&s_avg, cfg->averaging, cfg->avg_alpha, bin_count),
+    /* Averaging state — sized for the max bin count so size changes fit */
+    ESP_RETURN_ON_ERROR(averaging_init(&s_avg, safe_cfg.averaging, safe_cfg.avg_alpha, BINS_MAX),
                         TAG, "averaging_init failed");
 
-    /* FFT processor */
-    ESP_RETURN_ON_ERROR(fft_processor_init(cfg->fft_size), TAG, "fft_processor_init failed");
+    /* FFT processor — twiddle tables for the max size serve all sizes */
+    ESP_RETURN_ON_ERROR(fft_processor_init((fft_size_t)FFT_MAX), TAG, "fft_processor_init failed");
 
     /* Load noise floor from NVS if a valid baseline was previously captured */
     _load_noise_floor_from_nvs(bin_count, fft_size);
@@ -379,16 +437,23 @@ esp_err_t dsp_engine_register_consumer(dsp_consumer_cb_t cb, void *ctx)
 esp_err_t dsp_engine_set_config(const dsp_config_t *cfg)
 {
     ESP_RETURN_ON_FALSE(cfg != NULL, ESP_ERR_INVALID_ARG, TAG, "cfg is NULL");
-    portENTER_CRITICAL(&s_cfg_mux);
-    s_cfg = *cfg;
-    portEXIT_CRITICAL(&s_cfg_mux);
-
-    /* Regenerate window coefficients for the new window type */
     uint32_t fft_size = (uint32_t)cfg->fft_size;
+    ESP_RETURN_ON_FALSE(fft_size_valid(fft_size), ESP_ERR_INVALID_ARG, TAG,
+                        "invalid fft_size %lu", fft_size);
+
+    /* Regenerate window coefficients FIRST (buffer is FFT_MAX-sized, safe
+     * at any valid size), then publish the config. The DSP task only picks
+     * the new config up after seeing the generation bump, so it never sees
+     * a new size with old coefficients. */
     window_fn_generate(cfg->window, cfg->kaiser_beta, s_window_coeffs, fft_size);
 
     /* Reset averaging for clean transition */
     averaging_reset(&s_avg);
+
+    portENTER_CRITICAL(&s_cfg_mux);
+    s_cfg = *cfg;
+    s_cfg_gen++;
+    portEXIT_CRITICAL(&s_cfg_mux);
 
     return ESP_OK;
 }

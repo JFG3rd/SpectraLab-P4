@@ -81,3 +81,6 @@ CONFIG_LV_FONT_MONTSERRAT_48=y
 # FAT long filename support for named settings presets on SD
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=64
+
+# esp-dsp twiddle tables must cover the largest selectable FFT (16384)
+CONFIG_DSP_MAX_FFT_SIZE_16384=y
