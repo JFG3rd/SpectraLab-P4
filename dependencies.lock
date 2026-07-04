@@ -9,6 +9,26 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 0.5.3
+  espressif/es8311:
+    component_hash: 46b3117250344bb03f143d5e2becf81cfb111679fbd7b95cefc2d302d36cc393
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4,<6.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.0~1
+  espressif/esp-dsp:
+    component_hash: ed9ac175b14e0414399a2b33c525579414b5bad19a2a67b12ea212def96f9a98
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.2'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.8.2
   espressif/esp32_p4_function_ev_board:
     component_hash: 2a254420aaeab1e14895fa766ee2d2415af46289f9a60e5090a12632bd44d0ae
     dependencies:
@@ -105,6 +125,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 2.4.4
+  espressif/mdns:
+    component_hash: 291732b5df4d181eb75eba9042799a508c4c124503a0c0573132a0a48d2e3fbe
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.11.2
   idf:
     source:
       type: idf
@@ -117,8 +147,11 @@ dependencies:
       type: service
     version: 9.5.0
 direct_dependencies:
+- espressif/es8311
+- espressif/esp-dsp
 - espressif/esp32_p4_function_ev_board
 - espressif/esp_lvgl_port
-manifest_hash: 5da441d3352189cdd47734c44bb9ad354f368beee2d042e829aa357b670c8594
+- espressif/mdns
+manifest_hash: 802917ca25d38d5086b16a803d3caba56313bfddb20ab6e78b1c28dc81e07082
 target: esp32p4
 version: 2.0.0

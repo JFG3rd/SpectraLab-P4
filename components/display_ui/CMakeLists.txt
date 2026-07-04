@@ -4,6 +4,7 @@ idf_component_register(
         "src/display_init.c"
         "src/screen_spectrum.c"
         "src/screen_settings.c"
+        "src/screen_file_dialog.c"
     INCLUDE_DIRS
         "include"
     PRIV_INCLUDE_DIRS
@@ -19,7 +20,11 @@ idf_component_register(
         esp_lvgl_port
         lvgl
         dsp_engine
-        esp_ldo_regulator
-        esp_lcd_mipi_dsi
+        audio_source
+        settings_mgr
+        esp_hw_support
+        esp_lcd
         esp_lcd_ek79007
+        esp_lcd_touch
+        esp_lcd_touch_gt911
 )

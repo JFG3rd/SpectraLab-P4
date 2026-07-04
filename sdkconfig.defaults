@@ -64,6 +64,9 @@ CONFIG_MDNS_MAX_SERVICES=5
 # NVS — strict error checking for configuration storage
 CONFIG_NVS_ASSERT_ERROR_CHECK=y
 
+# SD card — format to FAT32 automatically if mount fails (handles unformatted / exFAT / NTFS cards)
+CONFIG_BSP_SD_FORMAT_ON_MOUNT_FAIL=y
+
 # OTA — require HTTPS for firmware updates
 CONFIG_OTA_ALLOW_HTTP=n
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
@@ -72,4 +75,9 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_LV_FONT_MONTSERRAT_12=y
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
+
+# FAT long filename support for named settings presets on SD
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=64

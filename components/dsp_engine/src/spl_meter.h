@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* Convert per-bin dBFS magnitudes to SPL and overall SPL.
  *

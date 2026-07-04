@@ -9,92 +9,53 @@
 #include "bsp/esp32_p4_function_ev_board.h"
 #include "sdkconfig.h"
 #include "audio_source.h"
+#include "es8311.h"
 
 static const char *TAG = "audio_i2s";
 
-/* ── ES8311 I2C register interface ──────────────────────────────── */
+/* ── ES8311 codec init ────────────────────────────────────────────
+ *
+ * Uses the official espressif/es8311 driver rather than hand-rolled
+ * register writes: a prior hand-rolled version mismapped several
+ * registers against the real ES8311 register map (e.g. treated 0x17
+ * as an HPF enable when it is actually ADC volume, and 0x0F as PGA
+ * gain when it is actually a system low-power register), leaving the
+ * codec's clocks/ADC path effectively dead — mic data read back as
+ * flat silence regardless of input. */
 
 #define ES8311_ADDR     CONFIG_AUDIO_SOURCE_ES8311_I2C_ADDR
 
-static esp_err_t es8311_write(uint8_t reg, uint8_t val)
-{
-    uint8_t buf[2] = {reg, val};
-    return i2c_master_write_to_device(BSP_I2C_NUM, ES8311_ADDR,
-                                       buf, sizeof(buf), pdMS_TO_TICKS(50));
-}
+static es8311_handle_t s_es8311_dev;
 
-/* Initialise ES8311 for I2S slave mode (ESP32-P4 is I2S master).
- *
- * Clock assumptions:
- *   MCLK  = 256 × fs  (GPIO13 driven by ESP32-P4 I2S peripheral)
- *   BCLK  =  64 × fs  (GPIO12, 32 bits/slot × 2 channels)
- *   LRCK  =       fs  (GPIO10)
- *
- * ES8311 is configured as I2S slave: it takes MCLK/BCLK/LRCK from
- * the I2S master and uses them to clock its ADC/DAC pipelines.
- *
- * Register values sourced from ES8311 datasheet rev 1.3 and the
- * Espressif esp-adf codec driver (components/codec/es8311). */
+/* ES8311 is configured as I2S slave: it takes MCLK/BCLK/LRCK from the
+ * I2S master (ESP32-P4) and uses them to clock its ADC pipeline.
+ * MCLK = 256 × fs, matching I2S_MCLK_MULTIPLE_256 set on the I2S side. */
 static esp_err_t es8311_init_i2s_slave(uint32_t sample_rate)
 {
-    (void)sample_rate;   /* divider table would vary; 48 kHz assumed */
+    s_es8311_dev = es8311_create(BSP_I2C_NUM, ES8311_ADDR);
+    ESP_RETURN_ON_FALSE(s_es8311_dev != NULL, ESP_ERR_NO_MEM, TAG, "es8311_create failed");
 
-    /* Step 1: reset all registers */
-    ESP_RETURN_ON_ERROR(es8311_write(0x00, 0x1F), TAG, "ES8311 reset failed");
-    vTaskDelay(pdMS_TO_TICKS(20));
-    ESP_RETURN_ON_ERROR(es8311_write(0x00, 0x00), TAG, "ES8311 release reset failed");
+    es8311_clock_config_t clk_cfg = {
+        .mclk_inverted      = false,
+        .sclk_inverted      = false,
+        .mclk_from_mclk_pin = true,
+        .mclk_frequency     = (int)(sample_rate * 256),
+        .sample_frequency   = (int)sample_rate,
+    };
+    ESP_RETURN_ON_ERROR(es8311_init(s_es8311_dev, &clk_cfg,
+                                    ES8311_RESOLUTION_16, ES8311_RESOLUTION_16),
+                        TAG, "es8311_init failed");
 
-    /* Step 2: clock manager
-     *   0x01 — MCLK from MCLK pin (bit7=0 non-inverted, bits5:4=11 → ext MCLK)
-     *   0x02 — ADC/DAC use same MCLK source, no pre-divider
-     *   0x03 — NFS high byte: NFS = MCLK/LRCK = 256 → 0x01 00 (NFS[11:8]=1)
-     *   0x04 — NFS low byte: 0x00
-     *   0x05 — NFS[12] = 0 (NFS ≤ 4095)
-     *   0x06 — BCLK divider: MCLK/BCLK = 256/64 = 4 → stored as (4/2-1) = 1
-     *            Actually per datasheet: BCLKDIV[5:0] = 4 → write 0x04
-     *   0x07 — LRCK divider high: 0x00
-     *   0x08 — LRCK divider low: NFS-1 = 255 = 0xFF */
-    ESP_RETURN_ON_ERROR(es8311_write(0x01, 0x30), TAG, "CLK1");
-    ESP_RETURN_ON_ERROR(es8311_write(0x02, 0x00), TAG, "CLK2");
-    ESP_RETURN_ON_ERROR(es8311_write(0x03, 0x10), TAG, "CLK3");  /* NFS[11:8]=1 */
-    ESP_RETURN_ON_ERROR(es8311_write(0x04, 0x00), TAG, "CLK4");
-    ESP_RETURN_ON_ERROR(es8311_write(0x05, 0x00), TAG, "CLK5");
-    ESP_RETURN_ON_ERROR(es8311_write(0x06, 0x04), TAG, "CLK6");  /* BCLKDIV=4 */
-    ESP_RETURN_ON_ERROR(es8311_write(0x07, 0x00), TAG, "CLK7");
-    ESP_RETURN_ON_ERROR(es8311_write(0x08, 0xFF), TAG, "CLK8");  /* LRCKDIV=256 */
-
-    /* Step 3: serial digital port — I2S Philips, 16-bit
-     *   0x09: bit5:4=00 (I2S Philips), bit3:2=00 (16-bit) */
-    ESP_RETURN_ON_ERROR(es8311_write(0x09, 0x00), TAG, "SDP");
-
-    /* Step 4: ADC format (matches SDP) */
-    ESP_RETURN_ON_ERROR(es8311_write(0x0A, 0x00), TAG, "ADC1");
-
-    /* Step 5: system clock control — enable ADC clock, PDN_ANA=0 */
-    ESP_RETURN_ON_ERROR(es8311_write(0x0D, 0x01), TAG, "SYSCLK");
-
-    /* Step 6: analog microphone path
-     *   0x0E: MIC1 single-ended input (bit6=0), no gain here
-     *   0x0F: MIC1→PGA, PGA = 0 dB (bits7:4 = 0 = +0 dB)
-     *          bits 7:4 control gain: 0=0dB, 1=3dB, …, 8=24dB */
-    ESP_RETURN_ON_ERROR(es8311_write(0x0E, 0x02), TAG, "MIC1");
-    ESP_RETURN_ON_ERROR(es8311_write(0x0F, 0x88), TAG, "PGA");  /* MIC, +24 dB */
-
-    /* Step 7: ADC digital volume (0x1A = 0 dB nominal) */
-    ESP_RETURN_ON_ERROR(es8311_write(0x14, 0x1A), TAG, "ADC vol");
-
-    /* Step 8: ADC high-pass filter on (removes DC offset) */
-    ESP_RETURN_ON_ERROR(es8311_write(0x17, 0xBF), TAG, "HPF");
-
-    /* Step 9: power up ADC path
-     *   0x37: bit3=1 → ADC power on; DAC off */
-    ESP_RETURN_ON_ERROR(es8311_write(0x37, 0x48), TAG, "ADC pwr");
-
-    /* Step 10: enable analog section (MIC bias + PGA + ADC) */
-    ESP_RETURN_ON_ERROR(es8311_write(0x3C, 0x80), TAG, "analog pwr");
+    /* Analog mic input (not PDM digital mic). Default gain is 6 dB (lowest
+     * practical hardware step) — conservative starting point that users can
+     * adjust up via the settings screen (audio_source_set_mic_gain_db). */
+    ESP_RETURN_ON_ERROR(es8311_microphone_config(s_es8311_dev, false),
+                        TAG, "es8311_microphone_config failed");
+    ESP_RETURN_ON_ERROR(es8311_microphone_gain_set(s_es8311_dev, ES8311_MIC_GAIN_6DB),
+                        TAG, "es8311_microphone_gain_set failed");
 
     vTaskDelay(pdMS_TO_TICKS(100));
-    ESP_LOGI(TAG, "ES8311 ready (I2S slave, 48 kHz, 16-bit)");
+    ESP_LOGI(TAG, "ES8311 ready (I2S slave, %lu Hz, 16-bit)", sample_rate);
     return ESP_OK;
 }
 
@@ -224,11 +185,36 @@ esp_err_t audio_i2s_stop(void)
 uint32_t audio_i2s_get_sample_rate(void) { return s_rate; }
 bool     audio_i2s_is_connected(void)    { return s_rx_chan != NULL; }
 
+static es8311_mic_gain_t mic_gain_db_to_enum(int gain_db)
+{
+    switch (gain_db) {
+    case 0:  return ES8311_MIC_GAIN_0DB;
+    case 6:  return ES8311_MIC_GAIN_6DB;
+    case 12: return ES8311_MIC_GAIN_12DB;
+    case 18: return ES8311_MIC_GAIN_18DB;
+    case 24: return ES8311_MIC_GAIN_24DB;
+    case 30: return ES8311_MIC_GAIN_30DB;
+    case 36: return ES8311_MIC_GAIN_36DB;
+    case 42: return ES8311_MIC_GAIN_42DB;
+    default: return ES8311_MIC_GAIN_36DB;
+    }
+}
+
+esp_err_t audio_i2s_set_mic_gain_db(int gain_db)
+{
+    ESP_RETURN_ON_FALSE(s_es8311_dev != NULL, ESP_ERR_INVALID_STATE, TAG, "not initialized");
+    return es8311_microphone_gain_set(s_es8311_dev, mic_gain_db_to_enum(gain_db));
+}
+
 void audio_i2s_deinit(void)
 {
     audio_i2s_stop();
     if (s_rx_chan) {
         i2s_del_channel(s_rx_chan);
         s_rx_chan = NULL;
+    }
+    if (s_es8311_dev) {
+        es8311_delete(s_es8311_dev);
+        s_es8311_dev = NULL;
     }
 }

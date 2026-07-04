@@ -12,6 +12,7 @@
 
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_check.h"
 #include "driver/gpio.h"
 #include "esp_ldo_regulator.h"
 #include "esp_lcd_mipi_dsi.h"
@@ -19,8 +20,11 @@
 #include "esp_lcd_ek79007.h"
 #include "bsp/esp32_p4_function_ev_board.h"
 #include "bsp/display.h"
+#include "esp_lcd_io_i2c.h"
+#include "esp_lcd_touch_gt911.h"
 #include "esp_lvgl_port.h"
 #include "esp_lvgl_port_disp.h"
+#include "esp_lvgl_port_touch.h"
 #include "lvgl.h"
 #include "display_init.h"
 
@@ -167,6 +171,56 @@ esp_err_t display_hw_init(lv_display_t **disp_out)
     gpio_reset_pin(GPIO_NUM_26);
     gpio_set_direction(GPIO_NUM_26, GPIO_MODE_OUTPUT);
     gpio_set_level(GPIO_NUM_26, 1);
+
+    /* Step 9: Touch (GT911) → LVGL input device. Non-fatal if it fails —
+     * the display is still usable read-only, just without touch nav.
+     *
+     * Not using bsp_touch_new(): it hardcodes ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG(),
+     * whose scl_speed_hz=100000 default is rejected by the legacy I2C LCD-IO
+     * path the BSP forces (esp_lcd_new_panel_io_i2c_v1 requires scl_speed_hz
+     * == 0 — "scl_speed_hz is not need to set in legacy i2c_lcd driver").
+     * Build the same IO config by hand with scl_speed_hz cleared instead. */
+    esp_err_t touch_err = bsp_i2c_init();
+    if (touch_err != ESP_OK && touch_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "touch: bsp_i2c_init failed: %s; touch input disabled",
+                 esp_err_to_name(touch_err));
+    } else {
+        const esp_lcd_panel_io_i2c_config_t tp_io_cfg = {
+            .scl_speed_hz        = 0,
+            .dev_addr            = ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS,
+            .control_phase_bytes = 1,
+            .dc_bit_offset       = 0,
+            .lcd_cmd_bits        = 16,
+            .flags               = { .disable_control_phase = 1 },
+        };
+        esp_lcd_panel_io_handle_t tp_io = NULL;
+        touch_err = esp_lcd_new_panel_io_i2c_v1(BSP_I2C_NUM, &tp_io_cfg, &tp_io);
+
+        if (touch_err == ESP_OK) {
+            const esp_lcd_touch_config_t tp_cfg = {
+                .x_max        = BSP_LCD_H_RES,
+                .y_max        = BSP_LCD_V_RES,
+                .rst_gpio_num = BSP_LCD_TOUCH_RST,
+                .int_gpio_num = BSP_LCD_TOUCH_INT,
+                .levels       = { .reset = 0, .interrupt = 0 },
+                .flags        = { .swap_xy = 0, .mirror_x = 1, .mirror_y = 1 },
+            };
+            esp_lcd_touch_handle_t tp = NULL;
+            touch_err = esp_lcd_touch_new_i2c_gt911(tp_io, &tp_cfg, &tp);
+
+            if (touch_err == ESP_OK) {
+                const lvgl_port_touch_cfg_t lvgl_touch_cfg = { .disp = disp, .handle = tp };
+                if (lvgl_port_add_touch(&lvgl_touch_cfg) == NULL)
+                    ESP_LOGW(TAG, "lvgl_port_add_touch failed; touch input disabled");
+            } else {
+                ESP_LOGW(TAG, "esp_lcd_touch_new_i2c_gt911 failed: %s; touch input disabled",
+                         esp_err_to_name(touch_err));
+            }
+        } else {
+            ESP_LOGW(TAG, "touch IO init failed: %s; touch input disabled",
+                     esp_err_to_name(touch_err));
+        }
+    }
 
     ESP_LOGI(TAG, "display_hw_init complete — 1024×600 LCD running");
 

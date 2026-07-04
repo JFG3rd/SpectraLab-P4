@@ -6,4 +6,4 @@ cmake_minimum_required(VERSION 3.16.0)
 list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_SOURCE_DIR}/components")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(ESP32-P4-Function-EV-Board-Getting-Started)
+project(ESP32-P4-Function-EV-Board-Spectrum-Analyzer)

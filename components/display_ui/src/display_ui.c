@@ -13,6 +13,8 @@
 #include "lvgl.h"
 
 #include "dsp_engine.h"
+#include "audio_source.h"
+#include "settings_mgr.h"
 #include "display_ui.h"
 #include "display_init.h"
 #include "screen_spectrum.h"
@@ -32,7 +34,18 @@ static float    s_pending_peak   = -120.0f;
 static bool     s_data_pending   = false;
 static SemaphoreHandle_t s_pend_mutex;
 
-static bool     s_initialized    = false;
+static bool         s_initialized    = false;
+static dsp_config_t s_last_dsp_cfg;
+static int          s_last_gain_db    = 6;
+static color_scheme_t s_last_scheme   = COLOR_SCHEME_DARK;
+static bool         s_last_ambient    = false;
+static bool         s_last_peak_hold  = false;
+static float        s_last_bar_decay  = 0.0f;
+static float        s_last_peak_decay = 0.25f;
+static bool         s_last_max_hold   = false;
+static int          s_last_brightness = 100;
+static int          s_last_db_range   = 120;
+static int          s_last_disp_mode  = DISPLAY_MODE_BARS;
 
 /* ── settings change handler ──────────────────────────────────── */
 static void on_settings_changed(const dsp_config_t *new_cfg, void *ctx)
@@ -41,6 +54,131 @@ static void on_settings_changed(const dsp_config_t *new_cfg, void *ctx)
     esp_err_t ret = dsp_engine_set_config(new_cfg);
     if (ret != ESP_OK)
         ESP_LOGW(TAG, "dsp_engine_set_config: %s", esp_err_to_name(ret));
+    s_last_dsp_cfg = *new_cfg;
+    screen_spectrum_set_dsp_info(&s_last_dsp_cfg, s_last_gain_db);
+    /* Auto-save whenever settings are applied */
+    settings_t s = { .dsp = s_last_dsp_cfg, .mic_gain_db = s_last_gain_db,
+                     .color_scheme = s_last_scheme,
+                     .ambient_noise_enabled   = s_last_ambient,
+                     .peak_hold_enabled       = s_last_peak_hold,
+                     .bar_decay_db_per_frame  = s_last_bar_decay,
+                     .peak_decay_db_per_frame = s_last_peak_decay,
+                     .max_hold_enabled        = s_last_max_hold,
+                     .screen_brightness       = s_last_brightness,
+                     .db_range                = s_last_db_range,
+                     .display_mode            = s_last_disp_mode };
+    settings_mgr_save(&s);
+}
+
+static void on_mic_gain_changed(int gain_db, void *ctx)
+{
+    (void)ctx;
+    esp_err_t ret = audio_source_set_mic_gain_db(gain_db);
+    if (ret != ESP_OK)
+        ESP_LOGW(TAG, "audio_source_set_mic_gain_db: %s", esp_err_to_name(ret));
+    s_last_gain_db = gain_db;
+    screen_spectrum_set_dsp_info(&s_last_dsp_cfg, s_last_gain_db);
+    /* Auto-save whenever gain is applied */
+    settings_t s = { .dsp = s_last_dsp_cfg, .mic_gain_db = s_last_gain_db,
+                     .color_scheme = s_last_scheme,
+                     .ambient_noise_enabled   = s_last_ambient,
+                     .peak_hold_enabled       = s_last_peak_hold,
+                     .bar_decay_db_per_frame  = s_last_bar_decay,
+                     .peak_decay_db_per_frame = s_last_peak_decay,
+                     .max_hold_enabled        = s_last_max_hold,
+                     .screen_brightness       = s_last_brightness,
+                     .db_range                = s_last_db_range,
+                     .display_mode            = s_last_disp_mode };
+    settings_mgr_save(&s);
+}
+
+/* Update ambient noise indicator on the spectrum screen (called from main.c
+ * at boot to restore persisted state, and from ambient_switch_cb on toggle). */
+void display_ui_set_ambient_status(bool active)
+{
+    s_last_ambient = active;
+    screen_spectrum_set_ambient_status(active);
+}
+
+/* Restore peak hold visual state at boot. */
+void display_ui_set_peak_hold(bool enabled)
+{
+    s_last_peak_hold = enabled;
+    screen_spectrum_set_peak_hold(enabled);
+}
+
+void display_ui_sync_settings(const settings_t *cfg)
+{
+    screen_settings_sync_from(cfg);
+}
+
+void display_ui_set_db_range(int range_db)
+{
+    if (range_db < 60)  range_db = 60;
+    if (range_db > 120) range_db = 120;
+    s_last_db_range = range_db;
+    screen_spectrum_set_db_range(range_db);
+}
+
+void display_ui_set_display_mode(int mode)
+{
+    if (mode < 0 || mode >= DISPLAY_MODE_COUNT) mode = DISPLAY_MODE_BARS;
+    s_last_disp_mode = mode;
+    screen_spectrum_set_mode(mode);
+}
+
+/* Forward raw audio to the scope view. Called from the audio reader task;
+ * screen_spectrum guards the copy with its own mutex and early-outs when
+ * the scope mode isn't active. */
+void display_ui_push_waveform(const int16_t *samples, size_t count)
+{
+    screen_spectrum_push_waveform(samples, count);
+}
+
+void display_ui_set_bar_decay(float rate)
+{
+    s_last_bar_decay = rate;
+    screen_spectrum_set_bar_decay(rate);
+}
+
+void display_ui_set_peak_decay(float rate)
+{
+    s_last_peak_decay = rate;
+    screen_spectrum_set_peak_decay(rate);
+}
+
+void display_ui_set_max_hold(bool enabled)
+{
+    s_last_max_hold = enabled;
+    screen_spectrum_set_max_hold(enabled);
+}
+
+void display_ui_set_brightness(int percent)
+{
+    if (percent < 10)  percent = 10;   /* never fully dark — screen stays usable */
+    if (percent > 100) percent = 100;
+    s_last_brightness = percent;
+    bsp_display_brightness_set(percent);
+    screen_settings_sync_brightness(percent);   /* keep slider widget in sync */
+}
+
+/* Apply a color scheme — can be called from main.c (initial load) or
+ * from screen_settings.c (user change). Always applies visually and saves. */
+void display_ui_notify_color_scheme(color_scheme_t scheme)
+{
+    s_last_scheme = scheme;
+    screen_spectrum_set_color_scheme(scheme);  /* update palette + invalidate */
+    settings_t s = { .dsp = s_last_dsp_cfg, .mic_gain_db = s_last_gain_db,
+                     .color_scheme = s_last_scheme,
+                     .ambient_noise_enabled   = s_last_ambient,
+                     .peak_hold_enabled       = s_last_peak_hold,
+                     .bar_decay_db_per_frame  = s_last_bar_decay,
+                     .peak_decay_db_per_frame = s_last_peak_decay,
+                     .max_hold_enabled        = s_last_max_hold,
+                     .screen_brightness       = s_last_brightness,
+                     .db_range                = s_last_db_range,
+                     .display_mode            = s_last_disp_mode };
+    settings_mgr_save(&s);
 }
 
 /* ── LVGL timer: pull pending data and update spectrum screen ─── */
@@ -72,6 +210,8 @@ esp_err_t display_ui_init(void)
 {
     ESP_RETURN_ON_FALSE(!s_initialized, ESP_ERR_INVALID_STATE, TAG, "already initialized");
 
+    s_last_dsp_cfg = dsp_config_default;
+
     /* Allocate pending buffers in PSRAM */
     s_pending_mag   = heap_caps_malloc(MAX_BINS * sizeof(float), MALLOC_CAP_SPIRAM);
     s_timer_scratch = heap_caps_malloc(MAX_BINS * sizeof(float), MALLOC_CAP_SPIRAM);
@@ -87,9 +227,11 @@ esp_err_t display_ui_init(void)
     /* Create screens — must hold LVGL lock */
     bsp_display_lock(0);
     ESP_RETURN_ON_ERROR(screen_spectrum_create(), TAG, "spectrum screen create failed");
-    ESP_RETURN_ON_ERROR(screen_settings_create(on_settings_changed, NULL),
+    ESP_RETURN_ON_ERROR(screen_settings_create(on_settings_changed, NULL,
+                                               on_mic_gain_changed, NULL),
                         TAG, "settings screen create failed");
     screen_spectrum_load();
+    screen_spectrum_set_dsp_info(&s_last_dsp_cfg, s_last_gain_db);
 
     /* 33 ms timer → ~30 fps UI updates */
     lv_timer_create(spectrum_timer_cb, 33, NULL);

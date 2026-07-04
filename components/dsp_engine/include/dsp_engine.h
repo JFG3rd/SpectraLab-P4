@@ -56,6 +56,7 @@ typedef struct {
     float            adc_full_scale_dbv;  /* dBV at 0 dBFS, e.g. 0.0                */
     float            reference_pa;        /* reference pressure (1.0 Pa = 94 dBSPL)  */
     float            kaiser_beta;         /* Kaiser window shape parameter            */
+    bool             noise_floor_enabled; /* subtract captured noise baseline from spectrum */
 } dsp_config_t;
 
 /* Callback invoked from the DSP task when a new frame is ready.
@@ -67,6 +68,19 @@ esp_err_t dsp_engine_push_samples(const int16_t *pcm, size_t count);
 esp_err_t dsp_engine_register_consumer(dsp_consumer_cb_t cb, void *ctx);
 esp_err_t dsp_engine_set_config(const dsp_config_t *cfg);
 void      dsp_engine_deinit(void);
+
+/* Noise floor calibration — async capture of ~64 frames in quiet conditions.
+ * Subtracts the captured baseline per-bin when noise_floor_enabled is true. */
+esp_err_t dsp_engine_start_noise_floor_capture(void);
+esp_err_t dsp_engine_clear_noise_floor(void);
+bool      dsp_engine_has_noise_floor(void);
+
+/* Live ambient noise subtraction — continuously tracks a rolling per-bin
+ * noise estimate in linear power domain and subtracts it each frame.
+ * Operates independently of and after the static noise floor feature. */
+void dsp_engine_set_ambient_noise(bool enabled);
+bool dsp_engine_ambient_noise_active(void);
+void dsp_engine_set_ambient_margin(float margin);
 
 extern const dsp_config_t dsp_config_default;
 

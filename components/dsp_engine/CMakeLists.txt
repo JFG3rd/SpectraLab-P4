@@ -17,4 +17,6 @@ idf_component_register(
         log
     PRIV_REQUIRES
         esp-dsp
+        esp_ringbuf
+        nvs_flash
 )

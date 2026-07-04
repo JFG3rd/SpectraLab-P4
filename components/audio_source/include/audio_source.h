@@ -34,6 +34,10 @@ uint32_t  audio_source_get_sample_rate(void);
 bool      audio_source_is_connected(void);
 void      audio_source_deinit(void);
 
+/* Analog mic PGA gain, in dB. Valid steps: 0,6,12,18,24,30,36,42.
+ * I2S/ES8311 source only; returns ESP_ERR_NOT_SUPPORTED for USB mics. */
+esp_err_t audio_source_set_mic_gain_db(int gain_db);
+
 #ifdef __cplusplus
 }
 #endif

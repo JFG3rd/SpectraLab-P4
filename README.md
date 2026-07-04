@@ -13,14 +13,25 @@ Analog Mic ──► ES8311 ──► I2S DMA ──► DSP Engine ──► LVG
 
 ## Features (Phase 1 — implemented)
 
-- **Live FFT spectrum** displayed on the 1024×600 EK79007 LCD at ~30 fps
+- **Live FFT spectrum** displayed on the 1024×600 EK79007 LCD at ~30 fps (live FPS readout)
 - **Six window functions**: Rectangular, Hann, Hamming, Blackman, Blackman-Harris, Flat-Top, Kaiser
 - **Four averaging modes**: Exponential smoothing, RMS, Peak Hold, Max Hold
 - **Configurable overlap**: 0 / 25 / 50 / 75 %
 - **IEC 61672 A-weighting** for perceptual SPL display
-- **Log-frequency x-axis** (20 Hz – 20 kHz), linear dBFS y-axis (−120 to 0 dB)
+- **Log-frequency x-axis** (20 Hz – 20 kHz), configurable dBFS y-axis range (60 / 80 / 100 / 120 dB span)
 - **FFT sizes**: 512, 1024, 2048, 4096, 8192, 16384 points
-- **On-screen settings panel**: change FFT size, window, averaging, overlap live
+- **On-screen settings panel** — changes apply automatically on Back (no Apply button)
+- **Eight display modes**: Bars, Line/Area, 1/3-Octave RTA, Persistence (phosphor trails),
+  Waterfall spectrogram, Oscilloscope, VU Meter, Mirrored bars
+- **Seven color themes**: Dark, Classic (green phosphor), High Contrast, Amber, Blue Neon, Matrix, Red Neon
+- **Visual peak hold (PK)** — per-bar peak markers with 5 selectable decay speeds
+- **Max hold (MX)** — white markers that only grow; on-screen RST button to reset
+- **Bar decay** — configurable visual fall rate for the bars themselves (instant to very slow)
+- **Noise floor calibration** — capture the room's noise floor and subtract it
+- **Live ambient noise subtraction** — rolling estimator, no capture needed
+- **Screen brightness slider** (10–100 %) with live preview
+- **Settings persistence** — auto-saved to SD card (`settings.json`) with NVS fallback; restored at boot
+- **Named presets on SD** — Save-As dialog with on-screen keyboard; file browser with Load / Rename / Delete
 - All large buffers (FFT, window coefficients, ring buffer) in **8 MB HEX-mode PSRAM**
 
 ## Roadmap (Phase 2)
@@ -111,16 +122,21 @@ components/
 │       ├── audio_i2s.c      # ES8311 I2C init + I2S RX DMA
 │       └── audio_usb.c      # UAC1 stub (Phase 2)
 │
+├── settings_mgr/        # Persistence: SD card JSON + NVS blob fallback
+│   ├── include/settings_mgr.h
+│   └── src/settings_mgr.c   # settings.json, named presets, noise floor binary
+│
 └── display_ui/          # LVGL screens + hardware init
     ├── include/display_ui.h
     └── src/
-        ├── display_init.c   # DSI panel + LVGL port init
-        ├── display_ui.c     # Screen manager + timer bridge
-        ├── screen_spectrum.c # Main analyzer view (custom draw)
-        └── screen_settings.c # Live settings panel
+        ├── display_init.c      # DSI panel + LVGL port init
+        ├── display_ui.c        # Screen manager + timer bridge + state tracking
+        ├── screen_spectrum.c   # Main analyzer view (custom draw, PK/MX hold)
+        ├── screen_settings.c   # Settings panel (applies on Back)
+        └── screen_file_dialog.c # Save-As keyboard + preset file browser
 
 src/
-└── main.c               # Thin dispatcher: init → wire callbacks → start
+└── main.c               # Thin dispatcher: init → restore settings → start
 ```
 
 ### Data Types (`components/dsp_engine/include/dsp_engine.h`)
@@ -205,6 +221,13 @@ Key settings are pre-configured in `sdkconfig.defaults`:
 | `CONFIG_I2S_ISR_IRAM_SAFE` | y | I2S ISR must run from IRAM |
 | `CONFIG_PARTITION_TABLE_CUSTOM` | y | OTA slots + SPIFFS require custom layout |
 | `CONFIG_ESP_TASK_WDT_TIMEOUT_S` | 30 | 16384-pt FFT init can be slow on first boot |
+| `CONFIG_FATFS_LFN_HEAP` | y | Long filenames for named settings presets on SD |
+| `CONFIG_FATFS_MAX_LFN` | 64 | Max preset filename length |
+| `CONFIG_BSP_SD_FORMAT_ON_MOUNT_FAIL` | y | Auto-format unreadable SD cards on first mount |
+
+> Note: PlatformIO compiles from `sdkconfig.esp32-p4-evboard`. `sdkconfig.defaults`
+> only seeds keys that are *missing* — if a key already exists in the live file,
+> the live file wins. Change both when adjusting configuration.
 
 ---
 

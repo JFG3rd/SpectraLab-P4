@@ -7,6 +7,8 @@
 #include "esp_check.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include "sdkconfig.h"
 
 #include "dsp_engine.h"
@@ -43,6 +45,29 @@ static uint8_t           s_num_consumers;
 
 static portMUX_TYPE s_cfg_mux = portMUX_INITIALIZER_UNLOCKED;
 
+/* ── noise floor calibration state ───────────────────────────── */
+static float    *s_noise_floor_db;      /* PSRAM [bin_count] — stored baseline */
+static float    *s_noise_accum;         /* PSRAM [bin_count] — running mean    */
+static bool      s_noise_floor_valid;
+static volatile bool s_noise_capture_active;
+static uint32_t  s_noise_capture_count;
+
+/* ── live ambient noise subtraction state ─────────────────────── */
+/* Operates independently of the static noise floor feature above.
+ * Uses an asymmetric EWA that tracks the per-bin noise floor quickly
+ * downward (during quiet moments) and rises slowly (ALPHA_UP), so
+ * transient loud signals don't inflate the estimate. */
+static float    *s_ambient_power;          /* PSRAM [bin_count] — rolling linear power */
+static volatile bool s_ambient_active;
+static float     s_ambient_margin  = 1.1f; /* subtract margin × estimate              */
+static volatile bool s_ambient_needs_init; /* warm-start estimate on first active frame */
+#define AMBIENT_ALPHA_DOWN  0.15f           /* convergence speed when cur < estimate   */
+#define AMBIENT_ALPHA_UP    0.003f          /* ~5 s time constant for upward drift     */
+#define NOISE_CAPTURE_FRAMES  64U       /* ~3 s at 4096 FFT / 50% OVL / 48 kHz */
+#define NVS_NS_CAL            "spectrum_cal"
+#define NVS_KEY_NF_FFT_SIZE   "nf_fft_size"
+#define NVS_KEY_NF_DATA       "nf_data"
+
 const dsp_config_t dsp_config_default = {
     .fft_size            = FFT_SIZE_4096,
     .window              = WIN_HANN,
@@ -54,6 +79,7 @@ const dsp_config_t dsp_config_default = {
     .adc_full_scale_dbv  = 0.0f,
     .reference_pa        = 1.0f,
     .kaiser_beta         = 6.0f,
+    .noise_floor_enabled = false,
 };
 
 /* ── helpers ──────────────────────────────────────────────────── */
@@ -74,6 +100,45 @@ static void build_frequency_table(float *freq_hz, uint32_t bin_count, uint32_t f
     float hz_per_bin = (float)sample_rate / (float)fft_size;
     for (uint32_t k = 0; k < bin_count; k++)
         freq_hz[k] = (float)k * hz_per_bin;
+}
+
+/* ── NVS noise floor persistence ─────────────────────────────── */
+
+static esp_err_t _save_noise_floor_to_nvs(uint32_t bin_count, uint32_t fft_size)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS_CAL, NVS_READWRITE, &h);
+    if (err != ESP_OK) { ESP_LOGW(TAG, "nvs_open: %s", esp_err_to_name(err)); return err; }
+    nvs_set_u32(h, NVS_KEY_NF_FFT_SIZE, fft_size);
+    err = nvs_set_blob(h, NVS_KEY_NF_DATA, s_noise_floor_db, bin_count * sizeof(float));
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err == ESP_OK) ESP_LOGI(TAG, "noise floor saved to NVS (%lu bins)", bin_count);
+    else               ESP_LOGW(TAG, "noise floor NVS save failed: %s", esp_err_to_name(err));
+    return err;
+}
+
+static void _load_noise_floor_from_nvs(uint32_t bin_count, uint32_t fft_size)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_CAL, NVS_READONLY, &h) != ESP_OK) return;
+
+    uint32_t stored_fft = 0;
+    nvs_get_u32(h, NVS_KEY_NF_FFT_SIZE, &stored_fft);
+    if (stored_fft != fft_size) {
+        nvs_close(h);
+        ESP_LOGI(TAG, "noise floor NVS: FFT size mismatch (%lu != %lu), discarding",
+                 stored_fft, fft_size);
+        return;
+    }
+
+    size_t needed = bin_count * sizeof(float);
+    esp_err_t err = nvs_get_blob(h, NVS_KEY_NF_DATA, s_noise_floor_db, &needed);
+    nvs_close(h);
+    if (err == ESP_OK) {
+        s_noise_floor_valid = true;
+        ESP_LOGI(TAG, "noise floor loaded from NVS (%lu bins)", bin_count);
+    }
 }
 
 /* ── DSP task ─────────────────────────────────────────────────── */
@@ -127,11 +192,70 @@ static void dsp_task(void *arg)
                                    bin_count, norm_factor) != ESP_OK)
             continue;
 
+        /* Noise floor capture — accumulate incremental running mean of raw FFT */
+        if (s_noise_capture_active) {
+            float inv = 1.0f / (float)(s_noise_capture_count + 1);
+            for (uint32_t k = 0; k < bin_count; k++)
+                s_noise_accum[k] += (s_magnitude_db[k] - s_noise_accum[k]) * inv;
+            if (++s_noise_capture_count >= NOISE_CAPTURE_FRAMES) {
+                memcpy(s_noise_floor_db, s_noise_accum, bin_count * sizeof(float));
+                memset(s_noise_accum, 0, bin_count * sizeof(float));
+                s_noise_floor_valid    = true;
+                s_noise_capture_active = false;
+                s_noise_capture_count  = 0;
+                _save_noise_floor_to_nvs(bin_count, fft_size);
+            }
+        }
+
         /* Read latest config under spinlock (config can change mid-stream) */
         dsp_config_t cur_cfg;
         portENTER_CRITICAL(&s_cfg_mux);
         cur_cfg = s_cfg;
         portEXIT_CRITICAL(&s_cfg_mux);
+
+        /* Subtract noise floor before averaging.
+         *
+         * Must be done in linear POWER domain — not dB. Direct dB subtraction
+         * (-70) − (-70) = 0 dBFS (full scale), so a signal AT the noise floor
+         * mapped to the MAXIMUM bar height instead of the minimum. Converting
+         * to linear first gives: signal == noise → net = 0 → −120 dBFS floor. */
+        if (cur_cfg.noise_floor_enabled && s_noise_floor_valid) {
+            for (uint32_t k = 0; k < bin_count; k++) {
+                float sig_pwr = powf(10.0f, s_magnitude_db[k]    * 0.1f);
+                float nf_pwr  = powf(10.0f, s_noise_floor_db[k]  * 0.1f);
+                float net     = sig_pwr - nf_pwr;
+                s_magnitude_db[k] = (net > 0.0f) ? (10.0f * log10f(net)) : -120.0f;
+            }
+        }
+
+        /* Live ambient noise subtraction — applied AFTER static NF so the two
+         * can operate simultaneously without interfering with each other.
+         *
+         * Estimate uses an asymmetric EWA: converges down quickly when the
+         * current power is below the running estimate (quiet moments track the
+         * noise floor fast) and drifts upward very slowly (ALPHA_UP ≈ 0.003,
+         * ~5 s time constant), so loud transient signals don't inflate the
+         * baseline.  The estimate is maintained in linear power domain; only
+         * the final output is converted back to dBFS. */
+        if (s_ambient_active && s_ambient_power != NULL) {
+            /* Warm-start: initialise estimate to the current spectrum so the
+             * first subtraction frame does not produce artifacts. */
+            if (s_ambient_needs_init) {
+                for (uint32_t k = 0; k < bin_count; k++)
+                    s_ambient_power[k] = powf(10.0f, s_magnitude_db[k] * 0.1f);
+                s_ambient_needs_init = false;
+            }
+            float margin = s_ambient_margin;
+            for (uint32_t k = 0; k < bin_count; k++) {
+                float cur_pwr = powf(10.0f, s_magnitude_db[k] * 0.1f);
+                /* Asymmetric update */
+                float alpha = (cur_pwr < s_ambient_power[k]) ? AMBIENT_ALPHA_DOWN : AMBIENT_ALPHA_UP;
+                s_ambient_power[k] = (1.0f - alpha) * s_ambient_power[k] + alpha * cur_pwr;
+                /* Subtract estimate × margin */
+                float net = cur_pwr - s_ambient_power[k] * margin;
+                s_magnitude_db[k] = (net > 0.0f) ? (10.0f * log10f(net)) : -120.0f;
+            }
+        }
 
         /* Averaging */
         averaging_process(&s_avg, s_magnitude_db);
@@ -181,14 +305,18 @@ esp_err_t dsp_engine_init(const dsp_config_t *cfg)
     size_t   rb_size   = (size_t)RING_BUF_MULT * fft_size * sizeof(int16_t);
 
     /* Allocate PSRAM buffers */
-    s_window_coeffs = heap_caps_malloc(fft_size * sizeof(float), MALLOC_CAP_SPIRAM);
-    s_overlap_buf   = heap_caps_calloc(fft_size, sizeof(float),  MALLOC_CAP_SPIRAM);
-    s_windowed      = heap_caps_malloc(fft_size * sizeof(float), MALLOC_CAP_SPIRAM);
-    s_magnitude_db  = heap_caps_malloc(bin_count * sizeof(float), MALLOC_CAP_SPIRAM);
-    s_frequency_hz  = heap_caps_malloc(bin_count * sizeof(float), MALLOC_CAP_SPIRAM);
+    s_window_coeffs   = heap_caps_malloc(fft_size * sizeof(float), MALLOC_CAP_SPIRAM);
+    s_overlap_buf     = heap_caps_calloc(fft_size, sizeof(float),  MALLOC_CAP_SPIRAM);
+    s_windowed        = heap_caps_malloc(fft_size * sizeof(float), MALLOC_CAP_SPIRAM);
+    s_magnitude_db    = heap_caps_malloc(bin_count * sizeof(float), MALLOC_CAP_SPIRAM);
+    s_frequency_hz    = heap_caps_malloc(bin_count * sizeof(float), MALLOC_CAP_SPIRAM);
+    s_noise_floor_db  = heap_caps_calloc(bin_count, sizeof(float), MALLOC_CAP_SPIRAM);
+    s_noise_accum     = heap_caps_calloc(bin_count, sizeof(float), MALLOC_CAP_SPIRAM);
+    s_ambient_power   = heap_caps_calloc(bin_count, sizeof(float), MALLOC_CAP_SPIRAM);
 
     ESP_RETURN_ON_FALSE(s_window_coeffs && s_overlap_buf && s_windowed &&
-                        s_magnitude_db  && s_frequency_hz,
+                        s_magnitude_db  && s_frequency_hz &&
+                        s_noise_floor_db && s_noise_accum && s_ambient_power,
                         ESP_ERR_NO_MEM, TAG, "PSRAM allocation failed");
 
     /* Window coefficients */
@@ -204,6 +332,9 @@ esp_err_t dsp_engine_init(const dsp_config_t *cfg)
 
     /* FFT processor */
     ESP_RETURN_ON_ERROR(fft_processor_init(cfg->fft_size), TAG, "fft_processor_init failed");
+
+    /* Load noise floor from NVS if a valid baseline was previously captured */
+    _load_noise_floor_from_nvs(bin_count, fft_size);
 
     /* Ring buffer in PSRAM */
     s_ring_buf = xRingbufferCreateWithCaps(rb_size, RINGBUF_TYPE_BYTEBUF, MALLOC_CAP_SPIRAM);
@@ -273,13 +404,77 @@ void dsp_engine_deinit(void)
     fft_processor_deinit();
     averaging_deinit(&s_avg);
 
-    if (s_ring_buf)     { vRingbufferDelete(s_ring_buf); s_ring_buf = NULL; }
-    if (s_window_coeffs){ heap_caps_free(s_window_coeffs); s_window_coeffs = NULL; }
-    if (s_overlap_buf)  { heap_caps_free(s_overlap_buf);   s_overlap_buf = NULL; }
-    if (s_windowed)     { heap_caps_free(s_windowed);       s_windowed = NULL; }
-    if (s_magnitude_db) { heap_caps_free(s_magnitude_db);  s_magnitude_db = NULL; }
-    if (s_frequency_hz) { heap_caps_free(s_frequency_hz);  s_frequency_hz = NULL; }
+    if (s_ring_buf)       { vRingbufferDelete(s_ring_buf);       s_ring_buf = NULL; }
+    if (s_window_coeffs)  { heap_caps_free(s_window_coeffs);     s_window_coeffs = NULL; }
+    if (s_overlap_buf)    { heap_caps_free(s_overlap_buf);        s_overlap_buf = NULL; }
+    if (s_windowed)       { heap_caps_free(s_windowed);           s_windowed = NULL; }
+    if (s_magnitude_db)   { heap_caps_free(s_magnitude_db);       s_magnitude_db = NULL; }
+    if (s_frequency_hz)   { heap_caps_free(s_frequency_hz);       s_frequency_hz = NULL; }
+    if (s_noise_floor_db) { heap_caps_free(s_noise_floor_db);     s_noise_floor_db = NULL; }
+    if (s_noise_accum)    { heap_caps_free(s_noise_accum);         s_noise_accum = NULL; }
+    if (s_ambient_power)  { heap_caps_free(s_ambient_power);       s_ambient_power = NULL; }
+    s_noise_floor_valid    = false;
+    s_noise_capture_active = false;
+    s_ambient_active       = false;
 
     s_num_consumers = 0;
     ESP_LOGI(TAG, "deinitialized");
+}
+
+/* ── noise floor public API ───────────────────────────────────── */
+
+esp_err_t dsp_engine_start_noise_floor_capture(void)
+{
+    ESP_RETURN_ON_FALSE(s_running && s_noise_accum != NULL,
+                        ESP_ERR_INVALID_STATE, TAG, "not running");
+    uint32_t bin_count = (uint32_t)s_cfg.fft_size / 2;
+    memset(s_noise_accum, 0, bin_count * sizeof(float));
+    s_noise_capture_count  = 0;
+    s_noise_capture_active = true;
+    ESP_LOGI(TAG, "noise floor capture started (%u frames)", NOISE_CAPTURE_FRAMES);
+    return ESP_OK;
+}
+
+esp_err_t dsp_engine_clear_noise_floor(void)
+{
+    s_noise_capture_active = false;
+    s_noise_floor_valid    = false;
+    if (s_noise_floor_db)
+        memset(s_noise_floor_db, 0, ((uint32_t)s_cfg.fft_size / 2) * sizeof(float));
+
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_CAL, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, NVS_KEY_NF_DATA);
+        nvs_erase_key(h, NVS_KEY_NF_FFT_SIZE);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    ESP_LOGI(TAG, "noise floor cleared");
+    return ESP_OK;
+}
+
+bool dsp_engine_has_noise_floor(void)
+{
+    return s_noise_floor_valid;
+}
+
+/* ── live ambient noise subtraction — public API ─────────────── */
+
+void dsp_engine_set_ambient_noise(bool enabled)
+{
+    if (enabled && !s_ambient_active)
+        s_ambient_needs_init = true;  /* warm-start estimate on next DSP frame */
+    s_ambient_active = enabled;
+    ESP_LOGI(TAG, "ambient noise subtraction %s", enabled ? "ON" : "OFF");
+}
+
+bool dsp_engine_ambient_noise_active(void)
+{
+    return s_ambient_active;
+}
+
+void dsp_engine_set_ambient_margin(float margin)
+{
+    if (margin < 1.0f) margin = 1.0f;
+    s_ambient_margin = margin;
 }

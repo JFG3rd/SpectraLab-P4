@@ -19,6 +19,7 @@ idf_component_register(
         audio_source
         dsp_engine
         display_ui
+        settings_mgr
         nvs_flash
         esp_event
         esp_timer

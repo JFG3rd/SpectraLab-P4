@@ -14,6 +14,7 @@ esp_err_t audio_i2s_stop(void);
 uint32_t  audio_i2s_get_sample_rate(void);
 bool      audio_i2s_is_connected(void);
 void      audio_i2s_deinit(void);
+esp_err_t audio_i2s_set_mic_gain_db(int gain_db);
 
 esp_err_t audio_usb_init(const audio_source_config_t *cfg,
                           audio_data_cb_t cb, void *cb_ctx);
@@ -72,6 +73,13 @@ bool audio_source_is_connected(void)
     return (s_active_type == AUDIO_SOURCE_I2S)
            ? audio_i2s_is_connected()
            : audio_usb_is_connected();
+}
+
+esp_err_t audio_source_set_mic_gain_db(int gain_db)
+{
+    ESP_RETURN_ON_FALSE(s_initialized, ESP_ERR_INVALID_STATE, TAG, "not initialized");
+    if (s_active_type != AUDIO_SOURCE_I2S) return ESP_ERR_NOT_SUPPORTED;
+    return audio_i2s_set_mic_gain_db(gain_db);
 }
 
 void audio_source_deinit(void)

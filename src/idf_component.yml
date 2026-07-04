@@ -9,9 +9,12 @@
 ## interface). They are commented out here because they require companion
 ## firmware that must be provisioned separately; uncomment when ready.
 ##
-## Note: espressif/es8311 component is NOT used. ES8311 initialization is
-## performed via direct I2C register writes (legacy driver/i2c.h API) to
-## remain compatible with the BSP's legacy I2C initialization.
+## Note: espressif/es8311 IS used (audio_source component) for codec init.
+## It uses i2c_master_write_to_device/i2c_master_write_read_device from the
+## legacy driver/i2c.h API, so it's fully compatible with the BSP's legacy
+## I2C driver shared with the touch controller — no new i2c_master bus
+## needed. A prior hand-rolled register-write implementation mismapped
+## several ES8311 registers and left the ADC path effectively dead.
 ##
 dependencies:
   espressif/esp32_p4_function_ev_board:
@@ -37,3 +40,7 @@ dependencies:
   #   version: "^0"
   # espressif/esp_hosted:
   #   version: "^0"
+
+  ## Official ES8311 codec driver — see note above.
+  espressif/es8311:
+    version: "^1"
