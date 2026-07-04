@@ -37,6 +37,11 @@ void      display_ui_notify_color_scheme(color_scheme_t scheme);
  * Called from main.c (initial boot state) and screen_settings.c (toggle). */
 void      display_ui_set_ambient_status(bool active);
 
+/* Show/hide the "USB MIC" indicator and gray out the analog mic-gain
+ * dropdown. Called on audio-source hot-swap (wrap in display_ui_lock()
+ * when calling from outside the LVGL task). */
+void      display_ui_set_source_status(bool usb_active);
+
 /* Restore peak hold state at boot (called from main.c after display init). */
 void      display_ui_set_peak_hold(bool enabled);
 

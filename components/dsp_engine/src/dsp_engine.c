@@ -53,6 +53,7 @@ static uint8_t           s_num_consumers;
 
 static portMUX_TYPE s_cfg_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile uint32_t s_cfg_gen = 0;   /* bumped by set_config; task re-derives sizes */
+static volatile uint32_t s_sample_rate = CONFIG_DSP_ENGINE_DEFAULT_SAMPLE_RATE;  /* live source rate */
 
 /* ── noise floor calibration state ───────────────────────────── */
 static float    *s_noise_floor_db;      /* PSRAM [bin_count] — stored baseline */
@@ -173,6 +174,7 @@ static void dsp_task(void *arg)
     uint32_t fft_size  = 0;
     uint32_t bin_count = 0;
     uint32_t hop_size  = 0;
+    uint32_t rate      = 0;
     float    norm_factor = 1.0f;
 
     while (s_running) {
@@ -189,8 +191,11 @@ static void dsp_task(void *arg)
             if (!fft_size_valid(new_size))
                 new_size = fft_size_valid(fft_size) ? fft_size : 4096;
             bool size_changed = (new_size != fft_size);
+            uint32_t new_rate = s_sample_rate;
+            bool rate_changed = (new_rate != rate);
 
             fft_size    = new_size;
+            rate        = new_rate;
             bin_count   = fft_size / 2;
             hop_size    = hop_size_from_overlap(fft_size, cur_cfg.overlap_pct);
             norm_factor = 1.0f / ((float)fft_size *
@@ -203,14 +208,13 @@ static void dsp_task(void *arg)
             s_avg.mode  = cur_cfg.averaging;
             s_avg.alpha = cur_cfg.avg_alpha;
 
-            if (size_changed) {
-                build_frequency_table(s_frequency_hz, bin_count, fft_size,
-                                      CONFIG_DSP_ENGINE_DEFAULT_SAMPLE_RATE);
-                /* Baselines are per-FFT-size — stale data would be nonsense */
+            if (size_changed || rate_changed) {
+                build_frequency_table(s_frequency_hz, bin_count, fft_size, rate);
+                /* Baselines are per-FFT-size/rate — stale data is nonsense */
                 s_noise_floor_valid    = false;
                 s_noise_capture_active = false;
                 s_ambient_needs_init   = true;
-                ESP_LOGI(TAG, "FFT size changed to %lu", fft_size);
+                ESP_LOGI(TAG, "FFT %lu @ %lu Hz", fft_size, rate);
             }
         }
         /* Pull up to (hop_size - accum_pos) samples from ring buffer */
@@ -324,7 +328,7 @@ static void dsp_task(void *arg)
             .bin_count    = (uint16_t)bin_count,
             .spl_db       = overall_spl,
             .peak_db      = peak,
-            .sample_rate  = CONFIG_DSP_ENGINE_DEFAULT_SAMPLE_RATE,
+            .sample_rate  = rate,
             .timestamp_us = esp_timer_get_time(),
         };
 
@@ -432,6 +436,15 @@ esp_err_t dsp_engine_register_consumer(dsp_consumer_cb_t cb, void *ctx)
     s_consumers[s_num_consumers].ctx = ctx;
     s_num_consumers++;
     return ESP_OK;
+}
+
+void dsp_engine_set_sample_rate(uint32_t sample_rate_hz)
+{
+    if (sample_rate_hz < 8000 || sample_rate_hz > 96000) return;
+    s_sample_rate = sample_rate_hz;
+    portENTER_CRITICAL(&s_cfg_mux);
+    s_cfg_gen++;   /* task rebuilds the frequency table at the next frame */
+    portEXIT_CRITICAL(&s_cfg_mux);
 }
 
 esp_err_t dsp_engine_set_config(const dsp_config_t *cfg)

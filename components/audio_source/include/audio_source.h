@@ -38,6 +38,19 @@ void      audio_source_deinit(void);
  * I2S/ES8311 source only; returns ESP_ERR_NOT_SUPPORTED for USB mics. */
 esp_err_t audio_source_set_mic_gain_db(int gain_db);
 
+/* ── hot-swap (Phase 2) ────────────────────────────────────────────
+ * The I2S codec is the default source; when a UAC1 USB microphone is
+ * plugged in the driver switches to it automatically and falls back to
+ * I2S on unplug. The state callback fires on every switch (from a USB
+ * task context — keep it short, and take display_ui_lock() before any
+ * LVGL work). */
+typedef void (*audio_source_state_cb_t)(audio_source_type_t active,
+                                        uint32_t sample_rate, void *ctx);
+void audio_source_set_state_cb(audio_source_state_cb_t cb, void *ctx);
+
+/* Currently active source (changes at hot-swap). */
+audio_source_type_t audio_source_get_active(void);
+
 #ifdef __cplusplus
 }
 #endif

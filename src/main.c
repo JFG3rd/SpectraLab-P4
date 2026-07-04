@@ -15,6 +15,7 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_ota_ops.h"
 
 #include "audio_source.h"
 #include "dsp_engine.h"
@@ -43,6 +44,19 @@ static void audio_to_dsp(const int16_t *samples, size_t count, void *ctx)
          * under transient load and silently drops the chunk. */
         ESP_LOGW(TAG, "dsp_engine_push_samples: %s", esp_err_to_name(err));
     }
+}
+
+/* ── audio source hot-swap (USB mic plug/unplug) ─────────────── */
+
+static void on_audio_source_changed(audio_source_type_t active,
+                                    uint32_t sample_rate, void *ctx)
+{
+    (void)ctx;
+    if (sample_rate > 0) dsp_engine_set_sample_rate(sample_rate);
+    /* Called from the USB worker task — take the LVGL lock */
+    display_ui_lock();
+    display_ui_set_source_status(active == AUDIO_SOURCE_USB);
+    display_ui_unlock();
 }
 
 /* ── entry point ──────────────────────────────────────────────── */
@@ -102,12 +116,18 @@ void app_main(void)
         .bit_depth   = CONFIG_AUDIO_SOURCE_BIT_DEPTH,
         .channels    = 2,   /* stereo capture; reader extracts left (mic) channel */
     };
+    audio_source_set_state_cb(on_audio_source_changed, NULL);
     ESP_ERROR_CHECK(audio_source_init(&audio_cfg, audio_to_dsp, NULL));
     audio_source_set_mic_gain_db(loaded.mic_gain_db);
 
     /* 7. Start audio capture */
     ESP_LOGI(TAG, "Step 7: audio_source_start");
     ESP_ERROR_CHECK(audio_source_start());
+
+    /* Everything initialized and running — accept this firmware image.
+     * No-op until OTA rollback is enabled (Phase 2 M6), but establishes
+     * the "self-test passed" point in the boot sequence now. */
+    esp_ota_mark_app_valid_cancel_rollback();
 
     ESP_LOGI(TAG, "=== Spectrum Analyzer running ===");
     /* All work is done in FreeRTOS tasks.  app_main returns — the scheduler

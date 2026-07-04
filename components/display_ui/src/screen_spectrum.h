@@ -12,6 +12,7 @@ void      screen_spectrum_load(void);
 void      screen_spectrum_set_dsp_info(const dsp_config_t *cfg, int gain_db);
 void      screen_spectrum_set_color_scheme(color_scheme_t scheme);
 void      screen_spectrum_set_ambient_status(bool active);
+void      screen_spectrum_set_source_status(bool usb_active);
 void      screen_spectrum_set_db_range(int range_db);
 void      screen_spectrum_set_mode(int mode);            /* display_mode_t */
 int       screen_spectrum_get_mode(void);

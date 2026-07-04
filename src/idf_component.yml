@@ -44,3 +44,8 @@ dependencies:
   ## Official ES8311 codec driver — see note above.
   espressif/es8311:
     version: "^1"
+
+  ## USB Audio Class 1.0 host driver — UAC1 measurement microphones
+  ## (miniDSP UMIK-1 and generic UAC1 mics), Phase 2 M1.
+  espressif/usb_host_uac:
+    version: "^1"

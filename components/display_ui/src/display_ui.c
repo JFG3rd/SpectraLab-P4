@@ -19,6 +19,7 @@
 #include "display_init.h"
 #include "screen_spectrum.h"
 #include "screen_settings.h"
+#include "screen_splash.h"
 
 static const char *TAG = "display_ui";
 
@@ -98,6 +99,13 @@ void display_ui_set_ambient_status(bool active)
 {
     s_last_ambient = active;
     screen_spectrum_set_ambient_status(active);
+}
+
+/* Audio source hot-swap indicator + analog gain lockout. */
+void display_ui_set_source_status(bool usb_active)
+{
+    screen_spectrum_set_source_status(usb_active);
+    screen_settings_set_usb_active(usb_active);
 }
 
 /* Restore peak hold visual state at boot. */
@@ -233,7 +241,7 @@ esp_err_t display_ui_init(void)
     ESP_RETURN_ON_ERROR(screen_settings_create(on_settings_changed, NULL,
                                                on_mic_gain_changed, NULL),
                         TAG, "settings screen create failed");
-    screen_spectrum_load();
+    screen_splash_show();   /* fades into the spectrum screen after ~2.5 s */
     screen_spectrum_set_dsp_info(&s_last_dsp_cfg, s_last_gain_db);
 
     /* 33 ms timer → ~30 fps UI updates */

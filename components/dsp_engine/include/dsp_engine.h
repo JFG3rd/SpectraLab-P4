@@ -69,6 +69,10 @@ esp_err_t dsp_engine_register_consumer(dsp_consumer_cb_t cb, void *ctx);
 esp_err_t dsp_engine_set_config(const dsp_config_t *cfg);
 void      dsp_engine_deinit(void);
 
+/* Update the live source sample rate (hot-swap between I2S and USB mics).
+ * The frequency table is rebuilt at the next frame boundary. */
+void      dsp_engine_set_sample_rate(uint32_t sample_rate_hz);
+
 /* Noise floor calibration — async capture of ~64 frames in quiet conditions.
  * Subtracts the captured baseline per-bin when noise_floor_enabled is true. */
 esp_err_t dsp_engine_start_noise_floor_capture(void);

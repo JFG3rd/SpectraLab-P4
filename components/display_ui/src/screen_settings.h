@@ -26,3 +26,6 @@ void      screen_settings_set_status(const char *msg);
 
 /* Sync the brightness slider widget to a value set elsewhere (boot restore). */
 void      screen_settings_sync_brightness(int percent);
+
+/* Gray out the mic-gain dropdown while a USB mic is the active source. */
+void      screen_settings_set_usb_active(bool usb_active);

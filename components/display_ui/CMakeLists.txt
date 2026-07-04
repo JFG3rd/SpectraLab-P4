@@ -5,6 +5,7 @@ idf_component_register(
         "src/screen_spectrum.c"
         "src/screen_settings.c"
         "src/screen_file_dialog.c"
+        "src/screen_splash.c"
     INCLUDE_DIRS
         "include"
     PRIV_INCLUDE_DIRS

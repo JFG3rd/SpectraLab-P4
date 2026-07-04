@@ -152,6 +152,7 @@ static lv_obj_t *s_lbl_spl;
 static lv_obj_t *s_lbl_peak;
 static lv_obj_t *s_lbl_dsp_info;
 static lv_obj_t *s_lbl_ambient_status;
+static lv_obj_t *s_lbl_source_status;   /* "USB MIC" when the UAC1 mic is live */
 static lv_obj_t *s_btn_pk_lbl;         /* peak hold toggle button label */
 static lv_obj_t *s_btn_mx_lbl;         /* max hold toggle button label */
 static lv_obj_t *s_btn_rst;            /* reset max hold button */
@@ -925,6 +926,14 @@ esp_err_t screen_spectrum_create(void)
     lv_obj_set_style_text_font(s_lbl_ambient_status, &lv_font_montserrat_12, 0);
     lv_obj_align(s_lbl_ambient_status, LV_ALIGN_BOTTOM_RIGHT, -200, -2);
 
+    /* Active-source indicator — appears left of the ambient label when a
+     * USB microphone takes over from the onboard I2S codec */
+    s_lbl_source_status = lv_label_create(status);
+    lv_label_set_text(s_lbl_source_status, "");
+    lv_obj_set_style_text_color(s_lbl_source_status, lv_color_hex(0xFFAA00), 0);
+    lv_obj_set_style_text_font(s_lbl_source_status, &lv_font_montserrat_12, 0);
+    lv_obj_align(s_lbl_source_status, LV_ALIGN_BOTTOM_RIGHT, -340, -2);
+
     /* ── spectrum area (custom draw) ── */
     s_spectrum_obj = lv_obj_create(s_screen);
     lv_obj_set_size(s_spectrum_obj, SCREEN_W, SPECTRUM_H);
@@ -1191,6 +1200,13 @@ void screen_spectrum_set_dsp_info(const dsp_config_t *cfg, int gain_db)
     char buf[80];
     snprintf(buf, sizeof(buf), "%s | %.0ffps", s_dsp_info_base, s_fps_display);
     lv_label_set_text(s_lbl_dsp_info, buf);
+}
+
+void screen_spectrum_set_source_status(bool usb_active)
+{
+    if (s_lbl_source_status == NULL) return;
+    lv_label_set_text(s_lbl_source_status,
+                      usb_active ? "\xE2\x97\x89 USB MIC" : "");
 }
 
 void screen_spectrum_set_ambient_status(bool active)

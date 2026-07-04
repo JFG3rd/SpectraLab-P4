@@ -16,6 +16,6 @@ idf_component_register(
         esp32_p4_function_ev_board
     PRIV_REQUIRES
         es8311
-    # usb host added here when Phase 2 UAC1 driver is implemented:
-    # PRIV_REQUIRES usb
+        usb
+        usb_host_uac
 )

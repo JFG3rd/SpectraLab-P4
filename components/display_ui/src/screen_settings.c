@@ -579,6 +579,15 @@ void screen_settings_set_status(const char *msg)
     if (s_lbl_sd_status && msg) lv_label_set_text(s_lbl_sd_status, msg);
 }
 
+/* Mic gain drives the ES8311 PGA — meaningless while a USB mic is the
+ * active source, so gray the dropdown out. */
+void screen_settings_set_usb_active(bool usb_active)
+{
+    if (!s_dd_gain) return;
+    if (usb_active) lv_obj_add_state(s_dd_gain, LV_STATE_DISABLED);
+    else            lv_obj_remove_state(s_dd_gain, LV_STATE_DISABLED);
+}
+
 void screen_settings_sync_brightness(int percent)
 {
     if (!s_slider_brightness) return;
