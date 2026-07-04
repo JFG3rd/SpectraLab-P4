@@ -115,10 +115,17 @@ static bool  s_peak_hold_enabled = false;
 static float s_max_hold_db[NUM_BARS];
 static bool  s_max_hold_enabled = false;
 
-/* ── persistence mode history ─────────────────────────────────── */
-#define PERSIST_FRAMES 5
+/* ── persistence mode history ─────────────────────────────────────
+ * Ghost frames are captured every PERSIST_INTERVAL draw frames, not
+ * every frame: 5 ghosts × 6 frames ≈ 1.3 s of history at ~23 fps.
+ * (Capturing consecutive frames made the mode look identical to Bars —
+ * the spectrum barely moves within 200 ms, so every ghost hid behind
+ * the live bar.) */
+#define PERSIST_FRAMES   5
+#define PERSIST_INTERVAL 6
 static float   s_persist_db[PERSIST_FRAMES][NUM_BARS];
 static int     s_persist_head = 0;
+static int     s_persist_tick = 0;
 static bool    s_persist_valid = false;
 
 /* ── waterfall (spectrogram) ──────────────────────────────────── */
@@ -439,10 +446,14 @@ static void draw_mode_persist(lv_layer_t *layer, const lv_area_t *oa,
     float levels[NUM_BARS];
     compute_bands(levels, NUM_BARS);
 
-    /* push current frame into the ring */
-    memcpy(s_persist_db[s_persist_head], levels, sizeof(levels));
-    s_persist_head = (s_persist_head + 1) % PERSIST_FRAMES;
-    if (s_persist_head == 0) s_persist_valid = true;
+    /* capture a ghost every PERSIST_INTERVAL frames so the trail spans
+     * ~1.3 s instead of a blink */
+    if (++s_persist_tick >= PERSIST_INTERVAL) {
+        s_persist_tick = 0;
+        memcpy(s_persist_db[s_persist_head], levels, sizeof(levels));
+        s_persist_head = (s_persist_head + 1) % PERSIST_FRAMES;
+        if (s_persist_head == 0) s_persist_valid = true;
+    }
 
     lv_draw_rect_dsc_t rdsc;
     lv_draw_rect_dsc_init(&rdsc);
@@ -1092,6 +1103,7 @@ void screen_spectrum_set_mode(int mode)
         s_max_hold_db[i]    = DB_MIN;
     }
     s_persist_head  = 0;
+    s_persist_tick  = 0;
     s_persist_valid = false;
 
     if (!s_screen) return;   /* called before create() — mode applies later */
