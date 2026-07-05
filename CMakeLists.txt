@@ -5,5 +5,8 @@ cmake_minimum_required(VERSION 3.16.0)
 # project root, so no extra configuration is needed for PlatformIO builds.
 list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_SOURCE_DIR}/components")
 
+# Explicit firmware release version used by esp_app_get_description()->version.
+set(PROJECT_VER "1.0.0")
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(ESP32-P4-Function-EV-Board-Spectrum-Analyzer)
