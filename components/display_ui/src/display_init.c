@@ -122,8 +122,13 @@ esp_err_t display_hw_init(lv_display_t **disp_out)
     ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(panel), TAG, "panel reset failed");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_init(panel),  TAG, "panel init failed");
 
-    /* Step 6: LVGL port task */
+    /* Step 6: LVGL port task.
+     * The default 6144-byte stack overflows on UI actions that do SD I/O
+     * inline (preset load: FATFS+LFN read, cJSON parse, widget sync, DSP
+     * reconfig, then multiple save passes each with cJSON print + FATFS
+     * write + NVS commit). 16 KB gives comfortable headroom. */
     lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    lvgl_cfg.task_stack = 16384;
     ESP_RETURN_ON_ERROR(lvgl_port_init(&lvgl_cfg), TAG, "lvgl_port_init failed");
 
     /* Step 7: Register display (avoid_tearing=false; its callback is not IRAM_ATTR) */

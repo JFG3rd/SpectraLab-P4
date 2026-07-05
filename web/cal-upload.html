@@ -30,9 +30,14 @@
                 return;
             }
             setStatus("Uploading " + f.name + "...");
-            fetch("/uploadCal?name=" + encodeURIComponent(f.name), {
+            // Filename travels in a header: esp_http_server's default URI
+            // matcher 404s any request with a query string.
+            fetch("/uploadCal", {
                 method: "POST",
-                headers: { "Content-Type": "application/octet-stream" },
+                headers: {
+                    "Content-Type": "application/octet-stream",
+                    "X-Filename": encodeURIComponent(f.name)
+                },
                 body: f
             }).then(async r => {
                 const text = await r.text();

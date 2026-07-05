@@ -10,8 +10,11 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_vfs_fat.h"
+#include "driver/sdmmc_host.h"
+#include "sdmmc_cmd.h"
+#include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "cJSON.h"
-#include "bsp/esp32_p4_function_ev_board.h"
+#include "bsp/esp32_p4_function_ev_board.h"   /* BSP_SD_* pin defines */
 
 #include "settings_mgr.h"
 
@@ -28,18 +31,79 @@ static const char *TAG = "settings_mgr";
 #define SETTINGS_VERSION 1
 
 static bool s_sd_mounted = false;
+static sdmmc_card_t        *s_card;
+static sd_pwr_ctrl_handle_t s_sd_pwr;
 
-/* ── SD mount ──────────────────────────────────────────────────── */
+/* ── SD mount ──────────────────────────────────────────────────────
+ * NOT via bsp_sdcard_mount(): the BSP uses SDMMC_HOST_DEFAULT(), i.e.
+ * SLOT 1 — but on this board slot 1 is the SDIO link to the on-board
+ * ESP32-C6 (esp-hosted WiFi). When WiFi came up it re-initialized
+ * slot 1 and every SD operation afterwards silently failed. The
+ * microSD slot is wired to the P4's slot-0 IOMUX pins (GPIO 39-44),
+ * so mount it explicitly on SDMMC_HOST_SLOT_0. */
+
+static esp_err_t sd_mount(void)
+{
+    const esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+#ifdef CONFIG_BSP_SD_FORMAT_ON_MOUNT_FAIL
+        .format_if_mount_failed = true,
+#else
+        .format_if_mount_failed = false,
+#endif
+        .max_files            = 5,
+        .allocation_unit_size = 64 * 1024,
+    };
+
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.slot         = SDMMC_HOST_SLOT_0;
+    host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
+
+    if (s_sd_pwr == NULL) {
+        /* SD VDD comes from the on-chip LDO channel 4 (same as BSP) */
+        sd_pwr_ctrl_ldo_config_t ldo_config = { .ldo_chan_id = 4 };
+        ESP_RETURN_ON_ERROR(sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &s_sd_pwr),
+                            TAG, "SD LDO power ctrl failed");
+    }
+    host.pwr_ctrl_handle = s_sd_pwr;
+
+    const sdmmc_slot_config_t slot_config = {
+        .clk   = BSP_SD_CLK,
+        .cmd   = BSP_SD_CMD,
+        .d0    = BSP_SD_D0,
+        .d1    = BSP_SD_D1,
+        .d2    = BSP_SD_D2,
+        .d3    = BSP_SD_D3,
+        .d4    = GPIO_NUM_NC,
+        .d5    = GPIO_NUM_NC,
+        .d6    = GPIO_NUM_NC,
+        .d7    = GPIO_NUM_NC,
+        .cd    = SDMMC_SLOT_NO_CD,
+        .wp    = SDMMC_SLOT_NO_WP,
+        .width = 4,
+        .flags = 0,
+    };
+
+    return esp_vfs_fat_sdmmc_mount(BSP_SD_MOUNT_POINT, &host, &slot_config,
+                                   &mount_config, &s_card);
+}
+
+static void sd_unmount(void)
+{
+    if (s_card) {
+        esp_vfs_fat_sdcard_unmount(BSP_SD_MOUNT_POINT, s_card);
+        s_card = NULL;
+    }
+}
 
 esp_err_t settings_mgr_init(void)
 {
-    esp_err_t err = bsp_sdcard_mount();
+    esp_err_t err = sd_mount();
     if (err == ESP_OK) {
         s_sd_mounted = true;
         /* Ensure the app directories exist */
         mkdir(SD_DIR, 0777);
         mkdir(SETTINGS_CAL_DIR, 0777);
-        ESP_LOGI(TAG, "SD card mounted at /sdcard");
+        ESP_LOGI(TAG, "SD card mounted at /sdcard (SDMMC slot 0)");
     } else {
         s_sd_mounted = false;
         ESP_LOGI(TAG, "SD card not found (%s); will use NVS fallback",
@@ -53,7 +117,7 @@ bool settings_mgr_sd_available(void) { return s_sd_mounted; }
 void settings_mgr_deinit(void)
 {
     if (s_sd_mounted) {
-        bsp_sdcard_unmount();
+        sd_unmount();
         s_sd_mounted = false;
     }
 }
@@ -575,10 +639,10 @@ esp_err_t settings_mgr_load_noise_floor_bin(float *out,
 esp_err_t settings_mgr_retry_sd(void)
 {
     if (s_sd_mounted) {
-        bsp_sdcard_unmount();
+        sd_unmount();
         s_sd_mounted = false;
     }
-    esp_err_t err = bsp_sdcard_mount();
+    esp_err_t err = sd_mount();
     if (err == ESP_OK) {
         s_sd_mounted = true;
         mkdir(SD_DIR, 0777);
@@ -596,7 +660,7 @@ esp_err_t settings_mgr_format_sd(void)
         ESP_LOGW(TAG, "format_sd: no card mounted");
         return ESP_ERR_INVALID_STATE;
     }
-    esp_err_t err = esp_vfs_fat_sdcard_format(BSP_SD_MOUNT_POINT, bsp_sdcard);
+    esp_err_t err = esp_vfs_fat_sdcard_format(BSP_SD_MOUNT_POINT, s_card);
     if (err == ESP_OK) {
         mkdir(SD_DIR, 0777);
         ESP_LOGI(TAG, "SD card formatted successfully");

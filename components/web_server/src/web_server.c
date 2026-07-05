@@ -153,11 +153,14 @@ static esp_err_t upload_cal_post(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    /* filename from ?name= */
-    char query[96] = "", name[64] = "";
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
-        httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing ?name=");
+    /* Filename from the X-Filename header (URL-encoded by the page).
+     * NOT a query string: httpd's default URI matcher compares the full
+     * request target, so "/uploadCal?name=x" would 404 against the
+     * registered "/uploadCal". */
+    char name[64] = "";
+    if (httpd_req_get_hdr_value_str(req, "X-Filename", name, sizeof(name)) != ESP_OK ||
+        name[0] == '\0') {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing X-Filename header");
         return ESP_FAIL;
     }
     url_decode(name);
@@ -250,9 +253,10 @@ esp_err_t web_server_start(void)
     if (s_server) return ESP_OK;
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_open_sockets = 4;
-    cfg.stack_size       = 6144;
-    cfg.lru_purge_enable = true;
+    cfg.max_open_sockets  = 4;
+    cfg.max_uri_handlers  = 16;   /* default 8 silently drops routes past #8 */
+    cfg.stack_size        = 6144;
+    cfg.lru_purge_enable  = true;
 
     ESP_RETURN_ON_ERROR(httpd_start(&s_server, &cfg), TAG, "httpd_start failed");
 
