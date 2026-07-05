@@ -23,6 +23,8 @@ static settings_changed_cb_t s_changed_cb  = NULL;
 static void                 *s_changed_ctx = NULL;
 static mic_gain_changed_cb_t s_gain_cb     = NULL;
 static void                 *s_gain_ctx    = NULL;
+static usb_policy_changed_cb_t s_usb_cb    = NULL;
+static void                   *s_usb_ctx   = NULL;
 
 static dsp_config_t s_cur_cfg;
 static int           s_cur_gain_db = 6;
@@ -34,6 +36,7 @@ static const char *peak_decay_opts  = "Very Slow\nSlow\nMedium\nFast\nVery Fast"
 static const char *db_range_opts    = "120 dB\n100 dB\n80 dB\n60 dB";
 /* order must match display_mode_t in settings_mgr.h */
 static const char *disp_mode_opts   = "Bars\nLine\n1/3 Octave\nPersistence\nWaterfall\nScope\nVU Meter\nMirror";
+static const char *usb_mono_opts    = "Average L+R\nLeft only\nRight only";
 static const char *amb_strength_opts = "Gentle\nMedium\nStrong";
 static const char *fft_size_opts  = "512\n1024\n2048\n4096\n8192\n16384";
 static const char *window_opts    = "Rectangular\nHann\nHamming\nBlackman\nBlackman-Harris\nFlat Top\nKaiser";
@@ -47,6 +50,7 @@ static lv_obj_t *s_dd_peak_decay;
 static lv_obj_t *s_dd_db_range;
 static lv_obj_t *s_dd_disp_mode;
 static lv_obj_t *s_dd_amb_strength;
+static lv_obj_t *s_dd_usb_policy;
 static lv_obj_t *s_dd_cal_enable;
 static lv_obj_t *s_lbl_cal_status;
 static lv_obj_t *s_lbl_wifi_status;
@@ -239,6 +243,10 @@ static void apply_settings(void)
 
     if (s_gain_cb) s_gain_cb(s_cur_gain_db, s_gain_ctx);
     ESP_LOGI(TAG, "settings: mic_gain=%d dB", s_cur_gain_db);
+
+    if (s_usb_cb) {
+        s_usb_cb((audio_usb_stereo_policy_t)lv_dropdown_get_selected(s_dd_usb_policy), s_usb_ctx);
+    }
 
     /* Apply colour scheme via display_ui (also auto-saves everything) */
     color_scheme_t scheme = (color_scheme_t)lv_dropdown_get_selected(s_dd_color_scheme);
@@ -436,12 +444,15 @@ static void make_group_header(lv_obj_t *parent, const char *txt, int32_t x, int3
 }
 
 esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
-                                  mic_gain_changed_cb_t gain_cb, void *gain_ctx)
+                                  mic_gain_changed_cb_t gain_cb, void *gain_ctx,
+                                  usb_policy_changed_cb_t usb_cb, void *usb_ctx)
 {
     s_changed_cb  = cb;
     s_changed_ctx = ctx;
     s_gain_cb     = gain_cb;
     s_gain_ctx    = gain_ctx;
+    s_usb_cb      = usb_cb;
+    s_usb_ctx     = usb_ctx;
     s_cur_cfg     = dsp_config_default;
 
     s_screen = lv_obj_create(NULL);
@@ -517,19 +528,20 @@ esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
     s_dd_db_range     = make_labeled_dropdown_r(s_screen, "Display Range:", db_range_opts,     154);
     s_dd_bar_decay    = make_labeled_dropdown_r(s_screen, "Bar Decay:",     bar_decay_opts,    199);
     s_dd_peak_decay   = make_labeled_dropdown_r(s_screen, "PK Decay:",      peak_decay_opts,   244);
+    s_dd_usb_policy   = make_labeled_dropdown_r(s_screen, "USB Mono:",      usb_mono_opts,     289);
 
     /* Screen brightness — live slider, persisted on release */
     lv_obj_t *br_lbl = lv_label_create(s_screen);
     lv_label_set_text(br_lbl, "Brightness:");
     lv_obj_set_style_text_color(br_lbl, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(br_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_set_pos(br_lbl, 540, 289);
+    lv_obj_set_pos(br_lbl, 540, 334);
 
     s_slider_brightness = lv_slider_create(s_screen);
     lv_slider_set_range(s_slider_brightness, 10, 100);
     lv_slider_set_value(s_slider_brightness, 100, LV_ANIM_OFF);
     lv_obj_set_size(s_slider_brightness, 160, 12);
-    lv_obj_set_pos(s_slider_brightness, 700, 293);
+    lv_obj_set_pos(s_slider_brightness, 700, 338);
     lv_obj_add_event_cb(s_slider_brightness, brightness_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(s_slider_brightness, brightness_slider_cb, LV_EVENT_RELEASED, NULL);
 
@@ -537,7 +549,7 @@ esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
     lv_label_set_text(s_lbl_brightness_val, "100%");
     lv_obj_set_style_text_color(s_lbl_brightness_val, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(s_lbl_brightness_val, &lv_font_montserrat_14, 0);
-    lv_obj_set_pos(s_lbl_brightness_val, 875, 289);
+    lv_obj_set_pos(s_lbl_brightness_val, 875, 334);
 
     /* Set initial selection to match default config */
     lv_dropdown_set_selected(s_dd_color_scheme, COLOR_SCHEME_DARK);
@@ -545,6 +557,7 @@ esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
     lv_dropdown_set_selected(s_dd_peak_decay,   2);  /* Medium = 0.25 dB/frame */
     lv_dropdown_set_selected(s_dd_db_range,     0);  /* 120 dB (full range) */
     lv_dropdown_set_selected(s_dd_disp_mode,    DISPLAY_MODE_BARS);
+    lv_dropdown_set_selected(s_dd_usb_policy,   SETTINGS_USB_STEREO_POLICY_SUM);
     lv_dropdown_set_selected(s_dd_amb_strength, 1);  /* Medium = 1.5x */
     lv_dropdown_set_selected(s_dd_fft,          fft_size_to_index((uint32_t)s_cur_cfg.fft_size));
     lv_dropdown_set_selected(s_dd_window,       (uint16_t)s_cur_cfg.window);
@@ -554,53 +567,53 @@ esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
     lv_dropdown_set_selected(s_dd_nf_enable,    s_cur_cfg.noise_floor_enabled ? 1 : 0);
 
     /* Presets / SD card — status + Save / Load / Retry / Format */
-    make_group_header(s_screen, "PRESETS / SD CARD", 540, 340);
+    make_group_header(s_screen, "PRESETS / SD CARD", 540, 385);
     s_lbl_sd_status = lv_label_create(s_screen);
     lv_label_set_text(s_lbl_sd_status,
                       settings_mgr_sd_available() ? "SD: Ready" : "SD: Not found (NVS backup)");
     lv_obj_set_style_text_color(s_lbl_sd_status, lv_color_hex(0x88AACC), 0);
     lv_obj_set_style_text_font(s_lbl_sd_status, &lv_font_montserrat_12, 0);
-    lv_obj_set_pos(s_lbl_sd_status, 540, 366);
+    lv_obj_set_pos(s_lbl_sd_status, 540, 411);
 
-#define MAKE_SD_BTN(label_str, cb, x_pos, w_px) do { \
+#define MAKE_SD_BTN(label_str, cb, x_pos, y_pos, w_px) do { \
     lv_obj_t *_b = lv_button_create(s_screen);        \
     lv_obj_set_size(_b, w_px, 28);                    \
-    lv_obj_set_pos(_b, x_pos, 390);                   \
+    lv_obj_set_pos(_b, x_pos, y_pos);                 \
     lv_obj_add_event_cb(_b, cb, LV_EVENT_CLICKED, NULL); \
     lv_obj_t *_l = lv_label_create(_b);               \
     lv_label_set_text(_l, label_str);                  \
     lv_obj_center(_l);                                 \
 } while(0)
 
-    MAKE_SD_BTN("Save",   sd_save_btn_cb,  540,  95);
-    MAKE_SD_BTN("Load",   sd_load_btn_cb,  637,  95);
-    MAKE_SD_BTN("Retry",  sd_retry_btn_cb, 734,  80);
-    MAKE_SD_BTN("Format", sd_format_btn_cb,816,  80);
+    MAKE_SD_BTN("Save",   sd_save_btn_cb,  540, 435, 95);
+    MAKE_SD_BTN("Load",   sd_load_btn_cb,  637, 435, 95);
+    MAKE_SD_BTN("Retry",  sd_retry_btn_cb, 734, 435, 80);
+    MAKE_SD_BTN("Format", sd_format_btn_cb,816, 435, 80);
 
 #undef MAKE_SD_BTN
 
     /* Mic calibration — file from /sdcard/spectrum/cal, applied per-bin */
-    make_group_header(s_screen, "MIC CALIBRATION", 540, 430);
-    s_dd_cal_enable = make_labeled_dropdown_r(s_screen, "Mic Cal:", "Off\nOn", 456);
+    make_group_header(s_screen, "MIC CALIBRATION", 540, 475);
+    s_dd_cal_enable = make_labeled_dropdown_r(s_screen, "Mic Cal:", "Off\nOn", 501);
 
     s_lbl_cal_status = lv_label_create(s_screen);
     lv_label_set_text(s_lbl_cal_status, "No calibration loaded");
     lv_obj_set_style_text_color(s_lbl_cal_status, lv_color_hex(0x88AACC), 0);
     lv_obj_set_style_text_font(s_lbl_cal_status, &lv_font_montserrat_12, 0);
-    lv_obj_set_pos(s_lbl_cal_status, 540, 500);
+    lv_obj_set_pos(s_lbl_cal_status, 540, 545);
 
-#define MAKE_CAL_BTN(label_str, cb, x_pos, w_px) do { \
+#define MAKE_CAL_BTN(label_str, cb, x_pos, y_pos, w_px) do { \
     lv_obj_t *_b = lv_button_create(s_screen);        \
     lv_obj_set_size(_b, w_px, 28);                    \
-    lv_obj_set_pos(_b, x_pos, 522);                   \
+    lv_obj_set_pos(_b, x_pos, y_pos);                 \
     lv_obj_add_event_cb(_b, cb, LV_EVENT_CLICKED, NULL); \
     lv_obj_t *_l = lv_label_create(_b);               \
     lv_label_set_text(_l, label_str);                  \
     lv_obj_center(_l);                                 \
 } while(0)
 
-    MAKE_CAL_BTN("Load File", cal_load_btn_cb, 540, 110);
-    MAKE_CAL_BTN("Clear",     cal_clear_btn_cb, 658, 80);
+    MAKE_CAL_BTN("Load File", cal_load_btn_cb, 540, 567, 110);
+    MAKE_CAL_BTN("Clear",     cal_clear_btn_cb, 658, 567, 80);
 
 #undef MAKE_CAL_BTN
 
@@ -632,6 +645,7 @@ void screen_settings_collect(settings_t *out)
      * are captured too). */
     out->dsp = s_cur_cfg;
     read_dsp_widgets(&out->dsp, &out->mic_gain_db);
+    out->usb_stereo_policy       = (int)lv_dropdown_get_selected(s_dd_usb_policy);
     out->color_scheme            = (color_scheme_t)lv_dropdown_get_selected(s_dd_color_scheme);
     out->ambient_noise_enabled   = lv_obj_has_state(s_sw_ambient, LV_STATE_CHECKED);
     out->peak_hold_enabled       = screen_spectrum_get_peak_hold();
@@ -665,6 +679,10 @@ void screen_settings_sync_from(const settings_t *cfg)
     lv_dropdown_set_selected(s_dd_bar_decay,    bar_decay_rate_to_index(cfg->bar_decay_db_per_frame));
     lv_dropdown_set_selected(s_dd_peak_decay,   peak_decay_rate_to_index(cfg->peak_decay_db_per_frame));
     lv_dropdown_set_selected(s_dd_db_range,     db_range_db_to_index(cfg->db_range));
+    lv_dropdown_set_selected(s_dd_usb_policy,
+          (cfg->usb_stereo_policy >= SETTINGS_USB_STEREO_POLICY_SUM &&
+            cfg->usb_stereo_policy <= SETTINGS_USB_STEREO_POLICY_RIGHT)
+                ? (uint16_t)cfg->usb_stereo_policy : SETTINGS_USB_STEREO_POLICY_SUM);
     lv_dropdown_set_selected(s_dd_disp_mode,
         (cfg->display_mode >= 0 && cfg->display_mode < DISPLAY_MODE_COUNT)
             ? (uint16_t)cfg->display_mode : DISPLAY_MODE_BARS);
@@ -683,6 +701,28 @@ void screen_settings_apply_loaded(const settings_t *cfg)
 {
     if (!cfg) return;
     screen_settings_sync_from(cfg);
+
+    /* Preset load must also restore mic calibration runtime state, not just
+     * the filename/toggle fields. */
+    if (cfg->cal_file[0] != '\0') {
+        char cal_path[sizeof(SETTINGS_CAL_DIR) + sizeof(cfg->cal_file) + 2];
+        snprintf(cal_path, sizeof(cal_path), SETTINGS_CAL_DIR "/%s", cfg->cal_file);
+        if (dsp_engine_load_calibration(cal_path) != ESP_OK) {
+            dsp_engine_clear_calibration();
+            s_cal_file_name[0] = '\0';
+            lv_dropdown_set_selected(s_dd_cal_enable, 0);
+            display_ui_set_cal_file("");
+            display_ui_set_cal_enabled(false);
+            update_cal_status_label();
+        }
+    } else {
+        dsp_engine_clear_calibration();
+        s_cal_file_name[0] = '\0';
+        lv_dropdown_set_selected(s_dd_cal_enable, 0);
+        display_ui_set_cal_file("");
+        display_ui_set_cal_enabled(false);
+        update_cal_status_label();
+    }
 
     /* Engine/display side-effects not covered by apply_settings() */
     dsp_engine_set_ambient_noise(cfg->ambient_noise_enabled);

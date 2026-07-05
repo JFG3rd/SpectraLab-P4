@@ -98,6 +98,15 @@ esp_err_t dsp_engine_clear_noise_floor(void);
 bool      dsp_engine_has_noise_floor(void);
 bool      dsp_engine_noise_capture_active(void);   /* true while capturing */
 
+/* Export/import the captured noise-floor baseline for preset persistence.
+ * Import writes to NVS so the loaded baseline survives restart. */
+esp_err_t dsp_engine_noise_floor_export(float *out_db, uint32_t bin_capacity,
+                                        uint32_t *out_bin_count,
+                                        uint32_t *out_fft_size,
+                                        int *out_source_id);
+esp_err_t dsp_engine_noise_floor_import(const float *in_db, uint32_t bin_count,
+                                        uint32_t fft_size, int source_id);
+
 /* Live ambient noise subtraction — continuously tracks a rolling per-bin
  * noise estimate in linear power domain and subtracts it each frame.
  * Operates independently of and after the static noise floor feature. */

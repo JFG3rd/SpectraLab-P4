@@ -111,4 +111,28 @@ menu "Audio Source"
             Total DMA buffers allocated by the I2S driver.  The I2S peripheral
             ping-pongs between these.  4 buffers provide 21 ms of headroom.
 
+    choice AUDIO_SOURCE_USB_STEREO_POLICY
+        prompt "USB stereo to mono policy"
+        default AUDIO_SOURCE_USB_STEREO_POLICY_SUM
+        help
+            Policy used when a USB UAC1 interface provides 2-channel audio
+            and the analyzer needs mono samples.
+
+        config AUDIO_SOURCE_USB_STEREO_POLICY_SUM
+            bool "Average Left+Right"
+            help
+                Average both channels. Recommended for line-level stereo
+                sources so right-only content is not lost.
+
+        config AUDIO_SOURCE_USB_STEREO_POLICY_LEFT
+            bool "Left only"
+            help
+                Use only channel 0 from incoming stereo frames.
+
+        config AUDIO_SOURCE_USB_STEREO_POLICY_RIGHT
+            bool "Right only"
+            help
+                Use only channel 1 from incoming stereo frames.
+    endchoice
+
 endmenu

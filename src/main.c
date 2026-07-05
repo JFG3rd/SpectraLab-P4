@@ -99,7 +99,6 @@ void app_main(void)
     /* Restore persisted UI state. These touch LVGL objects while the LVGL
      * task is already running, so hold the rendering lock for the block. */
     display_ui_lock();
-    display_ui_notify_color_scheme(loaded.color_scheme);            /* apply persisted palette */
     display_ui_set_ambient_status(loaded.ambient_noise_enabled);    /* restore ambient indicator */
     display_ui_set_peak_hold(loaded.peak_hold_enabled);             /* restore peak hold state   */
     display_ui_set_bar_decay(loaded.bar_decay_db_per_frame);       /* restore bar decay rate    */
@@ -112,6 +111,7 @@ void app_main(void)
     display_ui_set_cal_file(loaded.cal_file);                     /* track mic cal state       */
     display_ui_set_cal_enabled(loaded.cal_enabled);
     display_ui_sync_settings(&loaded);   /* sync settings-screen widgets so Back won't revert */
+    display_ui_notify_color_scheme(loaded.color_scheme);            /* apply persisted palette */
     display_ui_unlock();
 
     /* 4. DSP engine: FFT pipeline with persisted (or default) config */
@@ -142,6 +142,8 @@ void app_main(void)
     };
     audio_source_set_state_cb(on_audio_source_changed, NULL);
     ESP_ERROR_CHECK(audio_source_init(&audio_cfg, audio_to_dsp, NULL));
+    ESP_ERROR_CHECK(audio_source_set_usb_stereo_policy(
+        (audio_usb_stereo_policy_t)loaded.usb_stereo_policy));
     audio_source_set_mic_gain_db(loaded.mic_gain_db);
 
     /* 7. Start audio capture */

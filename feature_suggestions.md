@@ -22,9 +22,6 @@ Extend `settings_mgr` to support multiple files (`settings_music.json`, `setting
 
 ## Medium Effort
 
-### Peak Decay Speed
-`AVG_PEAK_HOLD` decay is currently hardcoded at 1 dB/frame in `averaging.c`. Add an `avg_peak_decay` field to `dsp_config_t` and a slider in Settings (0.5–5 dB/frame).  
-**Why:** Fast decay = quick visual response but loses transients. Slow decay = peak markers "float" longer, useful for instruments with long sustain.
 
 ### Mic Sensitivity Calibration Entry
 Add a numeric input for `dsp_config_t.mic_sensitivity_dbv` (shown in the Settings screen). The factory default for most MEMS mics is around −38 dBV/Pa, but the exact value is on the mic's datasheet.  
@@ -41,6 +38,50 @@ Three or four palette choices (e.g. blue-green-yellow-red, monochrome, high-cont
 ---
 
 ## Higher Effort
+
+### Phase 3: Master/Slave Dual-Analyzer Pair (Stereo Split + Preset Sync)
+Run two identical ESP32-P4 units as a coordinated pair:
+- Master: captures stereo USB (UCA222), analyzes one channel locally, and publishes sync/control.
+- Slave: receives the other channel over network and applies all master settings/presets.
+
+Recommended architecture:
+1. Add `device_role` setting: `Standalone`, `Master`, `Slave`.
+2. Add `channel_assignment`:
+- Master: `Left` or `Right` local channel.
+- Slave channel auto-uses the opposite channel from master stream metadata.
+3. Add low-latency transport from master to slave:
+- Preferred: UDP RTP-like fixed-size PCM frames with sequence + timestamp.
+- Backup: ESP-NOW for direct peer link (lower setup complexity, lower throughput headroom).
+4. Add clock and frame sync:
+- Master includes monotonic sample counter + sample rate in each packet.
+- Slave keeps jitter buffer (2-4 frames) and drift correction (drop/duplicate tiny chunks only when needed).
+5. Add settings/preset replication channel:
+- Master publishes full `settings_t` snapshot + revision number.
+- Slave applies only newer revisions and ACKs revision ID.
+- Master Save/Load preset broadcasts the new revision immediately.
+6. Add session pairing:
+- Slave advertises `slave_id` via mDNS (`spectrumanalyzer-slave-xxxx`).
+- Master UI shows discovered slaves and allows bind/unbind.
+
+Minimal packet schema:
+```text
+Audio Packet:
+	magic, version, session_id, seq, sample_rate, channel_id, sample_count, int16 pcm[]
+
+Control Packet:
+	magic, version, session_id, settings_revision, settings_crc32, json/settings blob
+```
+
+Implementation notes for this codebase:
+- Reuse existing `net_mgr` + `web_server` plumbing for discovery and pairing state.
+- Keep `audio_source` as single capture point on master; add a `channel_split` stage before DSP enqueue.
+- On slave, add a new virtual source type `AUDIO_SOURCE_NET` that feeds `audio_to_dsp()`.
+- Extend `settings_t` with role/pairing fields and persist in `settings_mgr`.
+
+Why this is practical:
+- Keeps one USB interface (UCA222) while obtaining two synchronized displays/locations.
+- Presets remain single-source-of-truth on master.
+- Backward compatible: `Standalone` mode keeps current behavior unchanged.
 
 ### Frequency Zoom (Pinch-to-Zoom)
 Use LVGL's gesture API to handle two-finger pinch on the spectrum area. Store `zoom_freq_min`/`zoom_freq_max` and recalculate bar boundaries. Maintain separate legend labels for the zoomed range.  

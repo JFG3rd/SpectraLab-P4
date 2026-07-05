@@ -48,6 +48,7 @@ static int          s_last_brightness = 100;
 static int          s_last_db_range   = 120;
 static int          s_last_disp_mode  = DISPLAY_MODE_BARS;
 static float        s_last_amb_margin = 1.5f;
+static int          s_last_usb_policy = SETTINGS_USB_STEREO_POLICY_SUM;
 static bool         s_last_cal_enabled = false;
 static char         s_last_cal_file[32] = "";
 
@@ -72,6 +73,7 @@ static void on_settings_changed(const dsp_config_t *new_cfg, void *ctx)
                      .db_range                = s_last_db_range,
                      .display_mode            = s_last_disp_mode,
                      .ambient_margin          = s_last_amb_margin,
+                     .usb_stereo_policy       = s_last_usb_policy,
                      .cal_enabled             = s_last_cal_enabled };
     strlcpy(s.cal_file, s_last_cal_file, sizeof(s.cal_file));
     settings_mgr_save(&s);
@@ -97,6 +99,32 @@ static void on_mic_gain_changed(int gain_db, void *ctx)
                      .db_range                = s_last_db_range,
                      .display_mode            = s_last_disp_mode,
                      .ambient_margin          = s_last_amb_margin,
+                     .usb_stereo_policy       = s_last_usb_policy,
+                     .cal_enabled             = s_last_cal_enabled };
+    strlcpy(s.cal_file, s_last_cal_file, sizeof(s.cal_file));
+    settings_mgr_save(&s);
+}
+
+static void on_usb_policy_changed(audio_usb_stereo_policy_t policy, void *ctx)
+{
+    (void)ctx;
+    esp_err_t ret = audio_source_set_usb_stereo_policy(policy);
+    if (ret != ESP_OK)
+        ESP_LOGW(TAG, "audio_source_set_usb_stereo_policy: %s", esp_err_to_name(ret));
+    s_last_usb_policy = (int)policy;
+
+    settings_t s = { .dsp = s_last_dsp_cfg, .mic_gain_db = s_last_gain_db,
+                     .color_scheme = s_last_scheme,
+                     .ambient_noise_enabled   = s_last_ambient,
+                     .peak_hold_enabled       = s_last_peak_hold,
+                     .bar_decay_db_per_frame  = s_last_bar_decay,
+                     .peak_decay_db_per_frame = s_last_peak_decay,
+                     .max_hold_enabled        = s_last_max_hold,
+                     .screen_brightness       = s_last_brightness,
+                     .db_range                = s_last_db_range,
+                     .display_mode            = s_last_disp_mode,
+                     .ambient_margin          = s_last_amb_margin,
+                     .usb_stereo_policy       = s_last_usb_policy,
                      .cal_enabled             = s_last_cal_enabled };
     strlcpy(s.cal_file, s_last_cal_file, sizeof(s.cal_file));
     settings_mgr_save(&s);
@@ -126,6 +154,8 @@ void display_ui_set_peak_hold(bool enabled)
 
 void display_ui_sync_settings(const settings_t *cfg)
 {
+    if (!cfg) return;
+    s_last_usb_policy = cfg->usb_stereo_policy;
     screen_settings_sync_from(cfg);
 }
 
@@ -220,6 +250,7 @@ void display_ui_notify_color_scheme(color_scheme_t scheme)
                      .db_range                = s_last_db_range,
                      .display_mode            = s_last_disp_mode,
                      .ambient_margin          = s_last_amb_margin,
+                     .usb_stereo_policy       = s_last_usb_policy,
                      .cal_enabled             = s_last_cal_enabled };
     strlcpy(s.cal_file, s_last_cal_file, sizeof(s.cal_file));
     settings_mgr_save(&s);
@@ -275,7 +306,8 @@ esp_err_t display_ui_init(void)
     bsp_display_lock(0);
     ESP_RETURN_ON_ERROR(screen_spectrum_create(), TAG, "spectrum screen create failed");
     ESP_RETURN_ON_ERROR(screen_settings_create(on_settings_changed, NULL,
-                                               on_mic_gain_changed, NULL),
+                                               on_mic_gain_changed, NULL,
+                                               on_usb_policy_changed, NULL),
                         TAG, "settings screen create failed");
     screen_splash_show();   /* fades into the spectrum screen after ~2.5 s */
     screen_spectrum_set_dsp_info(&s_last_dsp_cfg, s_last_gain_db);

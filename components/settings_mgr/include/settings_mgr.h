@@ -29,6 +29,12 @@ typedef enum {
     COLOR_SCHEME_RED_NEON,        /* hot red on near-black                    */
 } color_scheme_t;
 
+typedef enum {
+    SETTINGS_USB_STEREO_POLICY_SUM = 0,
+    SETTINGS_USB_STEREO_POLICY_LEFT,
+    SETTINGS_USB_STEREO_POLICY_RIGHT,
+} settings_usb_stereo_policy_t;
+
 /* Complete application settings — everything that the user can adjust at
  * runtime and that should survive a power cycle.
  *
@@ -38,6 +44,7 @@ typedef enum {
 typedef struct {
     dsp_config_t   dsp;                  /* full DSP configuration                     */
     int            mic_gain_db;          /* ES8311 PGA gain: 0,6,12,18,24,30,36,42 dB */
+    int            usb_stereo_policy;    /* settings_usb_stereo_policy_t               */
     color_scheme_t color_scheme;         /* display colour palette                     */
     bool           ambient_noise_enabled;/* live rolling ambient noise subtraction     */
     bool           peak_hold_enabled;   /* visual per-bar peak hold markers with decay */
@@ -85,8 +92,14 @@ bool settings_mgr_sd_available(void);
 /** @brief Save settings as a named preset. Name is sanitized (no path chars). */
 esp_err_t settings_mgr_save_named(const settings_t *cfg, const char *name);
 
+/** @brief Save current captured noise-floor baseline alongside a preset. */
+esp_err_t settings_mgr_save_named_noise_floor(const char *name);
+
 /** @brief Load a named preset into *out. */
 esp_err_t settings_mgr_load_named(settings_t *out, const char *name);
+
+/** @brief Load a preset's noise-floor baseline sidecar into DSP state. */
+esp_err_t settings_mgr_load_named_noise_floor(const char *name);
 
 /** @brief Delete a named preset file. */
 esp_err_t settings_mgr_delete_named(const char *name);

@@ -25,6 +25,8 @@ bool      audio_usb_is_connected(void);
 void      audio_usb_deinit(void);
 void      audio_usb_set_conn_cb(void (*cb)(bool connected, uint32_t rate, void *ctx),
                                 void *ctx);
+esp_err_t audio_usb_set_stereo_policy(audio_usb_stereo_policy_t policy);
+audio_usb_stereo_policy_t audio_usb_get_stereo_policy(void);
 
 static audio_source_type_t      s_active_type = AUDIO_SOURCE_I2S;
 static bool                     s_initialized = false;
@@ -116,6 +118,17 @@ esp_err_t audio_source_set_mic_gain_db(int gain_db)
     ESP_RETURN_ON_FALSE(s_initialized, ESP_ERR_INVALID_STATE, TAG, "not initialized");
     if (s_active_type != AUDIO_SOURCE_I2S) return ESP_ERR_NOT_SUPPORTED;
     return audio_i2s_set_mic_gain_db(gain_db);
+}
+
+esp_err_t audio_source_set_usb_stereo_policy(audio_usb_stereo_policy_t policy)
+{
+    ESP_RETURN_ON_FALSE(s_initialized, ESP_ERR_INVALID_STATE, TAG, "not initialized");
+    return audio_usb_set_stereo_policy(policy);
+}
+
+audio_usb_stereo_policy_t audio_source_get_usb_stereo_policy(void)
+{
+    return audio_usb_get_stereo_policy();
 }
 
 void audio_source_deinit(void)

@@ -680,6 +680,57 @@ bool dsp_engine_noise_capture_active(void)
     return s_noise_capture_active;
 }
 
+esp_err_t dsp_engine_noise_floor_export(float *out_db, uint32_t bin_capacity,
+                                         uint32_t *out_bin_count,
+                                         uint32_t *out_fft_size,
+                                         int *out_source_id)
+{
+    ESP_RETURN_ON_FALSE(out_db && out_bin_count && out_fft_size && out_source_id,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid args");
+    ESP_RETURN_ON_FALSE(s_running, ESP_ERR_INVALID_STATE, TAG, "not running");
+    ESP_RETURN_ON_FALSE(s_nf_has_data, ESP_ERR_NOT_FOUND, TAG, "no noise floor data");
+
+    uint32_t fft_size = (uint32_t)s_cfg.fft_size;
+    uint32_t bin_count = fft_size / 2;
+    ESP_RETURN_ON_FALSE(bin_capacity >= bin_count, ESP_ERR_INVALID_SIZE, TAG,
+                        "bin buffer too small");
+
+    memcpy(out_db, s_noise_floor_db, bin_count * sizeof(float));
+    *out_bin_count = bin_count;
+    *out_fft_size = fft_size;
+    *out_source_id = s_nf_source;
+    return ESP_OK;
+}
+
+esp_err_t dsp_engine_noise_floor_import(const float *in_db, uint32_t bin_count,
+                                         uint32_t fft_size, int source_id)
+{
+    ESP_RETURN_ON_FALSE(in_db != NULL, ESP_ERR_INVALID_ARG, TAG, "in_db is NULL");
+    ESP_RETURN_ON_FALSE(s_running, ESP_ERR_INVALID_STATE, TAG, "not running");
+    ESP_RETURN_ON_FALSE(fft_size_valid(fft_size), ESP_ERR_INVALID_ARG, TAG,
+                        "invalid fft_size %lu", fft_size);
+    ESP_RETURN_ON_FALSE(bin_count == fft_size / 2 && bin_count <= BINS_MAX,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid bin_count %lu", bin_count);
+    ESP_RETURN_ON_FALSE(fft_size == (uint32_t)s_cfg.fft_size,
+                        ESP_ERR_INVALID_STATE, TAG,
+                        "noise floor fft mismatch (%lu != %lu)",
+                        fft_size, (uint32_t)s_cfg.fft_size);
+
+    memcpy(s_noise_floor_db, in_db, bin_count * sizeof(float));
+    s_nf_has_data          = true;
+    s_nf_source            = source_id;
+    s_noise_capture_active = false;
+    s_noise_floor_valid    = (s_current_source == source_id);
+
+    esp_err_t nvs_ret = _save_noise_floor_to_nvs(bin_count, fft_size);
+    if (nvs_ret != ESP_OK) return nvs_ret;
+
+    ESP_LOGI(TAG, "noise floor imported (%lu bins, source %d)%s",
+             bin_count, source_id,
+             s_noise_floor_valid ? "" : " [inactive until matching source is active]");
+    return ESP_OK;
+}
+
 /* ── live ambient noise subtraction — public API ─────────────── */
 
 void dsp_engine_set_ambient_noise(bool enabled)

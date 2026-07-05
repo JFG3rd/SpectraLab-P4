@@ -54,7 +54,11 @@ static void saveas_commit(void)
         settings_t cfg;
         screen_settings_collect(&cfg);
         esp_err_t r = settings_mgr_save_named(&cfg, name);
-        if (r == ESP_OK) snprintf(msg, sizeof(msg), "Saved '%s' " LV_SYMBOL_OK, name);
+        if (r == ESP_OK) {
+            /* Persist the current captured noise-floor baseline with preset. */
+            settings_mgr_save_named_noise_floor(name);
+            snprintf(msg, sizeof(msg), "Saved '%s' " LV_SYMBOL_OK, name);
+        }
         else             snprintf(msg, sizeof(msg), "Save failed (%s)", esp_err_to_name(r));
         screen_settings_set_status(msg);
         screen_settings_load();
@@ -222,6 +226,16 @@ static void files_load_btn_cb(lv_event_t *e)
         return;
     }
     screen_settings_apply_loaded(&cfg);
+
+    /* Load the preset's captured noise-floor baseline sidecar (if present).
+     * If absent, the loader clears any previously active baseline. */
+    esp_err_t nf = settings_mgr_load_named_noise_floor(s_selected);
+    if (nf != ESP_OK && nf != ESP_ERR_NOT_FOUND) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Loaded cfg, NF load failed (%s)", esp_err_to_name(nf));
+        lv_label_set_text(s_files_status, msg);
+    }
+
     char msg[64];
     snprintf(msg, sizeof(msg), "Loaded '%s' " LV_SYMBOL_OK, s_selected);
     screen_settings_set_status(msg);

@@ -251,6 +251,6 @@ direct_dependencies:
 - espressif/esp_wifi_remote
 - espressif/mdns
 - espressif/usb_host_uac
-manifest_hash: 33cf458c8fb3b69981cff16b13f5157e79c3585a3e3322823fd5d0766f6c8065
+manifest_hash: 1eb0787bb6e10bc83b39b63e2aa8de1a81fc480276198d1a0a4ca9ea3ab17b25
 target: esp32p4
 version: 2.0.0

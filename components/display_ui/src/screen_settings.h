@@ -1,13 +1,16 @@
 #pragma once
 #include "esp_err.h"
 #include "dsp_engine.h"
+#include "audio_source.h"
 #include "settings_mgr.h"
 
 typedef void (*settings_changed_cb_t)(const dsp_config_t *new_cfg, void *ctx);
 typedef void (*mic_gain_changed_cb_t)(int gain_db, void *ctx);
+typedef void (*usb_policy_changed_cb_t)(audio_usb_stereo_policy_t policy, void *ctx);
 
 esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
-                                  mic_gain_changed_cb_t gain_cb, void *gain_ctx);
+                                  mic_gain_changed_cb_t gain_cb, void *gain_ctx,
+                                  usb_policy_changed_cb_t usb_cb, void *usb_ctx);
 void      screen_settings_load(void);
 
 /* Snapshot the current UI state into *out (used by Save-As dialog). */

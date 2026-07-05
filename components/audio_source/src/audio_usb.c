@@ -18,6 +18,7 @@
 #include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_check.h"
+#include "sdkconfig.h"
 #include "usb/usb_host.h"
 #include "usb/uac_host.h"
 #include "audio_source.h"
@@ -49,10 +50,36 @@ static uint32_t                   s_rate;
 static uint8_t                    s_channels;
 static uint8_t                    s_bytes_per_sample;
 
+static audio_usb_stereo_policy_t s_stereo_policy =
+#if CONFIG_AUDIO_SOURCE_USB_STEREO_POLICY_LEFT
+    AUDIO_USB_STEREO_POLICY_LEFT;
+#elif CONFIG_AUDIO_SOURCE_USB_STEREO_POLICY_RIGHT
+    AUDIO_USB_STEREO_POLICY_RIGHT;
+#else
+    AUDIO_USB_STEREO_POLICY_SUM;
+#endif
+
 static uint8_t s_rx_buf[RX_BUF_BYTES];
 static int16_t s_mono_buf[RX_BUF_BYTES / 2];
 
 /* ── sample conversion → mono int16 ───────────────────────────── */
+
+static inline int32_t sample_to_s32(const uint8_t *p, uint8_t bytes_per_sample)
+{
+    switch (bytes_per_sample) {
+    case 2:
+        return (int16_t)(p[0] | (p[1] << 8));
+    case 3: {
+        int32_t v = (int32_t)(p[0] | (p[1] << 8) | (p[2] << 16));
+        if (v & 0x800000) v |= (int32_t)0xFF000000;   /* sign-extend 24 bit */
+        return v >> 8;                                 /* -> int16-ish scale */
+    }
+    case 4:
+        return (int32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24)) >> 16;
+    default:
+        return 0;
+    }
+}
 
 static size_t convert_to_mono16(const uint8_t *in, size_t bytes, int16_t *out)
 {
@@ -61,24 +88,29 @@ static size_t convert_to_mono16(const uint8_t *in, size_t bytes, int16_t *out)
     size_t n = bytes / frame;
 
     for (size_t i = 0; i < n; i++) {
-        const uint8_t *p = in + i * frame;   /* channel 0 of the frame */
-        int32_t v;
-        switch (s_bytes_per_sample) {
-        case 2:
-            v = (int16_t)(p[0] | (p[1] << 8));
-            break;
-        case 3:
-            v = (int32_t)(p[0] | (p[1] << 8) | (p[2] << 16));
-            if (v & 0x800000) v |= (int32_t)0xFF000000;   /* sign-extend 24 bit */
-            v >>= 8;
-            break;
-        case 4:
-            v = (int32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24)) >> 16;
-            break;
-        default:
-            v = 0;
-            break;
+        const uint8_t *p = in + i * frame;
+        int32_t v = sample_to_s32(p, s_bytes_per_sample);
+
+        /* For stereo USB interfaces, apply configured mono policy.
+         * For mono or >2 channels, preserve channel-0 behavior. */
+        if (s_channels == 2) {
+            int32_t r = sample_to_s32(p + s_bytes_per_sample, s_bytes_per_sample);
+            switch (s_stereo_policy) {
+            case AUDIO_USB_STEREO_POLICY_LEFT:
+                (void)r;
+                break;
+            case AUDIO_USB_STEREO_POLICY_RIGHT:
+                v = r;
+                break;
+            case AUDIO_USB_STEREO_POLICY_SUM:
+            default:
+                v = (v + r) / 2;
+                break;
+            }
         }
+
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
         out[i] = (int16_t)v;
     }
     return n;
@@ -102,7 +134,7 @@ static void uac_device_cb(uac_host_device_handle_t handle,
     }
     case UAC_HOST_DRIVER_EVENT_DISCONNECTED: {
         usb_evt_t evt = { .type = EVT_DISCONNECT };
-        xQueueSend(s_evtq, &evt, 0);
+        if (s_evtq) xQueueSend(s_evtq, &evt, 0);
         break;
     }
     default:
@@ -118,7 +150,7 @@ static void uac_driver_cb(uint8_t addr, uint8_t iface_num,
     (void)arg;
     if (event == UAC_HOST_DRIVER_EVENT_RX_CONNECTED) {
         usb_evt_t evt = { .type = EVT_CONNECT, .addr = addr, .iface = iface_num };
-        xQueueSend(s_evtq, &evt, 0);
+        if (s_evtq) xQueueSend(s_evtq, &evt, 0);
     }
 }
 
@@ -225,6 +257,21 @@ void audio_usb_set_conn_cb(usb_conn_cb_t cb, void *ctx)
 {
     s_conn_cb  = cb;
     s_conn_ctx = ctx;
+}
+
+esp_err_t audio_usb_set_stereo_policy(audio_usb_stereo_policy_t policy)
+{
+    ESP_RETURN_ON_FALSE(policy >= AUDIO_USB_STEREO_POLICY_SUM &&
+                        policy <= AUDIO_USB_STEREO_POLICY_RIGHT,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid USB stereo policy");
+    s_stereo_policy = policy;
+    ESP_LOGI(TAG, "USB stereo policy set to %d", (int)policy);
+    return ESP_OK;
+}
+
+audio_usb_stereo_policy_t audio_usb_get_stereo_policy(void)
+{
+    return s_stereo_policy;
 }
 
 esp_err_t audio_usb_init(const audio_source_config_t *cfg,

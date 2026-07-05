@@ -24,6 +24,7 @@ static const char *TAG = "settings_mgr";
 #define SD_SETTINGS     SD_DIR "/settings.json"
 #define SD_NOISE_FLOOR  SD_DIR "/noise_floor.bin"
 #define SD_NOISE_MAGIC  0x4E464C52U  /* "NFLR" */
+#define PRESET_NF_MAGIC 0x4E465032U  /* "NFP2" */
 
 #define NVS_NS          "spectrum"
 #define NVS_KEY_CFG     "settings"
@@ -142,6 +143,7 @@ static char *_settings_to_json(const settings_t *cfg)
     cJSON_AddNumberToObject(root, "reference_pa",         (double)cfg->dsp.reference_pa);
     cJSON_AddNumberToObject(root, "kaiser_beta",          (double)cfg->dsp.kaiser_beta);
     cJSON_AddNumberToObject(root, "mic_gain_db",             cfg->mic_gain_db);
+    cJSON_AddNumberToObject(root, "usb_stereo_policy",       cfg->usb_stereo_policy);
     cJSON_AddNumberToObject(root, "color_scheme",            cfg->color_scheme);
     cJSON_AddBoolToObject  (root, "ambient_noise_enabled",      cfg->ambient_noise_enabled);
     cJSON_AddBoolToObject  (root, "peak_hold_enabled",          cfg->peak_hold_enabled);
@@ -183,6 +185,7 @@ static bool _json_to_settings(const char *json_str, settings_t *out)
     GET_FLT("reference_pa",        dsp.reference_pa);
     GET_FLT("kaiser_beta",         dsp.kaiser_beta);
     GET_INT ("mic_gain_db",           mic_gain_db);
+    GET_INT ("usb_stereo_policy",     usb_stereo_policy);
     GET_INT ("color_scheme",          color_scheme);
     GET_BOOL("ambient_noise_enabled",    ambient_noise_enabled);
     GET_BOOL("peak_hold_enabled",        peak_hold_enabled);
@@ -337,6 +340,10 @@ static void settings_sanitize(settings_t *s)
     s->mic_gain_db = _clampi(s->mic_gain_db, 0, 42, 6);
     s->mic_gain_db = (s->mic_gain_db / 6) * 6;
 
+    if (s->usb_stereo_policy < SETTINGS_USB_STEREO_POLICY_SUM ||
+        s->usb_stereo_policy > SETTINGS_USB_STEREO_POLICY_RIGHT)
+        s->usb_stereo_policy = SETTINGS_USB_STEREO_POLICY_SUM;
+
     if ((unsigned)s->color_scheme > COLOR_SCHEME_RED_NEON)
         s->color_scheme = COLOR_SCHEME_DARK;
     if (s->display_mode < 0 || s->display_mode >= DISPLAY_MODE_COUNT)
@@ -358,6 +365,7 @@ static void _set_defaults(settings_t *out)
 {
     out->dsp                      = dsp_config_default;
     out->mic_gain_db              = 6;
+    out->usb_stereo_policy        = SETTINGS_USB_STEREO_POLICY_SUM;
     out->color_scheme             = COLOR_SCHEME_DARK;
     out->ambient_noise_enabled    = false;
     out->peak_hold_enabled        = false;
@@ -437,6 +445,18 @@ static void _preset_path(char *buf, size_t sz, const char *safe_name)
     snprintf(buf, sz, SD_DIR "/%s.json", safe_name);
 }
 
+static void _preset_nf_path(char *buf, size_t sz, const char *safe_name)
+{
+    snprintf(buf, sz, SD_DIR "/%s.nfbin", safe_name);
+}
+
+typedef struct {
+    uint32_t magic;
+    uint32_t fft_size;
+    uint32_t bin_count;
+    int32_t  source_id;
+} preset_nf_header_t;
+
 esp_err_t settings_mgr_save_named(const settings_t *cfg, const char *name)
 {
     if (!cfg || !name)  return ESP_ERR_INVALID_ARG;
@@ -462,6 +482,62 @@ esp_err_t settings_mgr_save_named(const settings_t *cfg, const char *name)
     unlink(path);   /* rename() on FATFS fails if target exists */
     if (rename(tmp, path) != 0) return ESP_FAIL;
     ESP_LOGI(TAG, "preset saved: %s", path);
+    return ESP_OK;
+}
+
+esp_err_t settings_mgr_save_named_noise_floor(const char *name)
+{
+    if (!name)         return ESP_ERR_INVALID_ARG;
+    if (!s_sd_mounted) return ESP_ERR_NOT_SUPPORTED;
+
+    char safe[SETTINGS_NAME_MAX];
+    if (!_sanitize_name(name, safe, sizeof(safe))) return ESP_ERR_INVALID_ARG;
+
+    char nf_path[sizeof(SD_DIR) + SETTINGS_NAME_MAX + 10];
+    _preset_nf_path(nf_path, sizeof(nf_path), safe);
+
+    uint32_t max_bins = FFT_SIZE_16384 / 2;
+    float *buf = malloc(max_bins * sizeof(float));
+    if (!buf) return ESP_ERR_NO_MEM;
+
+    uint32_t bin_count = 0;
+    uint32_t fft_size = 0;
+    int source_id = 0;
+    esp_err_t ex = dsp_engine_noise_floor_export(buf, max_bins, &bin_count, &fft_size, &source_id);
+    if (ex == ESP_ERR_NOT_FOUND) {
+        free(buf);
+        unlink(nf_path); /* keep preset sidecar in sync with current "no baseline" state */
+        return ESP_OK;
+    }
+    if (ex != ESP_OK) {
+        free(buf);
+        return ex;
+    }
+
+    const char *tmp = SD_DIR "/preset_nf.tmp";
+    FILE *f = fopen(tmp, "wb");
+    if (!f) {
+        free(buf);
+        return ESP_FAIL;
+    }
+
+    preset_nf_header_t hdr = {
+        .magic = PRESET_NF_MAGIC,
+        .fft_size = fft_size,
+        .bin_count = bin_count,
+        .source_id = source_id,
+    };
+    bool ok = (fwrite(&hdr, sizeof(hdr), 1, f) == 1);
+    ok = ok && (fwrite(buf, sizeof(float), bin_count, f) == bin_count);
+    ok = (fclose(f) == 0) && ok;
+    free(buf);
+    if (!ok) {
+        unlink(tmp);
+        return ESP_FAIL;
+    }
+
+    unlink(nf_path);
+    if (rename(tmp, nf_path) != 0) return ESP_FAIL;
     return ESP_OK;
 }
 
@@ -501,6 +577,53 @@ esp_err_t settings_mgr_load_named(settings_t *out, const char *name)
     return ESP_OK;
 }
 
+esp_err_t settings_mgr_load_named_noise_floor(const char *name)
+{
+    if (!name)         return ESP_ERR_INVALID_ARG;
+    if (!s_sd_mounted) return ESP_ERR_NOT_SUPPORTED;
+
+    char safe[SETTINGS_NAME_MAX];
+    if (!_sanitize_name(name, safe, sizeof(safe))) return ESP_ERR_INVALID_ARG;
+
+    char nf_path[sizeof(SD_DIR) + SETTINGS_NAME_MAX + 10];
+    _preset_nf_path(nf_path, sizeof(nf_path), safe);
+
+    FILE *f = fopen(nf_path, "rb");
+    if (!f) {
+        /* No sidecar means this preset intentionally has no captured baseline. */
+        dsp_engine_clear_noise_floor();
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    preset_nf_header_t hdr;
+    if (fread(&hdr, sizeof(hdr), 1, f) != 1 || hdr.magic != PRESET_NF_MAGIC) {
+        fclose(f);
+        return ESP_FAIL;
+    }
+    if (hdr.bin_count == 0 || hdr.bin_count > (FFT_SIZE_16384 / 2) ||
+        hdr.bin_count != hdr.fft_size / 2) {
+        fclose(f);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    float *buf = malloc(hdr.bin_count * sizeof(float));
+    if (!buf) {
+        fclose(f);
+        return ESP_ERR_NO_MEM;
+    }
+    bool ok = (fread(buf, sizeof(float), hdr.bin_count, f) == hdr.bin_count);
+    fclose(f);
+    if (!ok) {
+        free(buf);
+        return ESP_FAIL;
+    }
+
+    esp_err_t r = dsp_engine_noise_floor_import(buf, hdr.bin_count,
+                                                hdr.fft_size, hdr.source_id);
+    free(buf);
+    return r;
+}
+
 esp_err_t settings_mgr_delete_named(const char *name)
 {
     if (!name)         return ESP_ERR_INVALID_ARG;
@@ -510,8 +633,11 @@ esp_err_t settings_mgr_delete_named(const char *name)
     if (!_sanitize_name(name, safe, sizeof(safe))) return ESP_ERR_INVALID_ARG;
 
     char path[sizeof(SD_DIR) + SETTINGS_NAME_MAX + 8];
+    char nf_path[sizeof(SD_DIR) + SETTINGS_NAME_MAX + 10];
     _preset_path(path, sizeof(path), safe);
+    _preset_nf_path(nf_path, sizeof(nf_path), safe);
     if (unlink(path) != 0) return ESP_ERR_NOT_FOUND;
+    unlink(nf_path); /* best effort */
     ESP_LOGI(TAG, "preset deleted: %s", path);
     return ESP_OK;
 }
@@ -528,12 +654,20 @@ esp_err_t settings_mgr_rename_named(const char *old_name, const char *new_name)
 
     char old_path[sizeof(SD_DIR) + SETTINGS_NAME_MAX + 8];
     char new_path[sizeof(SD_DIR) + SETTINGS_NAME_MAX + 8];
+    char old_nf_path[sizeof(SD_DIR) + SETTINGS_NAME_MAX + 10];
+    char new_nf_path[sizeof(SD_DIR) + SETTINGS_NAME_MAX + 10];
     _preset_path(old_path, sizeof(old_path), old_safe);
     _preset_path(new_path, sizeof(new_path), new_safe);
+    _preset_nf_path(old_nf_path, sizeof(old_nf_path), old_safe);
+    _preset_nf_path(new_nf_path, sizeof(new_nf_path), new_safe);
 
     struct stat st;
     if (stat(new_path, &st) == 0) return ESP_ERR_INVALID_STATE;  /* target exists */
+    if (stat(new_nf_path, &st) == 0) return ESP_ERR_INVALID_STATE;
     if (rename(old_path, new_path) != 0) return ESP_FAIL;
+    if (rename(old_nf_path, new_nf_path) != 0) {
+        /* Sidecar is optional; if absent this rename fails and can be ignored. */
+    }
     ESP_LOGI(TAG, "preset renamed: %s -> %s", old_safe, new_safe);
     return ESP_OK;
 }
