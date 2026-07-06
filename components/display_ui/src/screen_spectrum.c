@@ -409,9 +409,15 @@ static bool      s_frozen       = false;
 static bool      s_grid_enabled = true;
 static lv_obj_t *s_btn_stop_lbl;
 
-/* ── oscilloscope waveform (PSRAM buffers, alloc'd in create()) ── */
-static int16_t *s_wave      = NULL;   /* ring of the last WAVE_N samples */
-static int16_t *s_wave_snap = NULL;   /* draw-side snapshot */
+/* ── oscilloscope waveform (PSRAM buffers, alloc'd in create()) ──
+ * s_wave is a circular buffer: push_waveform() writes count samples at
+ * s_wave_wr (O(count), safe to call from the USB UAC receive path every
+ * millisecond); the draw side linearizes into s_wave_snap. A shifting
+ * memmove ring here once stalled the USB mic — 32 KB moved per 1 ms
+ * packet starved the isochronous stream until it died. */
+static int16_t *s_wave      = NULL;   /* circular buffer, WAVE_N samples */
+static int16_t *s_wave_snap = NULL;   /* draw-side linearized snapshot */
+static size_t   s_wave_wr   = 0;      /* next write index */
 static SemaphoreHandle_t s_wave_mutex;
 
 /* ── FPS counter ──────────────────────────────────────────────── */
@@ -797,7 +803,11 @@ static void draw_mode_scope(lv_layer_t *layer, const lv_area_t *oa,
 
     static bool wave_valid = false;
     if (xSemaphoreTake(s_wave_mutex, 0) == pdTRUE) {
-        memcpy(s_wave_snap, s_wave, WAVE_N * sizeof(int16_t));
+        /* linearize the circular buffer: oldest sample first */
+        size_t wr = s_wave_wr;
+        memcpy(s_wave_snap, s_wave + wr, (WAVE_N - wr) * sizeof(int16_t));
+        if (wr > 0)
+            memcpy(s_wave_snap + (WAVE_N - wr), s_wave, wr * sizeof(int16_t));
         xSemaphoreGive(s_wave_mutex);
         wave_valid = true;
     }
@@ -1413,14 +1423,23 @@ void screen_spectrum_update(const float *magnitude_db, uint16_t bin_count,
 void screen_spectrum_push_waveform(const int16_t *samples, size_t count)
 {
     if (s_wave_mutex == NULL || s_wave == NULL || samples == NULL || count == 0) return;
+    if (s_mode != DISPLAY_MODE_SCOPE) return;   /* only the scope consumes this */
+
+    if (count > WAVE_N) {           /* keep only the newest WAVE_N samples */
+        samples += count - WAVE_N;
+        count = WAVE_N;
+    }
+
     if (xSemaphoreTake(s_wave_mutex, 0) != pdTRUE) return;
 
-    if (count >= WAVE_N) {
-        memcpy(s_wave, samples + (count - WAVE_N), WAVE_N * sizeof(int16_t));
-    } else {
-        memmove(s_wave, s_wave + count, (WAVE_N - count) * sizeof(int16_t));
-        memcpy(s_wave + (WAVE_N - count), samples, count * sizeof(int16_t));
-    }
+    /* circular write: at most two memcpys of `count` samples total */
+    size_t first = WAVE_N - s_wave_wr;
+    if (first > count) first = count;
+    memcpy(s_wave + s_wave_wr, samples, first * sizeof(int16_t));
+    if (count > first)
+        memcpy(s_wave, samples + first, (count - first) * sizeof(int16_t));
+    s_wave_wr = (s_wave_wr + count) % WAVE_N;
+
     xSemaphoreGive(s_wave_mutex);
 }
 
@@ -1443,6 +1462,15 @@ void screen_spectrum_set_mode(int mode)
     s_persist_head  = 0;
     s_persist_tick  = 0;
     s_persist_valid = false;
+
+    /* entering scope: start from a clean ring so no stale trace flashes
+     * (pushes are gated on scope mode, so old data would otherwise linger) */
+    if (s_mode == DISPLAY_MODE_SCOPE && s_wave != NULL && s_wave_mutex != NULL &&
+        xSemaphoreTake(s_wave_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+        memset(s_wave, 0, WAVE_N * sizeof(int16_t));
+        s_wave_wr = 0;
+        xSemaphoreGive(s_wave_mutex);
+    }
 
     if (!s_screen) return;   /* called before create() — mode applies later */
 
