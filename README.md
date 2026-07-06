@@ -1,8 +1,8 @@
 # ESP32-P4 Spectrum Analyzer
 
 ![ESP32-P4 Spectrum Analyzer](Docu/images/hero-hospital-workbench-1600.jpg)
-
-> **A professional real-time audio measurement instrument for the ESP32-P4 Function EV Board.**
+(Docu/images/hero-waterfall.jpg)
+**A professional real-time audio measurement instrument for the ESP32-P4 Function EV Board.**
 
 ![ESP32-P4](https://img.shields.io/badge/ESP32-P4-blue)
 ![PlatformIO](https://img.shields.io/badge/PlatformIO-supported-orange)
