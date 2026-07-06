@@ -209,6 +209,20 @@ static bool _json_to_settings(const char *json_str, settings_t *out)
     return true;
 }
 
+/* Public thin wrappers over the static serializer/parser so the REST
+ * config API produces and consumes exactly the same JSON as settings.json. */
+char *settings_mgr_to_json(const settings_t *cfg)
+{
+    if (!cfg) return NULL;
+    return _settings_to_json(cfg);
+}
+
+bool settings_mgr_from_json(const char *json, settings_t *inout)
+{
+    if (!json || !inout) return false;
+    return _json_to_settings(json, inout);
+}
+
 /* ── SD card I/O ───────────────────────────────────────────────── */
 
 static esp_err_t _save_to_sd(const settings_t *cfg)
@@ -314,7 +328,7 @@ static int _clampi(int v, int lo, int hi, int dflt_unused)
     return v;
 }
 
-static void settings_sanitize(settings_t *s)
+void settings_mgr_sanitize(settings_t *s)
 {
     /* fft_size: must be a supported power of two */
     switch ((uint32_t)s->dsp.fft_size) {
@@ -390,14 +404,14 @@ esp_err_t settings_mgr_load(settings_t *out)
 
     /* Priority 1: SD card JSON */
     if (_load_from_sd(out) == ESP_OK) {
-        settings_sanitize(out);
+        settings_mgr_sanitize(out);
         return ESP_OK;
     }
 
     /* Priority 2: NVS blob backup */
     if (_load_from_nvs(out) == ESP_OK) {
         ESP_LOGI(TAG, "settings loaded from NVS");
-        settings_sanitize(out);
+        settings_mgr_sanitize(out);
         return ESP_OK;
     }
 
@@ -572,7 +586,7 @@ esp_err_t settings_mgr_load_named(settings_t *out, const char *name)
     bool ok = _json_to_settings(buf, out);
     free(buf);
     if (!ok) { ESP_LOGW(TAG, "preset '%s': JSON parse failed", safe); return ESP_FAIL; }
-    settings_sanitize(out);
+    settings_mgr_sanitize(out);
     ESP_LOGI(TAG, "preset loaded: %s", path);
     return ESP_OK;
 }

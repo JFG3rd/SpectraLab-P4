@@ -26,14 +26,23 @@ static const char *TAG = "net_mgr";
 #define KEY_SSID      "ssid"
 #define KEY_PASS      "pass"
 
-#define STA_MAX_RETRY 3
-#define SCAN_MAX      20
+/* Rejoin resilience: at boot the router or the C6 link may not be ready
+ * for a second or two. Retrying esp_wifi_connect() immediately (the old
+ * behavior) burned a 3-try budget in ~1 s and dropped to the setup AP,
+ * forcing a re-provision for a transient hiccup. Instead retry with an
+ * exponential backoff and a much larger budget before giving up to AP. */
+#define STA_MAX_RETRY      12          /* ~1 min of attempts before setup AP */
+#define RECONNECT_BASE_MS  500
+#define RECONNECT_MAX_MS   8000
+#define SCAN_MAX           20
 
 typedef enum { NET_OFF, NET_JOINING, NET_STA_UP, NET_AP_UP } net_state_t;
 
 static net_state_t       s_state = NET_OFF;
 static SemaphoreHandle_t s_lock;
 static int               s_retry;
+static bool              s_established;   /* got an IP at least once this boot */
+static esp_timer_handle_t s_reconnect_timer;
 static char              s_sta_ssid[NET_SSID_MAX];
 static char              s_ip_str[16] = "";
 static char              s_ap_ssid[NET_SSID_MAX];
@@ -131,6 +140,30 @@ static void start_setup_ap(void)
              s_ap_ssid, s_ap_pass);
 }
 
+/* ── reconnect backoff ────────────────────────────────────────── */
+
+/* 0.5, 1, 2, 4, 8, 8, 8 … s — capped, so a persistent outage doesn't
+ * hammer the C6 while still recovering quickly from a brief blip. */
+static uint32_t backoff_ms(int retry)
+{
+    int shift = retry < 4 ? retry : 4;
+    uint32_t d = (uint32_t)RECONNECT_BASE_MS << shift;
+    return d > RECONNECT_MAX_MS ? RECONNECT_MAX_MS : d;
+}
+
+static void reconnect_timer_cb(void *arg)
+{
+    (void)arg;
+    if (s_state == NET_JOINING) esp_wifi_connect();
+}
+
+static void schedule_reconnect(uint32_t delay_ms)
+{
+    if (!s_reconnect_timer) { esp_wifi_connect(); return; }
+    esp_timer_stop(s_reconnect_timer);   /* no-op if not armed */
+    esp_timer_start_once(s_reconnect_timer, (uint64_t)delay_ms * 1000);
+}
+
 /* ── events ───────────────────────────────────────────────────── */
 
 static void wifi_event_handler(void *arg, esp_event_base_t base,
@@ -143,17 +176,28 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             if (s_state == NET_JOINING) esp_wifi_connect();
             break;
         case WIFI_EVENT_STA_DISCONNECTED:
-            if (s_state == NET_JOINING && ++s_retry <= STA_MAX_RETRY) {
-                ESP_LOGW(TAG, "join failed, retry %d/%d", s_retry, STA_MAX_RETRY);
-                esp_wifi_connect();
-            } else if (s_state == NET_JOINING) {
-                ESP_LOGW(TAG, "could not join '%s' — falling back to setup AP", s_sta_ssid);
-                start_setup_ap();
-            } else if (s_state == NET_STA_UP) {
+            if (s_state == NET_STA_UP) {
+                /* An established link dropped — fall through to retry. */
                 ESP_LOGW(TAG, "WiFi dropped — reconnecting");
                 s_state = NET_JOINING;
                 s_retry = 0;
-                esp_wifi_connect();
+            }
+            if (s_state == NET_JOINING) {
+                s_retry++;
+                /* Once we've ever had an IP, keep retrying forever — never
+                 * drop a working install back to the setup AP. Only the
+                 * initial provisioning join gives up (to AP) after the
+                 * budget, in case the saved credentials are wrong. */
+                if (s_established || s_retry <= STA_MAX_RETRY) {
+                    uint32_t d = backoff_ms(s_retry);
+                    ESP_LOGW(TAG, "reconnect attempt %d in %u ms",
+                             s_retry, (unsigned)d);
+                    schedule_reconnect(d);
+                } else {
+                    ESP_LOGW(TAG, "could not join '%s' after %d tries — setup AP",
+                             s_sta_ssid, STA_MAX_RETRY);
+                    start_setup_ap();
+                }
             }
             break;
         case WIFI_EVENT_SCAN_DONE:
@@ -167,6 +211,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         snprintf(s_ip_str, sizeof(s_ip_str), IPSTR, IP2STR(&ev->ip_info.ip));
         s_state = NET_STA_UP;
         s_retry = 0;
+        s_established = true;
         ESP_LOGI(TAG, "connected to '%s' — http://%s/", s_sta_ssid, s_ip_str);
 
         if (!s_mdns_up && mdns_init() == ESP_OK) {
@@ -231,6 +276,11 @@ esp_err_t net_mgr_init(void)
     s_lock = xSemaphoreCreateMutex();
     ESP_RETURN_ON_FALSE(s_lock, ESP_ERR_NO_MEM, TAG, "mutex");
 
+    const esp_timer_create_args_t rc_args = {
+        .callback = reconnect_timer_cb, .name = "wifi_reconnect",
+    };
+    esp_timer_create(&rc_args, &s_reconnect_timer);   /* non-fatal: falls back to immediate reconnect */
+
     derive_ap_identity();
 
     /* Bring up the ESP-Hosted transport (SDIO link to the on-board C6)
@@ -263,6 +313,10 @@ esp_err_t net_mgr_init(void)
         wifi_config_t sta_cfg = { 0 };
         strlcpy((char *)sta_cfg.sta.ssid, s_sta_ssid, sizeof(sta_cfg.sta.ssid));
         strlcpy((char *)sta_cfg.sta.password, pass, sizeof(sta_cfg.sta.password));
+        /* Keep the default fast scan: on this board the ESP-Hosted version
+         * mismatch makes RPC calls slow, so an all-channel pre-association
+         * scan noticeably delayed the join. Fast scan associates with the
+         * first matching AP found — quicker, which is what matters here. */
         esp_wifi_set_mode(WIFI_MODE_STA);
         esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
         s_state = NET_JOINING;

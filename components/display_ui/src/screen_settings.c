@@ -15,6 +15,7 @@
 #include "screen_settings.h"
 #include "screen_spectrum.h"
 #include "screen_file_dialog.h"
+#include "screen_wifi.h"
 
 static const char *TAG = "scr_settings";
 
@@ -332,6 +333,12 @@ static void cal_load_btn_cb(lv_event_t *e)
     screen_calfiles_show();
 }
 
+static void wifi_setup_btn_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    screen_wifi_show();
+}
+
 static void cal_clear_btn_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
@@ -623,6 +630,15 @@ esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
     lv_obj_set_style_text_color(s_lbl_wifi_status, lv_color_hex(0x88AACC), 0);
     lv_obj_set_style_text_font(s_lbl_wifi_status, &lv_font_montserrat_12, 0);
     lv_obj_set_pos(s_lbl_wifi_status, 20, 518);
+
+    /* Wi-Fi setup button — opens the on-device scan/join screen */
+    lv_obj_t *wifi_btn = lv_button_create(s_screen);
+    lv_obj_set_size(wifi_btn, 256, 28);
+    lv_obj_set_pos(wifi_btn, 748, 567);
+    lv_obj_add_event_cb(wifi_btn, wifi_setup_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *wifi_btn_lbl = lv_label_create(wifi_btn);
+    lv_label_set_text(wifi_btn_lbl, LV_SYMBOL_WIFI "  Wi-Fi Setup");
+    lv_obj_center(wifi_btn_lbl);
 
     /* Back button — applies all pending changes, spans the first column */
     lv_obj_t *back_btn = lv_button_create(s_screen);

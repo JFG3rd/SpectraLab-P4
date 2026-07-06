@@ -159,6 +159,19 @@ void display_ui_sync_settings(const settings_t *cfg)
     screen_settings_sync_from(cfg);
 }
 
+void display_ui_get_settings(settings_t *out)
+{
+    if (!out) return;
+    screen_settings_collect(out);
+}
+
+void display_ui_apply_settings(const settings_t *cfg)
+{
+    if (!cfg) return;
+    s_last_usb_policy = cfg->usb_stereo_policy;
+    screen_settings_apply_loaded(cfg);   /* syncs widgets, restores cal, fires apply + auto-save */
+}
+
 void display_ui_set_db_range(int range_db)
 {
     if (range_db < 60)  range_db = 60;

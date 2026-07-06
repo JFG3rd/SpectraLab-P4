@@ -6,6 +6,7 @@ idf_component_register(
         "src/touch_gesture.c"
         "src/screen_settings.c"
         "src/screen_file_dialog.c"
+        "src/screen_wifi.c"
         "src/screen_splash.c"
     INCLUDE_DIRS
         "include"

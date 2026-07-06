@@ -83,6 +83,29 @@ esp_err_t settings_mgr_save(const settings_t *cfg);
 /** @brief Return true if an SD card is currently mounted. */
 bool settings_mgr_sd_available(void);
 
+/* ── JSON <-> settings_t helpers (shared with the REST config API) ──
+ * These expose the same serializer/parser/clamp used for settings.json
+ * so the network path stays byte-for-byte consistent with on-disk state. */
+
+/**
+ * @brief Serialize a settings_t to a JSON string (malloc'd; caller frees()).
+ *        Returns NULL on allocation failure.
+ */
+char *settings_mgr_to_json(const settings_t *cfg);
+
+/**
+ * @brief Overlay JSON fields onto *inout. Missing keys are left unchanged,
+ *        so partial updates work. Does NOT sanitize — call
+ *        settings_mgr_sanitize() afterwards. Returns false on parse error.
+ */
+bool settings_mgr_from_json(const char *json, settings_t *inout);
+
+/**
+ * @brief Clamp/snap every field of *s to a safe value. All external input
+ *        (SD JSON, NVS blob, network PUT) must pass through this before use.
+ */
+void settings_mgr_sanitize(settings_t *s);
+
 /* ── Named presets on SD card (/sdcard/spectrum/<name>.json) ──────
  * Separate from the auto-save flow: settings_mgr_save()/load() still use
  * the default settings.json + NVS. Named files are explicit user presets. */

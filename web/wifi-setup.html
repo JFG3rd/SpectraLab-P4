@@ -53,6 +53,18 @@
                 });
         }
 
+        function restartDevice() {
+            if (!confirm("Restart the analyzer now?\n\nIt keeps its saved WiFi and settings, and will reconnect after rebooting (this can take up to a minute).")) {
+                return;
+            }
+            setStatus("Restarting the device...");
+            // The device reboots ~1s after replying, so the connection will
+            // drop — treat both success and the resulting network error as OK.
+            fetch("/reboot", { method: "POST" })
+                .then(() => setStatus("Device is rebooting — reload this page in about a minute."))
+                .catch(() => setStatus("Device is rebooting — reload this page in about a minute."));
+        }
+
         function updateSsidOptions(ssids, scanning) {
             const select = document.getElementById("ssid");
             const current = select.value;
@@ -110,7 +122,9 @@
                     manualSsid.value = "";
                 }
             });
-            pollWifiScanResults(8);
+            // Kick off a fresh scan on load (not just read stale results),
+            // otherwise the list stays empty until the user hits Rescan.
+            rescanWiFi();
         });
     </script>
 </head>
@@ -122,7 +136,6 @@
         <label><strong>Select Network:</strong></label>
         <select id="ssid">
             <option value="">-- Select WiFi Network --</option>
-            {{SSID_OPTIONS}}
         </select>
         
         <label><strong>Or Enter SSID Manually:</strong></label>
@@ -133,11 +146,17 @@
         
         <button class="button btn-save" title="Save WiFi credentials and reboot into STA mode." onclick="connectWiFi()">💾 Save & Connect</button>
         <button class="button btn-info" title="Refresh the list of available WiFi networks." onclick="rescanWiFi()">🔄 Rescan WiFi</button>
+        <button class="button btn-test" title="Reboot the analyzer. Keeps saved WiFi and settings; can help when a rejoin is stuck." onclick="restartDevice()" style="margin-top:10px;">🔁 Restart Device</button>
+        <a class="button btn-nav" href="/" title="Return to the home page." style="display:block; margin-top:10px;">🏠 Home</a>
 
         <div class="flash-stats" id="wifiStatusMsg" style="margin-top: 12px;"></div>
-        
+
         <footer>
-            <p class="disclaimer">ESP32-P4 Spectrum Analyzer</p>
+            <p class="disclaimer">ESP32-P4 Spectrum Analyzer — made by JFG3rd</p>
+            <p class="disclaimer">
+                <a href="https://github.com/JFG3rd/JFG-ESP32-P4-Function-EV-Board-Spectrum-Analyzer" target="_blank" rel="noopener">GitHub</a>
+                &middot; Licensed under Apache&nbsp;2.0
+            </p>
         </footer>
     </div>
 </body>

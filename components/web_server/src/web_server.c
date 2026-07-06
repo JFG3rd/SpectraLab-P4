@@ -14,6 +14,7 @@
 #include "esp_http_server.h"
 #include "esp_heap_caps.h"
 #include "esp_app_desc.h"
+#include "esp_system.h"
 #include "cJSON.h"
 #include "net_mgr.h"
 #include "settings_mgr.h"
@@ -26,12 +27,15 @@ static const char *TAG = "web_server";
 
 #define SAVEWIFI_MAX_BODY   256
 #define UPLOAD_MAX_BODY     (128 * 1024)   /* matches the cal parser's limit */
+#define CONFIG_MAX_BODY     2048           /* a full settings JSON is < 1 KB  */
 #define SAVEWIFI_MIN_INTERVAL_US  (500 * 1000)
 #define UPLOAD_MIN_INTERVAL_US    (1000 * 1000)
+#define CONFIG_MIN_INTERVAL_US    (250 * 1000)   /* throttle flash-writing PUTs */
 
 static httpd_handle_t s_server;
 static int64_t s_last_savewifi_us;
 static int64_t s_last_upload_us;
+static int64_t s_last_config_us;
 
 static esp_err_t send_too_many_requests(httpd_req_t *req, const char *msg)
 {
@@ -73,6 +77,13 @@ static esp_err_t scan_results_get(httpd_req_t *req)
     static char names[20][NET_SSID_MAX];
     bool in_progress = false;
     int n = net_mgr_get_scan_results(names, 20, &in_progress);
+
+    /* Self-heal: if nothing is cached and no scan is running, kick one off
+     * so the very first poll after page load populates the list — the page
+     * no longer has to have explicitly started a scan first. */
+    if (n == 0 && !in_progress) {
+        if (net_mgr_start_scan() == ESP_OK) in_progress = true;
+    }
 
     cJSON *root = cJSON_CreateObject();
     cJSON *arr  = cJSON_AddArrayToObject(root, "ssids");
@@ -274,6 +285,117 @@ static esp_err_t status_get(httpd_req_t *req)
     return r;
 }
 
+/* ── REST config API ──────────────────────────────────────────────
+ * GET  /api/config → the live settings as JSON (same shape as settings.json)
+ * PUT  /api/config → merge a JSON body onto the live settings, sanitize,
+ *                    apply, and persist. Partial updates work: any key that
+ *                    is absent from the body keeps its current value.
+ *
+ * All validation goes through settings_mgr_sanitize() — the single clamp
+ * used for SD/NVS restore — so the network can never push an out-of-range
+ * value into an allocation size, enum table, or codec register. The apply
+ * runs through display_ui_apply_settings() (the same path as an on-screen
+ * preset load): the DSP task picks up the new config at a frame boundary via
+ * its generation counter, the settings widgets resync, and it auto-saves. */
+
+static esp_err_t config_get(httpd_req_t *req)
+{
+    settings_t cfg;
+    display_ui_lock();
+    display_ui_get_settings(&cfg);
+    display_ui_unlock();
+
+    char *json = settings_mgr_to_json(&cfg);
+    if (!json) return httpd_resp_send_500(req);
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t r = httpd_resp_sendstr(req, json);
+    free(json);
+    return r;
+}
+
+static esp_err_t config_put(httpd_req_t *req)
+{
+    int64_t now = esp_timer_get_time();
+    if (now - s_last_config_us < CONFIG_MIN_INTERVAL_US) {
+        return send_too_many_requests(req, "Too many requests");
+    }
+    if (req->content_len == 0 || req->content_len > CONFIG_MAX_BODY) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "Body empty or larger than 2 KB");
+    }
+
+    char *body = malloc(req->content_len + 1);
+    if (!body) return httpd_resp_send_500(req);
+    int got = 0;
+    while (got < (int)req->content_len) {
+        int r = httpd_req_recv(req, body + got, req->content_len - got);
+        if (r <= 0) { free(body); return ESP_FAIL; }
+        got += r;
+    }
+    body[got] = '\0';
+
+    /* Start from the live settings so unspecified fields are preserved. */
+    settings_t cfg;
+    display_ui_lock();
+    display_ui_get_settings(&cfg);
+    display_ui_unlock();
+
+    bool parsed = settings_mgr_from_json(body, &cfg);
+    free(body);
+    if (!parsed) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad JSON");
+    }
+
+    settings_mgr_sanitize(&cfg);
+
+    display_ui_lock();
+    display_ui_apply_settings(&cfg);   /* reconfig + widget resync + auto-save */
+    display_ui_unlock();
+
+    s_last_config_us = now;
+    ESP_LOGI(TAG, "config updated via REST (%d bytes)", got);
+
+    /* Echo the sanitized, applied config so the client sees exactly what
+     * took effect (values it sent may have been clamped/snapped). */
+    char *json = settings_mgr_to_json(&cfg);
+    if (!json) return httpd_resp_send_500(req);
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t r = httpd_resp_sendstr(req, json);
+    free(json);
+    return r;
+}
+
+/* ── device restart ───────────────────────────────────────────────
+ * A plain reboot. Useful when a rejoin to a known network stalls or never
+ * completes (the ESP-Hosted C6 link occasionally times out) — a fresh boot
+ * re-runs the join from scratch and usually recovers. Nothing is erased;
+ * saved WiFi credentials and settings are untouched. The reboot is deferred
+ * ~1.2 s so the HTTP response can flush to the browser first. */
+
+static esp_timer_handle_t s_reboot_timer;
+
+static void reboot_timer_cb(void *arg)
+{
+    (void)arg;
+    ESP_LOGW(TAG, "restart requested via web — rebooting");
+    esp_restart();
+}
+
+static esp_err_t reboot_post(httpd_req_t *req)
+{
+    if (!s_reboot_timer) {
+        const esp_timer_create_args_t targs = {
+            .callback = reboot_timer_cb, .name = "web_reboot",
+        };
+        esp_timer_create(&targs, &s_reboot_timer);
+    }
+    httpd_resp_set_type(req, "text/plain");
+    esp_err_t r = httpd_resp_sendstr(req, "Restarting the device now...");
+    if (s_reboot_timer) esp_timer_start_once(s_reboot_timer, 1200 * 1000);
+    else                esp_restart();   /* timer alloc failed: reboot immediately */
+    return r;
+}
+
 /* ── server ───────────────────────────────────────────────────── */
 
 esp_err_t web_server_start(void)
@@ -283,7 +405,12 @@ esp_err_t web_server_start(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.max_open_sockets  = 7;
     cfg.max_uri_handlers  = 16;   /* default 8 silently drops routes past #8 */
-    cfg.stack_size        = 6144;
+    /* 16 KB (not the 6144 default): a PUT /api/config applies through the
+     * same heavy path as a preset load — cJSON parse, DSP reconfig, then
+     * multiple save passes (cJSON print + FATFS write + NVS commit) — which
+     * is exactly why the LVGL task stack was raised to 16 KB. This handler
+     * runs that work on the server task, so it needs the same headroom. */
+    cfg.stack_size        = 16384;
     cfg.lru_purge_enable  = true;
 
     ESP_RETURN_ON_ERROR(httpd_start(&s_server, &cfg), TAG, "httpd_start failed");
@@ -299,6 +426,9 @@ esp_err_t web_server_start(void)
         { .uri = "/saveWiFi",        .method = HTTP_POST, .handler = save_wifi_post },
         { .uri = "/uploadCal",       .method = HTTP_POST, .handler = upload_cal_post },
         { .uri = "/api/status",      .method = HTTP_GET,  .handler = status_get },
+        { .uri = "/api/config",      .method = HTTP_GET,  .handler = config_get },
+        { .uri = "/api/config",      .method = HTTP_PUT,  .handler = config_put },
+        { .uri = "/reboot",          .method = HTTP_POST, .handler = reboot_post },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         esp_err_t err = httpd_register_uri_handler(s_server, &uris[i]);

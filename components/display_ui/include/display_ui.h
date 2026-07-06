@@ -72,6 +72,17 @@ void      display_ui_push_waveform(const int16_t *samples, size_t count);
  * callbacks. Call once at boot after display_ui_init(). */
 void      display_ui_sync_settings(const settings_t *cfg);
 
+/* Snapshot the live settings (current on-screen widget state) into *out.
+ * Used by the REST config API's GET handler. Caller must hold
+ * display_ui_lock() when calling from outside the LVGL task. */
+void      display_ui_get_settings(settings_t *out);
+
+/* Apply a full settings struct at runtime: syncs widgets, restores mic
+ * calibration, and fires the normal apply/auto-save path — identical to a
+ * preset load. Used by the REST config API's PUT handler. Caller must hold
+ * display_ui_lock() when calling from outside the LVGL task. */
+void      display_ui_apply_settings(const settings_t *cfg);
+
 /* Set bar visual fall rate (0=instant). Called from screen_settings apply and main.c. */
 void      display_ui_set_bar_decay(float rate);
 

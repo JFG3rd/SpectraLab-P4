@@ -922,6 +922,15 @@ footer {
     color: var(--muted-text);
 }
 
+footer a {
+    color: var(--primary-color);
+    text-decoration: underline;
+}
+
+footer a:hover {
+    text-decoration: none;
+}
+
 .ota-note {
     margin-top: 8px;
     font-size: 0.85em;
