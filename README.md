@@ -1,7 +1,7 @@
 # ESP32-P4 Spectrum Analyzer
 
 ![ESP32-P4 Spectrum Analyzer](Docu/images/hero-hospital-workbench-1600.jpg)
-![Waterfall Display Preview](Docu/images/hero-waterfall.jpg)
+![Waterfall Display Preview](Docu/images/Screenshots/hero-waterfall.jpg)
 
 > **A professional real-time audio measurement instrument for the ESP32-P4 Function EV Board.**
 
@@ -31,9 +31,6 @@ The animation demonstrates live spectrum analysis, waterfall display, oscillosco
 
 ---
 
-
----
-
 # 🌐 Embedded Web Interface
 
 The analyzer includes a fully integrated responsive web interface. No additional software is required—any modern browser on your local network can access the device.
@@ -49,31 +46,55 @@ Features include:
 
 ## Main Dashboard
 
-| Dark Theme | Light Theme |
-|------------|-------------|
-| ![](Docu/images/Screenshots/WebMainDark.jpg) | ![](Docu/images/Screenshots/WebMainLight.jpg) |
+<table>
+<tr>
+<td align="center"><strong>Dark Theme</strong></td>
+<td align="center"><strong>Light Theme</strong></td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/WebMainDark.jpg" alt="Web main dashboard dark theme" width="440"></td>
+<td><img src="Docu/images/Screenshots/WebMainLight.jpg" alt="Web main dashboard light theme" width="440"></td>
+</tr>
+</table>
 
 ## Wi-Fi Configuration
 
-| Dark Theme | Light Theme |
-|------------|-------------|
-| ![](Docu/images/Screenshots/WebWifiDark.jpg) | ![](Docu/images/Screenshots/WebWifiLight.jpg) |
+<table>
+<tr>
+<td align="center"><strong>Dark Theme</strong></td>
+<td align="center"><strong>Light Theme</strong></td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/WebWifiDark.jpg" alt="Wi-Fi setup dark theme" width="440"></td>
+<td><img src="Docu/images/Screenshots/WebWifiLight.jpg" alt="Wi-Fi setup light theme" width="440"></td>
+</tr>
+</table>
 
 ## Microphone Calibration
 
-| Dark Theme | Light Theme |
-|------------|-------------|
-| ![](Docu/images/Screenshots/WebMicCalDark.jpg) | ![](Docu/images/Screenshots/WebMicCalLight.jpg) |
+<table>
+<tr>
+<td align="center"><strong>Dark Theme</strong></td>
+<td align="center"><strong>Light Theme</strong></td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/WebMicCalDark.jpg" alt="Microphone calibration dark theme" width="440"></td>
+<td><img src="Docu/images/Screenshots/WebMicCalLight.jpg" alt="Microphone calibration light theme" width="440"></td>
+</tr>
+</table>
+
 
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [User Guide](Docu/UserGuide.md) | Operating the analyzer |
-| [Roadmap](ROADMAP.md) | Planned future enhancements |
-| [Release Notes](RELEASE_NOTES.md) | Latest release summary |
-| [Changelog](CHANGELOG.md) | Version history |
+| [Quick Start](#quick-start) | Build and flash the analyzer |
+| [Display Modes](#display-modes) | Supported on-device analyzer views |
+| [Embedded Web Interface](#-embedded-web-interface) | Browser dashboard, Wi-Fi setup and calibration upload |
+| [Roadmap](#roadmap) | Planned future enhancements |
+| [Release Notes](https://github.com/JFG3rd/JFG-ESP32-P4-Function-EV-Board-Spectrum-Analyzer/releases) | GitHub releases |
+| [Changelog](CHANGELOG.md) | Version history, once `CHANGELOG.md` is added |
 
 ---
 

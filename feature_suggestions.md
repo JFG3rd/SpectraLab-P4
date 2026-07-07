@@ -18,6 +18,10 @@ Let the user set the minimum and maximum dB shown on screen (currently hardcoded
 Extend `settings_mgr` to support multiple files (`settings_music.json`, `settings_voice.json`, etc.) with a profile selector dropdown in Settings.  
 **Why:** Different acoustic environments need different calibrations. Switching profiles is faster than adjusting each parameter manually.
 
+### Web UI Hostname / IP Hint
+Show the current browser entry point (`spectrumanalyzer.local` plus the active DHCP IP) on the Wi-Fi or status screen.  
+**Why:** First-time setup is easier when the user never has to guess which URL or IP address to open.
+
 ---
 
 ## Medium Effort
@@ -31,6 +35,10 @@ Add a numeric input for `dsp_config_t.mic_sensitivity_dbv` (shown in the Setting
 Draw thin horizontal lines above each spectrum bar at its recent peak level, independently of the main averaging mode. Classic RTA look (think EAW, Rational Acoustics Smaart).  
 **Why:** Instantly shows where the peaks occurred while the current level fluctuates, without having to switch averaging mode.
 
+### Peak Readout Cursor
+Tap or long-press the strongest visible peak to freeze a small readout with exact frequency, level, and nearest note or 1/3-octave band.  
+**Why:** Many measurements need a numeric answer, not just a visual bar. A quick cursor makes the analyzer more useful for troubleshooting hums, room modes, and crossover points.
+
 ### Color Scheme Selector
 Three or four palette choices (e.g. blue-green-yellow-red, monochrome, high-contrast for sunlight). Store in `settings_t`.  
 **Why:** The display is read from a distance and in different lighting conditions. High-contrast mode is easier to read in bright rooms.
@@ -38,6 +46,10 @@ Three or four palette choices (e.g. blue-green-yellow-red, monochrome, high-cont
 ---
 
 ## Higher Effort
+
+### Automatic Gain Control (AGC)
+Add an optional software AGC that monitors the long-term average signal level and slowly adjusts `mic_gain_db` to keep the display in the mid-range. Must have a "manual override" that disables it immediately when the user changes gain in Settings.  
+**Why:** Useful for long unattended sessions where background noise levels change significantly (e.g. monitoring a workshop over a full day).
 
 ### Phase 3: Master/Slave Dual-Analyzer Pair (Stereo Split + Preset Sync)
 Run two identical ESP32-P4 units as a coordinated pair:
@@ -77,6 +89,7 @@ Implementation notes for this codebase:
 - Keep `audio_source` as single capture point on master; add a `channel_split` stage before DSP enqueue.
 - On slave, add a new virtual source type `AUDIO_SOURCE_NET` that feeds `audio_to_dsp()`.
 - Extend `settings_t` with role/pairing fields and persist in `settings_mgr`.
+- Surface pair health in the UI (paired state, jitter-buffer depth, packet loss, and current latency) so the slave fails loudly instead of silently drifting.
 
 Why this is practical:
 - Keeps one USB interface (UCA222) while obtaining two synchronized displays/locations.
@@ -96,9 +109,5 @@ On long-press of a bar, calculate the fundamental frequency and its harmonics (Ã
 **Why:** Instantly identifies whether a peak is a fundamental tone or an overtone â€” essential for instrument tuning, room mode analysis, and hum diagnosis.
 
 ### WebSocket Spectrum Stream
-The `idf_component.yml` already scaffolds the Phase 2 WiFi stack (`espressif/esp_wifi_remote` commented out). Once WiFi is enabled via the ESP32-C5 companion chip over SDIO, stream each FFT frame as a JSON or binary WebSocket message to a browser tab for logging, export, and remote monitoring.  
+The `idf_component.yml` already scaffolds the Phase 2 WiFi stack (`espressif/esp_wifi_remote` commented out). Once WiFi is enabled via the on-board ESP32-C6 companion link over SDIO, stream each FFT frame as a JSON or binary WebSocket message to a browser tab for logging, export, and remote monitoring.  
 **Why:** Enables data logging to a laptop, real-time visualization with browser-side tooling (e.g. D3.js), and remote monitoring of a permanently-installed sensor.
-
-### Automatic Gain Control (AGC)
-Add an optional software AGC that monitors the long-term average signal level and slowly adjusts `mic_gain_db` to keep the display in the mid-range. Must have a "manual override" that disables it immediately when the user changes gain in Settings.  
-**Why:** Useful for long unattended sessions where background noise levels change significantly (e.g. monitoring a workshop over a full day).

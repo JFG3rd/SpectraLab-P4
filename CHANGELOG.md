@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- README links now point to the current repo files instead of removed placeholder documents.
+- README media paths and screenshot casing now match the committed `Docu/` asset layout used on GitHub.
+- UserGuide cross-links now point readers to the overview, hardware, safety, roadmap, and changelog docs.
+- Feature suggestions now include a Web UI hostname hint, a peak readout cursor idea, and explicit master/slave link-health UX guidance.
+- Feature suggestions correct the Wi-Fi coprocessor reference to the on-board ESP32-C6.
+
 ## [1.0.0] - 2026-07-06
 
 ### Release Theme
