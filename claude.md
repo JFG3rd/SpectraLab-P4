@@ -42,7 +42,7 @@ pio run -t erase        # full chip erase (needed after partition changes)
   fallback, named presets, cal files; `settings_sanitize()` clamps ALL
   persisted input — extend it when adding settings_t fields
 - `components/net_mgr` — WiFi STA join w/ setup-AP fallback, SSID scan
-  dedup, NVS creds, mDNS `spectrumanalyzer.local`
+  dedup, NVS creds, mDNS `spectralab-p4.local`
 - `components/web_server` — httpd: provisioning portal, cal upload,
   status API; assets from `web/`
 

@@ -293,7 +293,7 @@ The built-in web interface still provides the same main workflows, but there are
 two important differences now: error handling is cleaner, and write endpoints
 are intentionally rate-limited.
 
-Once the analyzer joins Wi-Fi, it advertises `http://spectrumanalyzer.local/`
+Once the analyzer joins Wi-Fi, it advertises `http://spectralab-p4.local/`
 via mDNS. If your network does not resolve mDNS, use the DHCP address shown by
 your router instead.
 

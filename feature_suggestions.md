@@ -19,7 +19,7 @@ Extend `settings_mgr` to support multiple files (`settings_music.json`, `setting
 **Why:** Different acoustic environments need different calibrations. Switching profiles is faster than adjusting each parameter manually.
 
 ### Web UI Hostname / IP Hint
-Show the current browser entry point (`spectrumanalyzer.local` plus the active DHCP IP) on the Wi-Fi or status screen.  
+Show the current browser entry point (`spectralab-p4.local` plus the active DHCP IP) on the Wi-Fi or status screen.  
 **Why:** First-time setup is easier when the user never has to guess which URL or IP address to open.
 
 ---
@@ -72,7 +72,7 @@ Recommended architecture:
 - Slave applies only newer revisions and ACKs revision ID.
 - Master Save/Load preset broadcasts the new revision immediately.
 6. Add session pairing:
-- Slave advertises `slave_id` via mDNS (`spectrumanalyzer-slave-xxxx`).
+- Slave advertises `slave_id` via mDNS (`spectralab-p4-slave-xxxx`).
 - Master UI shows discovered slaves and allows bind/unbind.
 
 Minimal packet schema:

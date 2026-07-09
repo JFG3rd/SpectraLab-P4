@@ -1,4 +1,4 @@
-/* ESP32-P4 Function EV Board — Spectrum Analyzer (Phase 1 POC)
+/* SpectraLab-P4 — ESP32-P4 Function EV Board Spectrum Analyzer (Phase 1 POC)
  *
  * Pipeline: ES8311 mic → I2S → DSP (FFT/SPL) → LVGL display
  *
@@ -74,7 +74,7 @@ static void on_audio_source_changed(audio_source_type_t active,
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=== Spectrum Analyzer starting (Phase 1 POC) ===");
+    ESP_LOGI(TAG, "=== SpectraLab-P4 starting (Phase 1 POC) ===");
 
     /* 1. NVS flash — required by many ESP-IDF components */
     esp_err_t ret = nvs_flash_init();
@@ -177,7 +177,7 @@ void app_main(void)
      * the "self-test passed" point in the boot sequence now. */
     esp_ota_mark_app_valid_cancel_rollback();
 
-    ESP_LOGI(TAG, "=== Spectrum Analyzer running ===");
+    ESP_LOGI(TAG, "=== SpectraLab-P4 running ===");
     /* All work is done in FreeRTOS tasks.  app_main returns — the scheduler
      * keeps everything going (idle task reclaims the stack). */
 }

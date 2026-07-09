@@ -31,7 +31,7 @@ void screen_splash_show(void)
     lv_obj_set_style_pad_all(scr, 0, 0);
 
     lv_obj_t *title = lv_label_create(scr);
-    lv_label_set_text(title, "SPECTRUM ANALYZER");
+    lv_label_set_text(title, "SPECTRALAB-P4");
     lv_obj_set_style_text_color(title, lv_color_hex(0x00CC55), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_48, 0);
     lv_obj_align(title, LV_ALIGN_CENTER, 0, -90);

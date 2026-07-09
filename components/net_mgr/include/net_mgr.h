@@ -13,10 +13,10 @@ extern "C" {
  *   - Credentials stored in NVS (namespace "wifi") -> join as station
  *     (15 s / 3 retries); on failure fall back to the setup AP.
  *   - No credentials -> setup AP directly.
- * Setup AP: SpectrumAnalyzer-XXXX (MAC suffix), WPA2 with a per-device
+ * Setup AP: SpectraLab-P4-XXXX (MAC suffix), WPA2 with a per-device
  * password derived from the eFuse MAC, portal at 192.168.4.1. The mode
  * is APSTA so SSID scanning works while the portal is up.
- * Once the station is connected, mDNS advertises spectrumanalyzer.local. */
+ * Once the station is connected, mDNS advertises spectralab-p4.local. */
 
 #define NET_SSID_MAX 33   /* 32 chars + NUL */
 
@@ -24,7 +24,7 @@ esp_err_t net_mgr_init(void);            /* non-fatal if the C6/hosted link is a
 bool      net_mgr_is_sta_connected(void);
 
 /* Human-readable one-liner for the settings screen, e.g.
- * "AP SpectrumAnalyzer-1A2B pw SA-89ABCDEF 192.168.4.1"
+ * "AP SpectraLab-P4-1A2B pw SA-89ABCDEF 192.168.4.1"
  * "WiFi: MyNetwork 192.168.1.57"  /  "WiFi: off" */
 void      net_mgr_get_status(char *buf, size_t len);
 

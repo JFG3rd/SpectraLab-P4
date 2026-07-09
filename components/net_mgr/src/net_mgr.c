@@ -60,7 +60,7 @@ static void derive_ap_identity(void)
      * derived MAC is all zeros here — the base MAC is always valid. */
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_BASE);
-    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "SpectrumAnalyzer-%02X%02X", mac[4], mac[5]);
+    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "SpectraLab-P4-%02X%02X", mac[4], mac[5]);
     /* WPA2 needs >= 8 chars; stable per device so it can be printed on
      * the settings screen and in the manual */
     snprintf(s_ap_pass, sizeof(s_ap_pass), "SA-%02X%02X%02X%02X",
@@ -215,11 +215,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         ESP_LOGI(TAG, "connected to '%s' — http://%s/", s_sta_ssid, s_ip_str);
 
         if (!s_mdns_up && mdns_init() == ESP_OK) {
-            mdns_hostname_set("spectrumanalyzer");
-            mdns_instance_name_set("ESP32-P4 Spectrum Analyzer");
+            mdns_hostname_set("spectralab-p4");
+            mdns_instance_name_set("SpectraLab-P4");
             mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
             s_mdns_up = true;
-            ESP_LOGI(TAG, "mDNS: http://spectrumanalyzer.local/");
+            ESP_LOGI(TAG, "mDNS: http://spectralab-p4.local/");
         }
     }
 }

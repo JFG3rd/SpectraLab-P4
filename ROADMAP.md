@@ -141,7 +141,7 @@ The Secondary applies only newer revisions and acknowledges the active revision.
 
 Planned pairing workflow:
 
-- Secondary advertises using mDNS, for example `spectrumanalyzer-secondary-xxxx`
+- Secondary advertises using mDNS, for example `spectralab-p4-secondary-xxxx`
 - Primary discovers available Secondary units
 - Primary UI supports bind/unbind
 - Pairing state is stored persistently
