@@ -25,6 +25,7 @@ idf_component_register(
         dsp_engine
         audio_source
         settings_mgr
+        agc
         net_mgr
         esp_hw_support
         esp_lcd

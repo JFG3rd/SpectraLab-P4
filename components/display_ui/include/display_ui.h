@@ -45,6 +45,10 @@ void      display_ui_set_source_status(bool usb_active);
 /* Restore peak hold state at boot (called from main.c after display init). */
 void      display_ui_set_peak_hold(bool enabled);
 
+/* Restore/apply the software AGC state at boot and configure the
+ * controller (call after display_ui_sync_settings so target/speed are set). */
+void      display_ui_set_agc(bool enabled);
+
 /* Set display dB range (60-120 dB span mapped to full bar height). */
 void      display_ui_set_db_range(int range_db);
 

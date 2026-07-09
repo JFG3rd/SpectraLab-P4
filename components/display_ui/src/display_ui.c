@@ -15,6 +15,7 @@
 #include "dsp_engine.h"
 #include "audio_source.h"
 #include "settings_mgr.h"
+#include "agc.h"
 #include "display_ui.h"
 #include "display_init.h"
 #include "screen_spectrum.h"
@@ -51,6 +52,34 @@ static float        s_last_amb_margin = 1.5f;
 static int          s_last_usb_policy = SETTINGS_USB_STEREO_POLICY_SUM;
 static bool         s_last_cal_enabled = false;
 static char         s_last_cal_file[32] = "";
+static bool         s_last_agc_enabled = false;
+static int          s_last_agc_target  = -12;
+static int          s_last_agc_speed   = AGC_SPEED_SLOW;
+
+/* Persist the full current settings snapshot. Every s_last_* field is
+ * captured here so no auto-save site can zero-clobber another's value —
+ * new persisted settings only need to be added in this one place. */
+static void save_current_settings(void)
+{
+    settings_t s = { .dsp = s_last_dsp_cfg, .mic_gain_db = s_last_gain_db,
+                     .color_scheme = s_last_scheme,
+                     .ambient_noise_enabled   = s_last_ambient,
+                     .peak_hold_enabled       = s_last_peak_hold,
+                     .bar_decay_db_per_frame  = s_last_bar_decay,
+                     .peak_decay_db_per_frame = s_last_peak_decay,
+                     .max_hold_enabled        = s_last_max_hold,
+                     .screen_brightness       = s_last_brightness,
+                     .db_range                = s_last_db_range,
+                     .display_mode            = s_last_disp_mode,
+                     .ambient_margin          = s_last_amb_margin,
+                     .usb_stereo_policy       = s_last_usb_policy,
+                     .cal_enabled             = s_last_cal_enabled,
+                     .agc_enabled             = s_last_agc_enabled,
+                     .agc_target_dbfs         = s_last_agc_target,
+                     .agc_speed               = s_last_agc_speed };
+    strlcpy(s.cal_file, s_last_cal_file, sizeof(s.cal_file));
+    settings_mgr_save(&s);
+}
 
 /* ── settings change handler ──────────────────────────────────── */
 static void on_settings_changed(const dsp_config_t *new_cfg, void *ctx)
@@ -61,22 +90,7 @@ static void on_settings_changed(const dsp_config_t *new_cfg, void *ctx)
         ESP_LOGW(TAG, "dsp_engine_set_config: %s", esp_err_to_name(ret));
     s_last_dsp_cfg = *new_cfg;
     screen_spectrum_set_dsp_info(&s_last_dsp_cfg, s_last_gain_db);
-    /* Auto-save whenever settings are applied */
-    settings_t s = { .dsp = s_last_dsp_cfg, .mic_gain_db = s_last_gain_db,
-                     .color_scheme = s_last_scheme,
-                     .ambient_noise_enabled   = s_last_ambient,
-                     .peak_hold_enabled       = s_last_peak_hold,
-                     .bar_decay_db_per_frame  = s_last_bar_decay,
-                     .peak_decay_db_per_frame = s_last_peak_decay,
-                     .max_hold_enabled        = s_last_max_hold,
-                     .screen_brightness       = s_last_brightness,
-                     .db_range                = s_last_db_range,
-                     .display_mode            = s_last_disp_mode,
-                     .ambient_margin          = s_last_amb_margin,
-                     .usb_stereo_policy       = s_last_usb_policy,
-                     .cal_enabled             = s_last_cal_enabled };
-    strlcpy(s.cal_file, s_last_cal_file, sizeof(s.cal_file));
-    settings_mgr_save(&s);
+    save_current_settings();
 }
 
 static void on_mic_gain_changed(int gain_db, void *ctx)
@@ -86,23 +100,17 @@ static void on_mic_gain_changed(int gain_db, void *ctx)
     if (ret != ESP_OK)
         ESP_LOGW(TAG, "audio_source_set_mic_gain_db: %s", esp_err_to_name(ret));
     s_last_gain_db = gain_db;
+
+    /* Manual override: a hand-set gain turns the AGC off immediately and
+     * makes this the new baseline. Reflect the off-state in the UI. */
+    agc_notify_manual_gain(gain_db);
+    if (s_last_agc_enabled) {
+        s_last_agc_enabled = false;
+        screen_spectrum_set_agc(false);
+    }
+
     screen_spectrum_set_dsp_info(&s_last_dsp_cfg, s_last_gain_db);
-    /* Auto-save whenever gain is applied */
-    settings_t s = { .dsp = s_last_dsp_cfg, .mic_gain_db = s_last_gain_db,
-                     .color_scheme = s_last_scheme,
-                     .ambient_noise_enabled   = s_last_ambient,
-                     .peak_hold_enabled       = s_last_peak_hold,
-                     .bar_decay_db_per_frame  = s_last_bar_decay,
-                     .peak_decay_db_per_frame = s_last_peak_decay,
-                     .max_hold_enabled        = s_last_max_hold,
-                     .screen_brightness       = s_last_brightness,
-                     .db_range                = s_last_db_range,
-                     .display_mode            = s_last_disp_mode,
-                     .ambient_margin          = s_last_amb_margin,
-                     .usb_stereo_policy       = s_last_usb_policy,
-                     .cal_enabled             = s_last_cal_enabled };
-    strlcpy(s.cal_file, s_last_cal_file, sizeof(s.cal_file));
-    settings_mgr_save(&s);
+    save_current_settings();
 }
 
 static void on_usb_policy_changed(audio_usb_stereo_policy_t policy, void *ctx)
@@ -112,22 +120,20 @@ static void on_usb_policy_changed(audio_usb_stereo_policy_t policy, void *ctx)
     if (ret != ESP_OK)
         ESP_LOGW(TAG, "audio_source_set_usb_stereo_policy: %s", esp_err_to_name(ret));
     s_last_usb_policy = (int)policy;
+    save_current_settings();
+}
 
-    settings_t s = { .dsp = s_last_dsp_cfg, .mic_gain_db = s_last_gain_db,
-                     .color_scheme = s_last_scheme,
-                     .ambient_noise_enabled   = s_last_ambient,
-                     .peak_hold_enabled       = s_last_peak_hold,
-                     .bar_decay_db_per_frame  = s_last_bar_decay,
-                     .peak_decay_db_per_frame = s_last_peak_decay,
-                     .max_hold_enabled        = s_last_max_hold,
-                     .screen_brightness       = s_last_brightness,
-                     .db_range                = s_last_db_range,
-                     .display_mode            = s_last_disp_mode,
-                     .ambient_margin          = s_last_amb_margin,
-                     .usb_stereo_policy       = s_last_usb_policy,
-                     .cal_enabled             = s_last_cal_enabled };
-    strlcpy(s.cal_file, s_last_cal_file, sizeof(s.cal_file));
-    settings_mgr_save(&s);
+/* AGC on/off + behavior, applied from the Settings screen. */
+static void on_agc_changed(bool enabled, int target_dbfs, int speed, void *ctx)
+{
+    (void)ctx;
+    s_last_agc_enabled = enabled;
+    s_last_agc_target  = target_dbfs;
+    s_last_agc_speed   = speed;
+    agc_configure(target_dbfs, speed);
+    agc_set_enabled(enabled);
+    screen_spectrum_set_agc(enabled);
+    save_current_settings();
 }
 
 /* Update ambient noise indicator on the spectrum screen (called from main.c
@@ -155,8 +161,30 @@ void display_ui_set_peak_hold(bool enabled)
 void display_ui_sync_settings(const settings_t *cfg)
 {
     if (!cfg) return;
-    s_last_usb_policy = cfg->usb_stereo_policy;
+    s_last_usb_policy  = cfg->usb_stereo_policy;
+    s_last_agc_enabled = cfg->agc_enabled;
+    s_last_agc_target  = cfg->agc_target_dbfs;
+    s_last_agc_speed   = cfg->agc_speed;
     screen_settings_sync_from(cfg);
+}
+
+/* AGC on-screen button (spectrum status bar) toggled by the user. */
+static void on_agc_button(bool enabled)
+{
+    s_last_agc_enabled = enabled;
+    agc_set_enabled(enabled);
+    screen_settings_sync_agc(enabled, s_last_agc_target, s_last_agc_speed);
+    save_current_settings();
+}
+
+/* Restore/apply AGC state at boot (and configure the controller). Assumes
+ * s_last_agc_target / s_last_agc_speed are already synced. */
+void display_ui_set_agc(bool enabled)
+{
+    s_last_agc_enabled = enabled;
+    agc_configure(s_last_agc_target, s_last_agc_speed);
+    agc_set_enabled(enabled);
+    screen_spectrum_set_agc(enabled);
 }
 
 void display_ui_get_settings(settings_t *out)
@@ -252,21 +280,7 @@ void display_ui_notify_color_scheme(color_scheme_t scheme)
 {
     s_last_scheme = scheme;
     screen_spectrum_set_color_scheme(scheme);  /* update palette + invalidate */
-    settings_t s = { .dsp = s_last_dsp_cfg, .mic_gain_db = s_last_gain_db,
-                     .color_scheme = s_last_scheme,
-                     .ambient_noise_enabled   = s_last_ambient,
-                     .peak_hold_enabled       = s_last_peak_hold,
-                     .bar_decay_db_per_frame  = s_last_bar_decay,
-                     .peak_decay_db_per_frame = s_last_peak_decay,
-                     .max_hold_enabled        = s_last_max_hold,
-                     .screen_brightness       = s_last_brightness,
-                     .db_range                = s_last_db_range,
-                     .display_mode            = s_last_disp_mode,
-                     .ambient_margin          = s_last_amb_margin,
-                     .usb_stereo_policy       = s_last_usb_policy,
-                     .cal_enabled             = s_last_cal_enabled };
-    strlcpy(s.cal_file, s_last_cal_file, sizeof(s.cal_file));
-    settings_mgr_save(&s);
+    save_current_settings();
 }
 
 /* ── LVGL timer: pull pending data and update spectrum screen ─── */
@@ -318,9 +332,11 @@ esp_err_t display_ui_init(void)
     /* Create screens — must hold LVGL lock */
     bsp_display_lock(0);
     ESP_RETURN_ON_ERROR(screen_spectrum_create(), TAG, "spectrum screen create failed");
+    screen_spectrum_set_agc_cb(on_agc_button);
     ESP_RETURN_ON_ERROR(screen_settings_create(on_settings_changed, NULL,
                                                on_mic_gain_changed, NULL,
-                                               on_usb_policy_changed, NULL),
+                                               on_usb_policy_changed, NULL,
+                                               on_agc_changed, NULL),
                         TAG, "settings screen create failed");
     screen_splash_show();   /* fades into the spectrum screen after ~2.5 s */
     screen_spectrum_set_dsp_info(&s_last_dsp_cfg, s_last_gain_db);

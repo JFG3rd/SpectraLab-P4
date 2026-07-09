@@ -20,6 +20,7 @@ idf_component_register(
         dsp_engine
         display_ui
         settings_mgr
+        agc
         nvs_flash
         esp_event
         esp_netif

@@ -56,6 +56,11 @@ static portMUX_TYPE s_cfg_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile uint32_t s_cfg_gen = 0;   /* bumped by set_config; task re-derives sizes */
 static volatile uint32_t s_sample_rate = CONFIG_DSP_ENGINE_DEFAULT_SAMPLE_RATE;  /* live source rate */
 
+/* Software input gain (linear), applied per input sample. Written from the
+ * AGC (another task) and read in the DSP task; a plain float write/read is
+ * atomic on this target and a one-frame skew is harmless. */
+static volatile float s_input_gain_lin = 1.0f;   /* 0 dB */
+
 /* ── noise floor calibration state ───────────────────────────── */
 static float    *s_noise_floor_db;      /* PSRAM [bin_count] — stored baseline (dB) */
 static float    *s_noise_accum;         /* PSRAM [bin_count] — mean POWER during capture */
@@ -286,8 +291,9 @@ static void dsp_task(void *arg)
         if (keep > 0)
             memmove(s_overlap_buf, s_overlap_buf + hop_size, keep * sizeof(float));
 
+        float in_gain = s_input_gain_lin;   /* snapshot once per frame */
         for (uint32_t i = 0; i < hop_size; i++)
-            s_overlap_buf[keep + i] = (float)accum[i] / 32768.0f;
+            s_overlap_buf[keep + i] = (float)accum[i] * in_gain / 32768.0f;
 
         /* Apply window */
         for (uint32_t n = 0; n < fft_size; n++)
@@ -505,6 +511,19 @@ esp_err_t dsp_engine_push_samples(const int16_t *pcm, size_t count)
     BaseType_t ok = xRingbufferSend(s_ring_buf, pcm,
                                      count * sizeof(int16_t), 0 /* non-blocking */);
     return (ok == pdTRUE) ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+void dsp_engine_set_input_gain_db(float gain_db)
+{
+    if (!isfinite(gain_db)) gain_db = 0.0f;
+    if (gain_db < -24.0f) gain_db = -24.0f;
+    if (gain_db >  24.0f) gain_db =  24.0f;
+    s_input_gain_lin = powf(10.0f, gain_db / 20.0f);
+}
+
+float dsp_engine_get_input_gain_db(void)
+{
+    return 20.0f * log10f(s_input_gain_lin);
 }
 
 esp_err_t dsp_engine_register_consumer(dsp_consumer_cb_t cb, void *ctx)

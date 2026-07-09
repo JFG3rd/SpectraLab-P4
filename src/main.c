@@ -25,6 +25,7 @@
 #include "dsp_engine.h"
 #include "display_ui.h"
 #include "settings_mgr.h"
+#include "agc.h"
 #include "net_mgr.h"
 #include "web_server.h"
 
@@ -60,6 +61,9 @@ static void on_audio_source_changed(audio_source_type_t active,
     (void)ctx;
     if (sample_rate > 0) dsp_engine_set_sample_rate(sample_rate);
     dsp_engine_notify_source_changed((int)active);   /* NF baseline + ambient are per-mic */
+    /* Only the I2S ES8311 mic has an analog PGA; a USB mic forces the AGC
+     * into software-trim-only mode. */
+    agc_set_hw_gain_available(active == AUDIO_SOURCE_I2S);
     /* Called from the USB worker task — take the LVGL lock */
     display_ui_lock();
     display_ui_set_source_status(active == AUDIO_SOURCE_USB);
@@ -145,6 +149,15 @@ void app_main(void)
     ESP_ERROR_CHECK(audio_source_set_usb_stereo_policy(
         (audio_usb_stereo_policy_t)loaded.usb_stereo_policy));
     audio_source_set_mic_gain_db(loaded.mic_gain_db);
+
+    /* 6b. Software AGC: anchor at the persisted manual gain, apply the
+     * persisted behavior, then run it as its own DSP consumer. */
+    agc_init(loaded.mic_gain_db);
+    agc_set_hw_gain_available(audio_source_get_active() == AUDIO_SOURCE_I2S);
+    ESP_ERROR_CHECK(dsp_engine_register_consumer(agc_on_frame, NULL));
+    display_ui_lock();
+    display_ui_set_agc(loaded.agc_enabled);   /* configures + enables + updates button */
+    display_ui_unlock();
 
     /* 7. Start audio capture */
     ESP_LOGI(TAG, "Step 7: audio_source_start");

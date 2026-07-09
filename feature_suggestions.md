@@ -47,8 +47,8 @@ Three or four palette choices (e.g. blue-green-yellow-red, monochrome, high-cont
 
 ## Higher Effort
 
-### Automatic Gain Control (AGC)
-Add an optional software AGC that monitors the long-term average signal level and slowly adjusts `mic_gain_db` to keep the display in the mid-range. Must have a "manual override" that disables it immediately when the user changes gain in Settings.  
+### Automatic Gain Control (AGC) — ✅ Implemented (`components/agc`)
+An optional software AGC that monitors the long-term display level and slowly steers the total gain to keep the spectrum mid-range. Hybrid actuator: coarse ES8311 PGA (6 dB steps) plus a continuous software trim in the DSP input stage (software-only for USB mics). Runtime-adjustable target and speed, an on-screen `AGC` toggle button, and a Settings group. Manual override: changing Mic gain in Settings disables it immediately.  
 **Why:** Useful for long unattended sessions where background noise levels change significantly (e.g. monitoring a workshop over a full day).
 
 ### Phase 3: Master/Slave Dual-Analyzer Pair (Stereo Split + Preset Sync)

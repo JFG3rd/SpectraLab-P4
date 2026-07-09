@@ -150,6 +150,9 @@ static const char *const g_mode_names[] = {
     "Waterfall", "Scope", "VU Meter", "Mirror",
 };
 static lv_obj_t *s_btn_grid_lbl;       /* grid toggle button label */
+static lv_obj_t *s_btn_agc_lbl;        /* AGC toggle button label */
+static bool      s_agc_enabled;        /* mirrors the AGC controller state */
+static screen_spectrum_agc_cb_t s_agc_cb;   /* fired when the AGC button is tapped */
 static lv_obj_t *s_btn_pk_lbl;         /* peak hold toggle button label */
 static lv_obj_t *s_btn_mx_lbl;         /* max hold toggle button label */
 static lv_obj_t *s_btn_rst;            /* reset max hold button */
@@ -578,6 +581,15 @@ static void stop_btn_cb(lv_event_t *e)
     s_frozen = !s_frozen;
     if (s_btn_stop_lbl)
         lv_label_set_text(s_btn_stop_lbl, s_frozen ? LV_SYMBOL_PLAY : LV_SYMBOL_PAUSE);
+}
+
+static void agc_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    s_agc_enabled = !s_agc_enabled;
+    if (s_btn_agc_lbl)
+        lv_label_set_text(s_btn_agc_lbl, s_agc_enabled ? "AGC " LV_SYMBOL_OK : "AGC");
+    if (s_agc_cb) s_agc_cb(s_agc_enabled);
 }
 
 static void grid_btn_cb(lv_event_t *e)
@@ -1313,6 +1325,16 @@ esp_err_t screen_spectrum_create(void)
     lv_obj_set_style_text_font(s_btn_grid_lbl, &lv_font_montserrat_14, 0);
     lv_obj_center(s_btn_grid_lbl);
 
+    /* AGC — software auto-gain toggle (left of GRD) */
+    lv_obj_t *btn_agc = lv_button_create(status);
+    lv_obj_set_size(btn_agc, 56, 30);
+    lv_obj_align(btn_agc, LV_ALIGN_TOP_RIGHT, -374, 3);
+    lv_obj_add_event_cb(btn_agc, agc_btn_cb, LV_EVENT_CLICKED, NULL);
+    s_btn_agc_lbl = lv_label_create(btn_agc);
+    lv_label_set_text(s_btn_agc_lbl, s_agc_enabled ? "AGC " LV_SYMBOL_OK : "AGC");
+    lv_obj_set_style_text_font(s_btn_agc_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(s_btn_agc_lbl);
+
     /* STOP/PLAY — freezes the display on the current frame */
     lv_obj_t *btn_stop = lv_button_create(status);
     lv_obj_set_size(btn_stop, 56, 30);
@@ -1772,4 +1794,16 @@ void screen_spectrum_set_max_hold(bool enabled)
 bool screen_spectrum_get_max_hold(void)
 {
     return s_max_hold_enabled;
+}
+
+void screen_spectrum_set_agc_cb(screen_spectrum_agc_cb_t cb)
+{
+    s_agc_cb = cb;
+}
+
+void screen_spectrum_set_agc(bool enabled)
+{
+    s_agc_enabled = enabled;
+    if (s_btn_agc_lbl)
+        lv_label_set_text(s_btn_agc_lbl, enabled ? "AGC " LV_SYMBOL_OK : "AGC");
 }

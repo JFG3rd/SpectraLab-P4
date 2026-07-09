@@ -73,6 +73,13 @@ void      dsp_engine_deinit(void);
  * The frequency table is rebuilt at the next frame boundary. */
 void      dsp_engine_set_sample_rate(uint32_t sample_rate_hz);
 
+/* Software input gain (dB), applied to every input sample before windowing
+ * — used by the AGC as a fine trim on top of the ES8311 hardware PGA, and
+ * as the only actuator when a USB mic (no PGA) is the source. Affects the
+ * spectrum, peak and SPL alike. Clamped internally; 0 dB = unity. */
+void      dsp_engine_set_input_gain_db(float gain_db);
+float     dsp_engine_get_input_gain_db(void);
+
 /* ── microphone calibration (Phase 2 M2) ──────────────────────────
  * Load a calibration file (miniDSP UMIK-1 .txt or generic freq/dB CSV)
  * from a filesystem path. The per-bin correction is subtracted from the

@@ -121,6 +121,7 @@ Although it began as a personal engineering project, it is released as open sour
 - Runtime USB stereo-to-mono selection
 - Touchscreen pinch zoom
 - Microphone calibration support
+- Automatic Gain Control (AGC) with manual override
 - Noise-floor capture and subtraction
 - Presets with full runtime persistence
 - SD card configuration storage
@@ -186,6 +187,7 @@ Every feature is evaluated against one goal:
 | Presets | ✅ |
 | Calibration | ✅ |
 | Noise Floor Capture | ✅ |
+| Automatic Gain Control | ✅ |
 | Wi-Fi Provisioning | ✅ |
 | Distributed Stereo Analyzer | 🚧 Planned for v2.0 |
 
@@ -298,6 +300,7 @@ The firmware is intentionally organized into independent components including au
 components/
     audio_source/
     dsp_engine/
+    agc/
     display_ui/
     settings_mgr/
     net_mgr/

@@ -7,10 +7,16 @@
 typedef void (*settings_changed_cb_t)(const dsp_config_t *new_cfg, void *ctx);
 typedef void (*mic_gain_changed_cb_t)(int gain_db, void *ctx);
 typedef void (*usb_policy_changed_cb_t)(audio_usb_stereo_policy_t policy, void *ctx);
+typedef void (*agc_changed_cb_t)(bool enabled, int target_dbfs, int speed, void *ctx);
 
 esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
                                   mic_gain_changed_cb_t gain_cb, void *gain_ctx,
-                                  usb_policy_changed_cb_t usb_cb, void *usb_ctx);
+                                  usb_policy_changed_cb_t usb_cb, void *usb_ctx,
+                                  agc_changed_cb_t agc_cb, void *agc_ctx);
+
+/* Reflect an AGC state change made elsewhere (on-screen button, manual
+ * override) into the settings widgets. */
+void      screen_settings_sync_agc(bool enabled, int target_dbfs, int speed);
 void      screen_settings_load(void);
 
 /* Snapshot the current UI state into *out (used by Save-As dialog). */

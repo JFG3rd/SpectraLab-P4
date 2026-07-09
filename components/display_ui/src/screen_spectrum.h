@@ -23,3 +23,10 @@ bool      screen_spectrum_get_peak_hold(void);
 void      screen_spectrum_set_peak_decay(float rate);
 void      screen_spectrum_set_max_hold(bool enabled);
 bool      screen_spectrum_get_max_hold(void);
+
+/* Software AGC on-screen toggle button. set_agc() updates the button
+ * label to reflect state set elsewhere; the callback fires when the user
+ * taps the button. */
+typedef void (*screen_spectrum_agc_cb_t)(bool enabled);
+void      screen_spectrum_set_agc_cb(screen_spectrum_agc_cb_t cb);
+void      screen_spectrum_set_agc(bool enabled);

@@ -156,6 +156,9 @@ static char *_settings_to_json(const settings_t *cfg)
     cJSON_AddNumberToObject(root, "ambient_margin",             (double)cfg->ambient_margin);
     cJSON_AddBoolToObject  (root, "cal_enabled",                cfg->cal_enabled);
     cJSON_AddStringToObject(root, "cal_file",                   cfg->cal_file);
+    cJSON_AddBoolToObject  (root, "agc_enabled",                cfg->agc_enabled);
+    cJSON_AddNumberToObject(root, "agc_target_dbfs",            cfg->agc_target_dbfs);
+    cJSON_AddNumberToObject(root, "agc_speed",                  cfg->agc_speed);
 
     char *str = cJSON_Print(root);
     cJSON_Delete(root);
@@ -200,6 +203,9 @@ static bool _json_to_settings(const char *json_str, settings_t *out)
     if ((item = cJSON_GetObjectItem(root, "cal_file")) && cJSON_IsString(item) &&
         item->valuestring != NULL)
         strlcpy(out->cal_file, item->valuestring, sizeof(out->cal_file));
+    GET_BOOL("agc_enabled",              agc_enabled);
+    GET_INT ("agc_target_dbfs",          agc_target_dbfs);
+    GET_INT ("agc_speed",                agc_speed);
 
 #undef GET_INT
 #undef GET_FLT
@@ -373,6 +379,10 @@ void settings_mgr_sanitize(settings_t *s)
     s->cal_file[sizeof(s->cal_file) - 1] = '\0';
     if (strchr(s->cal_file, '/') || strchr(s->cal_file, '\\'))
         s->cal_file[0] = '\0';
+
+    /* AGC: target is a display headroom (below 0 dBFS); speed is an enum */
+    s->agc_target_dbfs = _clampi(s->agc_target_dbfs, -30, -3, -12);
+    if ((unsigned)s->agc_speed >= AGC_SPEED_COUNT) s->agc_speed = AGC_SPEED_SLOW;
 }
 
 static void _set_defaults(settings_t *out)
@@ -392,6 +402,9 @@ static void _set_defaults(settings_t *out)
     out->ambient_margin           = 1.5f;
     out->cal_enabled              = false;
     out->cal_file[0]              = '\0';
+    out->agc_enabled              = false;   /* opt-in */
+    out->agc_target_dbfs          = -12;     /* mid-range display headroom */
+    out->agc_speed                = AGC_SPEED_SLOW;
 }
 
 esp_err_t settings_mgr_load(settings_t *out)

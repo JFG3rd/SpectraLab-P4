@@ -26,6 +26,8 @@ static mic_gain_changed_cb_t s_gain_cb     = NULL;
 static void                 *s_gain_ctx    = NULL;
 static usb_policy_changed_cb_t s_usb_cb    = NULL;
 static void                   *s_usb_ctx   = NULL;
+static agc_changed_cb_t       s_agc_cb     = NULL;
+static void                  *s_agc_ctx    = NULL;
 
 static dsp_config_t s_cur_cfg;
 static int           s_cur_gain_db = 6;
@@ -44,6 +46,9 @@ static const char *window_opts    = "Rectangular\nHann\nHamming\nBlackman\nBlack
 static const char *avg_opts       = "Exponential\nRMS\nPeak Hold\nMax Hold";
 static const char *overlap_opts   = "0%\n25%\n50%\n75%";
 static const char *gain_opts      = "0 dB\n6 dB\n12 dB\n18 dB\n24 dB\n30 dB\n36 dB\n42 dB";
+static const char *agc_enable_opts = "Off\nOn";
+static const char *agc_target_opts = "-6 dBFS\n-9 dBFS\n-12 dBFS\n-18 dBFS\n-24 dBFS";
+static const char *agc_speed_opts  = "Slow\nMedium\nFast";
 
 static lv_obj_t *s_dd_color_scheme;
 static lv_obj_t *s_dd_bar_decay;
@@ -61,6 +66,9 @@ static lv_obj_t *s_dd_window;
 static lv_obj_t *s_dd_avg;
 static lv_obj_t *s_dd_overlap;
 static lv_obj_t *s_dd_gain;
+static lv_obj_t *s_dd_agc_enable;
+static lv_obj_t *s_dd_agc_target;
+static lv_obj_t *s_dd_agc_speed;
 static lv_obj_t *s_dd_nf_enable;
 static lv_obj_t *s_lbl_nf_status;
 static lv_obj_t *s_btn_nf_capture;
@@ -127,6 +135,25 @@ static uint16_t gain_db_to_index(int gain_db)
     case 36: return 6;
     case 42: return 7;
     default: return 6;
+    }
+}
+
+static int agc_target_index_to_dbfs(uint16_t idx)
+{
+    static const int t[] = {-6, -9, -12, -18, -24};
+    if (idx >= 5) idx = 2;
+    return t[idx];
+}
+
+static uint16_t agc_target_dbfs_to_index(int dbfs)
+{
+    switch (dbfs) {
+    case -6:  return 0;
+    case -9:  return 1;
+    case -12: return 2;
+    case -18: return 3;
+    case -24: return 4;
+    default:  return 2;
     }
 }
 
@@ -247,6 +274,14 @@ static void apply_settings(void)
 
     if (s_usb_cb) {
         s_usb_cb((audio_usb_stereo_policy_t)lv_dropdown_get_selected(s_dd_usb_policy), s_usb_ctx);
+    }
+
+    if (s_agc_cb) {
+        bool agc_on   = (lv_dropdown_get_selected(s_dd_agc_enable) == 1);
+        int  agc_tgt  = agc_target_index_to_dbfs(lv_dropdown_get_selected(s_dd_agc_target));
+        int  agc_spd  = (int)lv_dropdown_get_selected(s_dd_agc_speed);
+        s_agc_cb(agc_on, agc_tgt, agc_spd, s_agc_ctx);
+        ESP_LOGI(TAG, "settings: agc=%d target=%d speed=%d", agc_on, agc_tgt, agc_spd);
     }
 
     /* Apply colour scheme via display_ui (also auto-saves everything) */
@@ -452,7 +487,8 @@ static void make_group_header(lv_obj_t *parent, const char *txt, int32_t x, int3
 
 esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
                                   mic_gain_changed_cb_t gain_cb, void *gain_ctx,
-                                  usb_policy_changed_cb_t usb_cb, void *usb_ctx)
+                                  usb_policy_changed_cb_t usb_cb, void *usb_ctx,
+                                  agc_changed_cb_t agc_cb, void *agc_ctx)
 {
     s_changed_cb  = cb;
     s_changed_ctx = ctx;
@@ -460,11 +496,17 @@ esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
     s_gain_ctx    = gain_ctx;
     s_usb_cb      = usb_cb;
     s_usb_ctx     = usb_ctx;
+    s_agc_cb      = agc_cb;
+    s_agc_ctx     = agc_ctx;
     s_cur_cfg     = dsp_config_default;
 
     s_screen = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_screen, lv_color_hex(0x0D1B2A), 0);
     lv_obj_set_style_pad_all(s_screen, 0, 0);
+    /* The AUTO GAIN group sits just below the 600 px fold — allow vertical
+     * scroll to reveal it while keeping the tuned one-screen layout intact. */
+    lv_obj_set_scroll_dir(s_screen, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(s_screen, LV_SCROLLBAR_MODE_AUTO);
 
     lv_obj_t *title = lv_label_create(s_screen);
     lv_label_set_text(title, "Settings");
@@ -624,6 +666,15 @@ esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
 
 #undef MAKE_CAL_BTN
 
+    /* ══ AUTO GAIN (AGC) — below the fold, reachable by scrolling ═══ */
+    make_group_header(s_screen, "AUTO GAIN (AGC)", 540, 605);
+    s_dd_agc_enable = make_labeled_dropdown_r(s_screen, "Auto Gain:",  agc_enable_opts, 631);
+    s_dd_agc_target = make_labeled_dropdown_r(s_screen, "AGC Target:", agc_target_opts, 676);
+    s_dd_agc_speed  = make_labeled_dropdown_r(s_screen, "AGC Speed:",  agc_speed_opts,  721);
+    lv_dropdown_set_selected(s_dd_agc_enable, 0);   /* Off */
+    lv_dropdown_set_selected(s_dd_agc_target, agc_target_dbfs_to_index(-12));
+    lv_dropdown_set_selected(s_dd_agc_speed,  AGC_SPEED_SLOW);
+
     /* WiFi status — AP name+password while provisioning, SSID+IP when joined */
     s_lbl_wifi_status = lv_label_create(s_screen);
     lv_label_set_text(s_lbl_wifi_status, "WiFi: ...");
@@ -674,6 +725,9 @@ void screen_settings_collect(settings_t *out)
     out->ambient_margin          = amb_strength_index_to_margin(lv_dropdown_get_selected(s_dd_amb_strength));
     out->cal_enabled             = (lv_dropdown_get_selected(s_dd_cal_enable) == 1);
     strlcpy(out->cal_file, s_cal_file_name, sizeof(out->cal_file));
+    out->agc_enabled             = (lv_dropdown_get_selected(s_dd_agc_enable) == 1);
+    out->agc_target_dbfs         = agc_target_index_to_dbfs(lv_dropdown_get_selected(s_dd_agc_target));
+    out->agc_speed               = (int)lv_dropdown_get_selected(s_dd_agc_speed);
 }
 
 /* Update every widget + s_cur_cfg from cfg WITHOUT firing the changed
@@ -706,11 +760,22 @@ void screen_settings_sync_from(const settings_t *cfg)
     lv_dropdown_set_selected(s_dd_cal_enable,   cfg->cal_enabled ? 1 : 0);
     strlcpy(s_cal_file_name, cfg->cal_file, sizeof(s_cal_file_name));
     update_cal_status_label();
+    screen_settings_sync_agc(cfg->agc_enabled, cfg->agc_target_dbfs, cfg->agc_speed);
 
     if (cfg->ambient_noise_enabled) lv_obj_add_state(s_sw_ambient, LV_STATE_CHECKED);
     else                            lv_obj_remove_state(s_sw_ambient, LV_STATE_CHECKED);
 
     screen_settings_sync_brightness(cfg->screen_brightness);
+}
+
+/* Reflect an external AGC change (on-screen button / manual override). */
+void screen_settings_sync_agc(bool enabled, int target_dbfs, int speed)
+{
+    if (!s_dd_agc_enable) return;
+    lv_dropdown_set_selected(s_dd_agc_enable, enabled ? 1 : 0);
+    lv_dropdown_set_selected(s_dd_agc_target, agc_target_dbfs_to_index(target_dbfs));
+    lv_dropdown_set_selected(s_dd_agc_speed,
+                             (unsigned)speed < AGC_SPEED_COUNT ? (uint16_t)speed : AGC_SPEED_SLOW);
 }
 
 void screen_settings_apply_loaded(const settings_t *cfg)

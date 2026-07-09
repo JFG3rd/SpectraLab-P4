@@ -1,0 +1,13 @@
+idf_component_register(
+    SRCS
+        "src/agc.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        dsp_engine
+        settings_mgr
+    PRIV_REQUIRES
+        audio_source
+        esp_timer
+        log
+)

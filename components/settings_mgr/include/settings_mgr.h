@@ -35,6 +35,13 @@ typedef enum {
     SETTINGS_USB_STEREO_POLICY_RIGHT,
 } settings_usb_stereo_policy_t;
 
+typedef enum {
+    AGC_SPEED_SLOW = 0,           /* minutes-long average — unattended sessions */
+    AGC_SPEED_MEDIUM,             /* tens of seconds                            */
+    AGC_SPEED_FAST,               /* seconds — responsive                       */
+    AGC_SPEED_COUNT,
+} settings_agc_speed_t;
+
 /* Complete application settings — everything that the user can adjust at
  * runtime and that should survive a power cycle.
  *
@@ -57,6 +64,9 @@ typedef struct {
     float          ambient_margin;      /* ambient subtraction strength: 1.1/1.5/2.5   */
     bool           cal_enabled;         /* apply mic calibration correction            */
     char           cal_file[32];        /* cal filename in /sdcard/spectrum/cal/       */
+    bool           agc_enabled;         /* automatic gain control (software AGC)       */
+    int            agc_target_dbfs;     /* AGC target display level: -6/-9/-12/-18/-24 */
+    int            agc_speed;           /* settings_agc_speed_t: slow/medium/fast      */
 } settings_t;
 
 /* Directory for microphone calibration files on the SD card */

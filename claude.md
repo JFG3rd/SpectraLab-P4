@@ -28,7 +28,14 @@ pio run -t erase        # full chip erase (needed after partition changes)
 - `components/dsp_engine` — FFT (esp-dsp), windows, averaging, SPL,
   noise floor, ambient subtraction, mic calibration. Config changes are
   picked up by the DSP task via a generation counter (`s_cfg_gen`) at
-  frame boundaries — never reconfigure buffers from outside the task
+  frame boundaries — never reconfigure buffers from outside the task.
+  `dsp_engine_set_input_gain_db()` applies a software input trim (used by AGC)
+- `components/agc` — optional software Automatic Gain Control. Runs as a
+  dsp_engine consumer (DSP task); steers total gain via the ES8311 PGA
+  (6 dB steps) + software trim to hold the display mid-range. Actuates
+  hardware directly — NOT via the display_ui manual-gain path (which is
+  the "manual override" that disables it). All gain writes happen in
+  `agc_on_frame`; UI-task setters only publish state via volatile flags
 - `components/display_ui` — LVGL 9 screens: spectrum (8 display modes),
   settings, save-as/file browsers, splash
 - `components/settings_mgr` — persistence: SD `settings.json` + NVS blob
@@ -79,15 +86,17 @@ pio run -t erase        # full chip erase (needed after partition changes)
 - All persisted/external input is hostile: size-cap before buffering,
   sanitize filenames, `isfinite()` floats, clamp enums (see
   settings_sanitize and the cal parser for the pattern).
-- Settings apply-on-Back (no Apply button); auto-save sites in
-  display_ui.c track `s_last_*` — new settings need tracking there too.
+- Settings apply-on-Back (no Apply button); display_ui.c tracks live
+  state in `s_last_*` and persists via the single `save_current_settings()`
+  helper — new settings need an `s_last_*` field AND a line in that helper.
 - Commit style: `feat:`/`fix:` + body explaining root cause; push to
   https://github.com/JFG3rd/JFG-ESP32-P4-Function-EV-Board-Spectrum-Analyzer
 
 ## Phase 2 status
 
 M0 partitions ✅  M1 USB mic ✅  M2 mic calibration ✅  M3 WiFi portal +
-web cal upload ✅ — next: M4 REST config API, M5 WebSocket live spectrum,
+web cal upload ✅  M4 REST config API ✅ — next: M5 WebSocket live spectrum,
 M6 OTA (signed), M7 SD recording/CSV export, M8 CI + host-side tests.
+Software AGC (feature_suggestions.md) shipped as `components/agc`.
 See instructions.md (user guide) and README.md before editing docs.
 ```
