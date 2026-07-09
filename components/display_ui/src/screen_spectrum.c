@@ -139,8 +139,16 @@ static lv_obj_t *s_spectrum_obj;
 static lv_obj_t *s_lbl_spl;
 static lv_obj_t *s_lbl_peak;
 static lv_obj_t *s_lbl_dsp_info;
+static lv_obj_t *s_lbl_mode;            /* display-mode title, top-right under the gear */
 static lv_obj_t *s_lbl_ambient_status;
 static lv_obj_t *s_lbl_source_status;   /* "USB MIC" when the UAC1 mic is live */
+
+/* Display-mode names, indexed by display_mode_t — matches the settings
+ * dropdown labels (screen_settings.c disp_mode_opts). */
+static const char *const g_mode_names[] = {
+    "Bars", "Line", "1/3 Octave", "Persistence",
+    "Waterfall", "Scope", "VU Meter", "Mirror",
+};
 static lv_obj_t *s_btn_pk_lbl;         /* peak hold toggle button label */
 static lv_obj_t *s_btn_mx_lbl;         /* max hold toggle button label */
 static lv_obj_t *s_btn_rst;            /* reset max hold button */
@@ -255,6 +263,15 @@ static void update_scope_hud(void)
              pinch, window_ms, window_ms / 4.0f,
              gain, s_scope_gain_manual ? "" : " auto");
     lv_label_set_text(s_lbl_scope_hud, buf);
+}
+
+/* Refresh the top-right display-mode title from the current mode. */
+static void update_mode_label(void)
+{
+    if (s_lbl_mode == NULL) return;
+    int m = (int)s_mode;
+    if (m < 0 || m >= (int)(sizeof(g_mode_names) / sizeof(g_mode_names[0]))) m = 0;
+    lv_label_set_text(s_lbl_mode, g_mode_names[m]);
 }
 
 static void apply_zoom_axis(zoom_axis_t axis, float scale, lv_point_t center)
@@ -490,6 +507,18 @@ static void compute_bands(float *out, int n_bands)
 static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b)
 {
     return (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+}
+
+/* Alpha-blend two RGB565 colors in the packed domain; `alpha` is fg's
+ * weight (0…256). Used to lay faint gridlines over the waterfall heat
+ * without fully overwriting the energy underneath. */
+static inline uint16_t blend565(uint16_t bg, uint16_t fg, uint32_t alpha)
+{
+    uint32_t ia = 256 - alpha;
+    uint32_t r = (((fg >> 11) & 0x1F) * alpha + ((bg >> 11) & 0x1F) * ia) >> 8;
+    uint32_t g = (((fg >>  5) & 0x3F) * alpha + ((bg >>  5) & 0x3F) * ia) >> 8;
+    uint32_t b = (( fg        & 0x1F) * alpha + ( bg        & 0x1F) * ia) >> 8;
+    return (uint16_t)((r << 11) | (g << 5) | b);
 }
 
 /* Classic heatmap: black → blue → cyan → green → yellow → red → white */
@@ -1001,6 +1030,62 @@ static void draw_mode_vu(lv_layer_t *layer, const lv_area_t *oa,
     if (fill.x2 > fill.x1) lv_draw_rect(layer, &rdsc, &fill);
 }
 
+/* dB levels drawn as horizontal grid lines + left-edge legend in band
+ * modes. Shared between the grid-line pass (behind the bars) and the
+ * legend-text pass (on top of them). */
+static const float g_grid_db[] = {-20, -40, -60, -80, -100};
+
+/* dB text legend for band modes. Drawn AFTER the bars so the leftmost
+ * bars can't paint over it, with a faint background chip so the text
+ * stays legible over bright bars. Y-positions mirror the horizontal
+ * grid lines laid down in spectrum_draw_cb. */
+static void draw_db_legend(lv_layer_t *layer, const lv_area_t *oa, int32_t h)
+{
+    lv_draw_label_dsc_t tdsc;
+    lv_draw_label_dsc_init(&tdsc);
+    tdsc.color      = lv_color_hex(s_pal->text);
+    tdsc.font       = &lv_font_montserrat_12;
+    tdsc.opa        = LV_OPA_COVER;
+    tdsc.text_local = 1;   /* LVGL copies the text — stack buffer is safe */
+
+    lv_draw_rect_dsc_t cdsc;
+    lv_draw_rect_dsc_init(&cdsc);
+    cdsc.bg_color = lv_color_hex(s_pal->bg);
+    cdsc.bg_opa   = LV_OPA_70;
+    cdsc.radius   = 3;
+
+    bool mirror = (s_mode == DISPLAY_MODE_MIRROR);
+    int32_t mid = oa->y1 + h / 2;
+
+    for (int i = 0; i < (int)(sizeof(g_grid_db) / sizeof(g_grid_db[0])); i++) {
+        if (g_grid_db[i] >= s_db_view_max || g_grid_db[i] <= DB_MIN) continue;
+
+        char txt[12];
+        snprintf(txt, sizeof(txt), "%.0f dB", g_grid_db[i]);
+        tdsc.text = txt;
+
+        int32_t ys[2];
+        int n = 1;
+        if (mirror) {
+            int32_t off = (int32_t)(db_to_frac(g_grid_db[i]) * (float)h) / 2;
+            ys[0] = mid - off;   /* upper line: label above  */
+            ys[1] = mid + off;   /* lower line: label below  */
+            n = 2;
+        } else {
+            ys[0] = oa->y2 - (int32_t)(db_to_frac(g_grid_db[i]) * (float)h);
+        }
+
+        for (int k = 0; k < n; k++) {
+            bool below = mirror && k == 1;
+            lv_area_t ta = below
+                ? (lv_area_t){ oa->x1 + 6, ys[k] + 2,  oa->x1 + 70, ys[k] + 16 }
+                : (lv_area_t){ oa->x1 + 6, ys[k] - 16, oa->x1 + 70, ys[k] - 2 };
+            lv_draw_rect(layer, &cdsc, &ta);
+            lv_draw_label(layer, &tdsc, &ta);
+        }
+    }
+}
+
 /* ── custom draw callback ─────────────────────────────────────── */
 
 static void spectrum_draw_cb(lv_event_t *e)
@@ -1037,49 +1122,31 @@ static void spectrum_draw_cb(lv_event_t *e)
             lv_draw_line(layer, &ldsc);
         }
 
-        /* ── horizontal dB grid lines + legend ──
+        /* ── horizontal dB grid lines ──
          * In mirror mode the bars grow from the vertical center outward,
          * so each dB level maps to a symmetric PAIR of lines around the
-         * centerline instead of one line measured from the bottom. */
-        static const float gdb[] = {-20, -40, -60, -80, -100};
-        lv_draw_label_dsc_t tdsc;
-        lv_draw_label_dsc_init(&tdsc);
-        tdsc.color      = lv_color_hex(s_pal->text);
-        tdsc.font       = &lv_font_montserrat_12;
-        tdsc.opa        = LV_OPA_80;
-        tdsc.text_local = 1;   /* LVGL copies the text — stack buffer is safe */
-
+         * centerline instead of one line measured from the bottom. The dB
+         * text legend is drawn later (draw_db_legend), on TOP of the bars,
+         * so the leftmost bars don't paint over it. */
         bool mirror = (s_mode == DISPLAY_MODE_MIRROR);
         int32_t mid = oa.y1 + h / 2;
 
-        for (int i = 0; i < (int)(sizeof(gdb) / sizeof(gdb[0])); i++) {
-            if (gdb[i] >= s_db_view_max || gdb[i] <= DB_MIN) continue;
-
-            char txt[12];
-            snprintf(txt, sizeof(txt), "%.0f dB", gdb[i]);
-            tdsc.text = txt;
+        for (int i = 0; i < (int)(sizeof(g_grid_db) / sizeof(g_grid_db[0])); i++) {
+            if (g_grid_db[i] >= s_db_view_max || g_grid_db[i] <= DB_MIN) continue;
 
             if (mirror) {
-                int32_t off = (int32_t)(db_to_frac(gdb[i]) * (float)h) / 2;
+                int32_t off = (int32_t)(db_to_frac(g_grid_db[i]) * (float)h) / 2;
                 int32_t ys[2] = { mid - off, mid + off };
                 for (int k = 0; k < 2; k++) {
                     ldsc.p1 = (lv_point_precise_t){(lv_value_precise_t)oa.x1, (lv_value_precise_t)ys[k]};
                     ldsc.p2 = (lv_point_precise_t){(lv_value_precise_t)oa.x2, (lv_value_precise_t)ys[k]};
                     lv_draw_line(layer, &ldsc);
-                    /* label above the upper line, below the lower one */
-                    lv_area_t ta = (k == 0)
-                        ? (lv_area_t){ oa.x1 + 6, ys[k] - 16, oa.x1 + 70, ys[k] - 2 }
-                        : (lv_area_t){ oa.x1 + 6, ys[k] + 2,  oa.x1 + 70, ys[k] + 16 };
-                    lv_draw_label(layer, &tdsc, &ta);
                 }
             } else {
-                int32_t y = oa.y2 - (int32_t)(db_to_frac(gdb[i]) * (float)h);
+                int32_t y = oa.y2 - (int32_t)(db_to_frac(g_grid_db[i]) * (float)h);
                 ldsc.p1 = (lv_point_precise_t){(lv_value_precise_t)oa.x1, (lv_value_precise_t)y};
                 ldsc.p2 = (lv_point_precise_t){(lv_value_precise_t)oa.x2, (lv_value_precise_t)y};
                 lv_draw_line(layer, &ldsc);
-
-                lv_area_t ta = { oa.x1 + 6, y - 16, oa.x1 + 70, y - 2 };
-                lv_draw_label(layer, &tdsc, &ta);
             }
         }
 
@@ -1115,6 +1182,9 @@ static void spectrum_draw_cb(lv_event_t *e)
     }
 
     xSemaphoreGive(s_data_mutex);
+
+    /* dB legend last, so the bars can't paint over it (see draw_db_legend) */
+    if (band_mode && s_grid_enabled) draw_db_legend(layer, &oa, h);
 }
 
 /* ── waterfall row update (called from update(), LVGL ctx) ────── */
@@ -1141,6 +1211,23 @@ static void waterfall_push_row(void)
         int v    = (int)(db_to_frac(levels[band]) * 255.0f);
         row0[x]  = s_heat_lut[v & 0xFF];
     }
+
+    /* Faint vertical frequency gridlines, matching the band-mode ticks.
+     * The opaque canvas covers the parent's DRAW_MAIN grid, so bake them
+     * into the newest row: blended once here, each line then scrolls up
+     * as a continuous full-height guide. Toggling GRD off simply stops
+     * adding them and they scroll away within one screen height. */
+    if (s_grid_enabled) {
+        uint16_t gcol = rgb565((uint8_t)(s_pal->grid >> 16),
+                               (uint8_t)(s_pal->grid >>  8),
+                               (uint8_t)(s_pal->grid));
+        static const float tick_fracs[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+        for (int i = 0; i < (int)(sizeof(tick_fracs) / sizeof(tick_fracs[0])); i++) {
+            int32_t x = (int32_t)(tick_fracs[i] * (float)(SCREEN_W - 1));
+            row0[x] = blend565(row0[x], gcol, 128);   /* ~50% */
+        }
+    }
+
     for (int r = 1; r < rows; r++)
         memcpy(row0 + (size_t)r * SCREEN_W, row0, SCREEN_W * sizeof(uint16_t));
 
@@ -1266,6 +1353,14 @@ esp_err_t screen_spectrum_create(void)
     lv_label_set_text(btn_settings_lbl, LV_SYMBOL_SETTINGS);
     lv_obj_set_style_text_font(btn_settings_lbl, &lv_font_montserrat_16, 0);
     lv_obj_center(btn_settings_lbl);
+
+    /* Display-mode title — second line of the status bar, right-aligned
+     * under the gear (right edge tracks the gear's -2 inset) */
+    s_lbl_mode = lv_label_create(status);
+    lv_obj_set_style_text_color(s_lbl_mode, lv_color_hex(s_pal->text), 0);
+    lv_obj_set_style_text_font(s_lbl_mode, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_lbl_mode, LV_ALIGN_BOTTOM_RIGHT, -4, -2);
+    update_mode_label();
 
     /* DSP info row — second line of status bar showing active config */
     s_lbl_dsp_info = lv_label_create(status);
@@ -1522,6 +1617,8 @@ void screen_spectrum_set_mode(int mode)
             lv_obj_add_flag(s_lbl_scope_hud, LV_OBJ_FLAG_HIDDEN);
         }
     }
+
+    update_mode_label();   /* reflect the (possibly fallback-adjusted) mode */
 
     lv_obj_invalidate(s_spectrum_obj);
 }
