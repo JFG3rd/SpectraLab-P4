@@ -1,5 +1,17 @@
 ## [Unreleased]
 ### Added
+- Wi-Fi: remember multiple networks (up to 8, most-recently-used) with
+  automatic reconnect to whichever known network is in range; migrates the
+  previous single-credential storage on first boot.
+- Wi-Fi: robust on-device provisioning — the SSID scan no longer conflicts
+  with the join loop, plus an 8 s scan timeout so the setup screen never
+  hangs on "Scanning...".
+- Wi-Fi: "Show password" toggle on the on-device manual entry screen.
+- Wi-Fi: per-device mDNS hostname (`spectralab-p4-xxxx.local`) so multiple
+  units on one LAN no longer collide.
+- Wi-Fi: verbose network-manager diagnostics — connection state-machine
+  transition tracing and decoded disconnect reason codes for debugging
+  join failures.
 - Automatic Gain Control (AGC): optional software auto-gain for long
   unattended sessions. Hybrid actuator — coarse ES8311 hardware PGA
   (6 dB steps) plus a continuous software trim in the DSP input stage;

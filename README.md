@@ -127,6 +127,7 @@ Although it began as a personal engineering project, it is released as open sour
 - Presets with full runtime persistence
 - SD card configuration storage
 - Wi-Fi provisioning
+- Multiple remembered Wi-Fi networks with automatic reconnect
 - Embedded web interface
 - Responsive browser interface
 - Dark and Light themes
@@ -190,6 +191,8 @@ Every feature is evaluated against one goal:
 | Noise Floor Capture | ✅ |
 | Automatic Gain Control | ✅ |
 | Wi-Fi Provisioning | ✅ |
+| Multiple Saved Wi-Fi Networks | ✅ |
+| Camera QR Wi-Fi Setup | 🚧 Planned for v1.x |
 | Distributed Stereo Analyzer | 🚧 Planned for v2.0 |
 
 ---
@@ -328,6 +331,13 @@ src/
 - Touch interface
 - Calibration
 - Web interface
+
+## Version 1.x — Usability & Provisioning
+
+- ✅ Multiple remembered Wi-Fi networks with automatic reconnect to whichever known network is in range
+- ✅ Robust on-device Wi-Fi scanning and provisioning, with a "Show password" toggle
+- ✅ Per-device mDNS name (`spectralab-p4-xxxx.local`) so multiple units coexist on one network
+- 🚧 Camera QR-code Wi-Fi provisioning — point the on-board camera at a router's Wi-Fi QR code to auto-fill the SSID and password (planned)
 
 ## Version 2.0 — Distributed Stereo Analyzer
 

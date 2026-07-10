@@ -40,6 +40,10 @@ static const char *TAG = "net_mgr";
 #define SCAN_MAX           20
 #define SCAN_TIMEOUT_US    (8 * 1000 * 1000)   /* clear 'scanning' if SCAN_DONE never fires */
 
+/* Set to 1 to also surface the underlying esp_wifi / esp-hosted transport
+ * logs (very noisy over the C6 RPC link) when debugging join failures. */
+#define NET_MGR_VERBOSE_WIFI_STACK 0
+
 typedef enum { NET_OFF, NET_JOINING, NET_STA_UP, NET_AP_UP } net_state_t;
 
 typedef struct {
@@ -82,7 +86,51 @@ static bool               s_provisioning;   /* setup UI active: auto-join paused
 static void start_setup_ap(void);
 static void connect_current_known(void);
 
-/* ── setup AP identity from the eFuse MAC ─────────────────────── */
+/* ── diagnostics ───────────────────────────── */
+
+static const char *net_state_name(net_state_t s)
+{
+    switch (s) {
+    case NET_OFF:     return "OFF";
+    case NET_JOINING: return "JOINING";
+    case NET_STA_UP:  return "STA_UP";
+    case NET_AP_UP:   return "AP_UP";
+    default:          return "?";
+    }
+}
+
+/* Log every state-machine transition so a join failure can be traced. */
+static void set_state(net_state_t ns, const char *why)
+{
+    if (ns != s_state)
+        ESP_LOGI(TAG, "state: %s -> %s (%s)",
+                 net_state_name(s_state), net_state_name(ns), why ? why : "");
+    s_state = ns;
+}
+
+/* Human-readable Wi-Fi disconnect reason (common subset of wifi_err_reason_t). */
+static const char *wifi_reason_str(uint8_t r)
+{
+    switch (r) {
+    case WIFI_REASON_AUTH_EXPIRE:            return "AUTH_EXPIRE";
+    case WIFI_REASON_AUTH_LEAVE:             return "AUTH_LEAVE";
+    case WIFI_REASON_ASSOC_EXPIRE:           return "ASSOC_EXPIRE";
+    case WIFI_REASON_ASSOC_TOOMANY:          return "ASSOC_TOOMANY";
+    case WIFI_REASON_NOT_AUTHED:             return "NOT_AUTHED";
+    case WIFI_REASON_NOT_ASSOCED:            return "NOT_ASSOCED";
+    case WIFI_REASON_ASSOC_LEAVE:            return "ASSOC_LEAVE";
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT: return "4WAY_HANDSHAKE_TIMEOUT (wrong password?)";
+    case WIFI_REASON_BEACON_TIMEOUT:         return "BEACON_TIMEOUT (weak signal)";
+    case WIFI_REASON_NO_AP_FOUND:            return "NO_AP_FOUND (SSID not in range)";
+    case WIFI_REASON_AUTH_FAIL:              return "AUTH_FAIL (wrong password)";
+    case WIFI_REASON_ASSOC_FAIL:             return "ASSOC_FAIL";
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:      return "HANDSHAKE_TIMEOUT (wrong password?)";
+    case WIFI_REASON_CONNECTION_FAIL:        return "CONNECTION_FAIL";
+    default:                                 return "see wifi_err_reason_t";
+    }
+}
+
+/* ── setup AP identity from the eFuse MAC ─────────────── */
 
 static void derive_ap_identity(void)
 {
@@ -233,7 +281,7 @@ static void start_setup_ap(void)
     esp_wifi_set_mode(WIFI_MODE_APSTA);
     esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
 
-    s_state = NET_AP_UP;
+    set_state(NET_AP_UP, "setup AP fallback");
     strlcpy(s_ip_str, "192.168.4.1", sizeof(s_ip_str));
     ESP_LOGI(TAG, "setup AP up: SSID '%s'  password '%s'  http://192.168.4.1",
              s_ap_ssid, s_ap_pass);
@@ -284,9 +332,11 @@ static void connect_current_known(void)
 
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
-    s_state = NET_JOINING;
+    set_state(NET_JOINING, "connect known");
     s_retry = 0;
-    ESP_LOGI(TAG, "joining '%s' (%d/%d)...", s_sta_ssid, s_join_idx + 1, s_known_count);
+    ESP_LOGI(TAG, "joining '%s' (%d/%d), pw %d chars...",
+             s_sta_ssid, s_join_idx + 1, s_known_count,
+             (int)strlen(s_known[s_join_idx].pass));
     esp_wifi_connect();
 }
 
@@ -313,19 +363,29 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     if (base == WIFI_EVENT) {
         switch (id) {
         case WIFI_EVENT_STA_START:
+            ESP_LOGI(TAG, "event: STA_START");
             if (s_state == NET_JOINING && !s_provisioning) esp_wifi_connect();
             break;
+        case WIFI_EVENT_STA_CONNECTED: {
+            wifi_event_sta_connected_t *c = (wifi_event_sta_connected_t *)data;
+            ESP_LOGI(TAG, "event: STA_CONNECTED to '%s' ch %u authmode %d — waiting for IP (DHCP)",
+                     s_sta_ssid, c ? (unsigned)c->channel : 0u, c ? (int)c->authmode : -1);
+            break;
+        }
         case WIFI_EVENT_STA_DISCONNECTED: {
             /* Paused for provisioning (deliberate disconnect to allow a
              * scan) — don't fight it with a reconnect. */
             if (s_provisioning) break;
 
             uint8_t reason = data ? ((wifi_event_sta_disconnected_t *)data)->reason : 0;
+            ESP_LOGW(TAG, "event: STA_DISCONNECTED from '%s' — reason %u (%s) "
+                          "[state=%s established=%d retry=%d]",
+                     s_sta_ssid, reason, wifi_reason_str(reason),
+                     net_state_name(s_state), (int)s_established, s_retry);
 
             if (s_state == NET_STA_UP) {
                 /* An established link dropped — fall through to retry. */
-                ESP_LOGW(TAG, "WiFi dropped (reason %u) — reconnecting", reason);
-                s_state = NET_JOINING;
+                set_state(NET_JOINING, "established link dropped");
                 s_retry = 0;
             }
             if (s_state == NET_JOINING) {
@@ -345,11 +405,13 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
                 s_retry++;
                 bool absent = (reason == WIFI_REASON_NO_AP_FOUND);
                 if (absent || s_retry > STA_PER_NET_RETRY) {
+                    ESP_LOGW(TAG, "giving up on '%s' (%s) — advancing to next known network",
+                             s_sta_ssid, absent ? "not found" : "retry budget exhausted");
                     advance_join();
                 } else {
                     uint32_t d = backoff_ms(s_retry);
-                    ESP_LOGW(TAG, "join '%s' retry %d in %u ms (reason %u)",
-                             s_sta_ssid, s_retry, (unsigned)d, reason);
+                    ESP_LOGW(TAG, "join '%s' retry %d/%d in %u ms",
+                             s_sta_ssid, s_retry, STA_PER_NET_RETRY, (unsigned)d);
                     schedule_reconnect(d);
                 }
             }
@@ -364,11 +426,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
         snprintf(s_ip_str, sizeof(s_ip_str), IPSTR, IP2STR(&ev->ip_info.ip));
-        s_state = NET_STA_UP;
+        set_state(NET_STA_UP, "got IP");
         s_retry = 0;
         s_pass_fail = 0;
         s_established = true;
-        ESP_LOGI(TAG, "connected to '%s' — http://%s/", s_sta_ssid, s_ip_str);
+        ESP_LOGI(TAG, "event: STA_GOT_IP — connected to '%s' — http://%s/", s_sta_ssid, s_ip_str);
 
         if (!s_mdns_up && mdns_init() == ESP_OK) {
             mdns_hostname_set(s_mdns_host);
@@ -543,7 +605,19 @@ esp_err_t net_mgr_init(void)
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL);
 
+#if NET_MGR_VERBOSE_WIFI_STACK
+    /* Deep debugging: surface the esp_wifi / esp-hosted transport logs.
+     * Very noisy over the C6 RPC link — off by default (see the #define). */
+    esp_log_level_set("wifi", ESP_LOG_DEBUG);
+    esp_log_level_set("esp_hosted", ESP_LOG_DEBUG);
+    esp_log_level_set("transport", ESP_LOG_DEBUG);
+#endif
+
     load_known();   /* blob or one-time legacy migration */
+
+    for (int i = 0; i < s_known_count; i++)
+        ESP_LOGI(TAG, "known[%d]: '%s' (pw %d chars)",
+                 i, s_known[i].ssid, (int)strlen(s_known[i].pass));
 
     if (s_known_count > 0) {
         /* Configure the first (most-recent) known network; the actual
@@ -560,9 +634,10 @@ esp_err_t net_mgr_init(void)
          * first matching AP found — quicker, which is what matters here. */
         esp_wifi_set_mode(WIFI_MODE_STA);
         esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
-        s_state = NET_JOINING;
+        set_state(NET_JOINING, "boot join");
         s_retry = 0;
-        ESP_LOGI(TAG, "joining '%s' (1/%d)...", s_sta_ssid, s_known_count);
+        ESP_LOGI(TAG, "joining '%s' (1/%d), pw %d chars...",
+                 s_sta_ssid, s_known_count, (int)strlen(s_known[0].pass));
     } else {
         start_setup_ap();
     }
