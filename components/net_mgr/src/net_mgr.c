@@ -65,6 +65,8 @@ static char               s_sta_ssid[NET_SSID_MAX];
 static char               s_ip_str[16] = "";
 static char               s_ap_ssid[NET_SSID_MAX];
 static char               s_ap_pass[16];
+static char               s_mdns_host[32];      /* per-device hostname: spectralab-p4-xxxx */
+static char               s_mdns_instance[32];  /* per-device instance: SpectraLab-P4 XXXX  */
 static bool               s_scanning;
 static char               s_scan_ssids[SCAN_MAX][NET_SSID_MAX];
 static int                s_scan_count;
@@ -93,6 +95,11 @@ static void derive_ap_identity(void)
      * the settings screen and in the manual */
     snprintf(s_ap_pass, sizeof(s_ap_pass), "SA-%02X%02X%02X%02X",
              mac[2], mac[3], mac[4], mac[5]);
+    /* Per-device mDNS identity so multiple units on one LAN don't collide on
+     * spectralab-p4.local. Hostname is lowercase (DNS convention); the
+     * instance name is the human-readable label shown by mDNS browsers. */
+    snprintf(s_mdns_host, sizeof(s_mdns_host), "spectralab-p4-%02x%02x", mac[4], mac[5]);
+    snprintf(s_mdns_instance, sizeof(s_mdns_instance), "SpectraLab-P4 %02X%02X", mac[4], mac[5]);
 }
 
 /* ── known-networks persistence ───────────────────────────────── */
@@ -364,11 +371,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         ESP_LOGI(TAG, "connected to '%s' — http://%s/", s_sta_ssid, s_ip_str);
 
         if (!s_mdns_up && mdns_init() == ESP_OK) {
-            mdns_hostname_set("spectralab-p4");
-            mdns_instance_name_set("SpectraLab-P4");
+            mdns_hostname_set(s_mdns_host);
+            mdns_instance_name_set(s_mdns_instance);
             mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
             s_mdns_up = true;
-            ESP_LOGI(TAG, "mDNS: http://spectralab-p4.local/");
+            ESP_LOGI(TAG, "mDNS: http://%s.local/", s_mdns_host);
         }
     }
 }
