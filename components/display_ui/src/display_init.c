@@ -10,6 +10,8 @@
  * The fix: init hardware manually, re-register on_color_trans_done with our
  * own IRAM_ATTR wrapper that calls lv_disp_flush_ready(). */
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_check.h"
@@ -20,6 +22,7 @@
 #include "esp_lcd_ek79007.h"
 #include "bsp/esp32_p4_function_ev_board.h"
 #include "bsp/display.h"
+#include "esp_lcd_panel_io.h"
 #include "esp_lcd_io_i2c.h"
 #include "esp_lcd_touch_gt911.h"
 #include "esp_lvgl_port.h"
@@ -43,6 +46,41 @@ static IRAM_ATTR bool on_color_trans_done_cb(esp_lcd_panel_handle_t panel,
     lv_display_t *disp = (lv_display_t *)user_ctx;
     lv_disp_flush_ready(disp);
     return false;
+}
+
+/* Probe for a GT911 at a specific I2C address; on success return the touch
+ * handle, otherwise free the IO handle and return NULL so the caller can try
+ * the alternate address. The BSP builds the IO config by hand (scl_speed_hz
+ * must be 0 for the legacy i2c_lcd driver the BSP forces). */
+static esp_lcd_touch_handle_t gt911_try_addr(lv_display_t *disp, uint16_t addr)
+{
+    (void)disp;
+    const esp_lcd_panel_io_i2c_config_t tp_io_cfg = {
+        .scl_speed_hz        = 0,
+        .dev_addr            = addr,
+        .control_phase_bytes = 1,
+        .dc_bit_offset       = 0,
+        .lcd_cmd_bits        = 16,
+        .flags               = { .disable_control_phase = 1 },
+    };
+    esp_lcd_panel_io_handle_t tp_io = NULL;
+    if (esp_lcd_new_panel_io_i2c_v1(BSP_I2C_NUM, &tp_io_cfg, &tp_io) != ESP_OK)
+        return NULL;
+
+    const esp_lcd_touch_config_t tp_cfg = {
+        .x_max        = BSP_LCD_H_RES,
+        .y_max        = BSP_LCD_V_RES,
+        .rst_gpio_num = BSP_LCD_TOUCH_RST,
+        .int_gpio_num = BSP_LCD_TOUCH_INT,
+        .levels       = { .reset = 0, .interrupt = 0 },
+        .flags        = { .swap_xy = 0, .mirror_x = 1, .mirror_y = 1 },
+    };
+    esp_lcd_touch_handle_t tp = NULL;
+    if (esp_lcd_touch_new_i2c_gt911(tp_io, &tp_cfg, &tp) != ESP_OK) {
+        esp_lcd_panel_io_del(tp_io);   /* free so we can retry at another address */
+        return NULL;
+    }
+    return tp;
 }
 
 esp_err_t display_hw_init(lv_display_t **disp_out)
@@ -194,42 +232,36 @@ esp_err_t display_hw_init(lv_display_t **disp_out)
         ESP_LOGW(TAG, "touch: bsp_i2c_init failed: %s; touch input disabled",
                  esp_err_to_name(touch_err));
     } else {
-        const esp_lcd_panel_io_i2c_config_t tp_io_cfg = {
-            .scl_speed_hz        = 0,
-            .dev_addr            = ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS,
-            .control_phase_bytes = 1,
-            .dc_bit_offset       = 0,
-            .lcd_cmd_bits        = 16,
-            .flags               = { .disable_control_phase = 1 },
+        /* GT911 latches its I2C address from the INT pin level at reset. On
+         * this board INT is not connected (BSP_LCD_TOUCH_INT == GPIO_NUM_NC),
+         * so the address is indeterminate — it can come up at the primary
+         * 0x5D or the backup 0x14. Probe both, with a couple of retries to
+         * let the controller finish its power-on reset, instead of assuming
+         * 0x5D (which silently disabled touch whenever it latched 0x14). */
+        static const uint16_t gt911_addrs[] = {
+            ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS,          /* 0x5D */
+            ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS_BACKUP,   /* 0x14 */
         };
-        esp_lcd_panel_io_handle_t tp_io = NULL;
-        touch_err = esp_lcd_new_panel_io_i2c_v1(BSP_I2C_NUM, &tp_io_cfg, &tp_io);
-
-        if (touch_err == ESP_OK) {
-            const esp_lcd_touch_config_t tp_cfg = {
-                .x_max        = BSP_LCD_H_RES,
-                .y_max        = BSP_LCD_V_RES,
-                .rst_gpio_num = BSP_LCD_TOUCH_RST,
-                .int_gpio_num = BSP_LCD_TOUCH_INT,
-                .levels       = { .reset = 0, .interrupt = 0 },
-                .flags        = { .swap_xy = 0, .mirror_x = 1, .mirror_y = 1 },
-            };
-            esp_lcd_touch_handle_t tp = NULL;
-            touch_err = esp_lcd_touch_new_i2c_gt911(tp_io, &tp_cfg, &tp);
-
-            if (touch_err == ESP_OK) {
-                /* Multi-touch indev (touch_gesture.c) instead of
-                 * lvgl_port_add_touch(): the port's read callback only
-                 * reports one contact, so pinch gestures never fire. */
-                if (touch_gesture_add_indev(disp, tp) == NULL)
-                    ESP_LOGW(TAG, "touch_gesture_add_indev failed; touch input disabled");
-            } else {
-                ESP_LOGW(TAG, "esp_lcd_touch_new_i2c_gt911 failed: %s; touch input disabled",
-                         esp_err_to_name(touch_err));
+        esp_lcd_touch_handle_t tp = NULL;
+        for (int attempt = 0; attempt < 3 && tp == NULL; attempt++) {
+            if (attempt) vTaskDelay(pdMS_TO_TICKS(50));
+            for (size_t i = 0; i < sizeof(gt911_addrs) / sizeof(gt911_addrs[0]) && tp == NULL; i++) {
+                tp = gt911_try_addr(disp, gt911_addrs[i]);
+                if (tp)
+                    ESP_LOGI(TAG, "GT911 touch found at I2C 0x%02X (attempt %d)",
+                             gt911_addrs[i], attempt + 1);
             }
+        }
+
+        if (tp) {
+            /* Multi-touch indev (touch_gesture.c) instead of
+             * lvgl_port_add_touch(): the port's read callback only reports
+             * one contact, so pinch gestures never fire. */
+            if (touch_gesture_add_indev(disp, tp) == NULL)
+                ESP_LOGW(TAG, "touch_gesture_add_indev failed; touch input disabled");
         } else {
-            ESP_LOGW(TAG, "touch IO init failed: %s; touch input disabled",
-                     esp_err_to_name(touch_err));
+            ESP_LOGW(TAG, "GT911 not found at 0x5D or 0x14 after retries; "
+                          "touch input disabled");
         }
     }
 

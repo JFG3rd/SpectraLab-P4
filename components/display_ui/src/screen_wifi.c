@@ -37,6 +37,7 @@ static lv_obj_t    *s_entry_screen;
 static lv_obj_t    *s_entry_title;
 static lv_obj_t    *s_entry_ta;
 static lv_obj_t    *s_entry_ok_btn;
+static lv_obj_t    *s_entry_show_cb;   /* "Show password" toggle (password mode only) */
 static entry_mode_t s_entry_mode;
 
 static void entry_open(entry_mode_t mode, const char *initial);
@@ -100,7 +101,7 @@ static void list_refresh(bool scanning)
 
     if (n <= 0) {
         lv_list_add_text(s_list, scanning ? "Scanning..."
-                                          : "No networks found — tap Rescan");
+                                          : "No networks found — tap Rescan, or use Manual");
         return;
     }
     for (int i = 0; i < n; i++) {
@@ -142,6 +143,7 @@ static void back_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     stop_poll();
+    net_mgr_exit_provisioning();   /* resume auto-join across the known list */
     screen_settings_load();
 }
 
@@ -264,6 +266,14 @@ static void entry_cancel_btn_cb(lv_event_t *e)
     if (lv_event_get_code(e) == LV_EVENT_CLICKED) entry_cancel();
 }
 
+/* Reveal / mask the entered password so the user can verify what they typed. */
+static void entry_show_pw_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+    bool show = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    lv_textarea_set_password_mode(s_entry_ta, !show);
+}
+
 static void entry_create(void)
 {
     s_entry_screen = lv_obj_create(NULL);
@@ -297,6 +307,13 @@ static void entry_create(void)
     lv_label_set_text(l2, "Cancel");
     lv_obj_center(l2);
 
+    /* "Show password" checkbox — shown only in password mode (see entry_open). */
+    s_entry_show_cb = lv_checkbox_create(s_entry_screen);
+    lv_checkbox_set_text(s_entry_show_cb, "Show password");
+    lv_obj_set_style_text_color(s_entry_show_cb, lv_color_hex(0xCCDDEE), 0);
+    lv_obj_align_to(s_entry_show_cb, s_entry_ta, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+    lv_obj_add_event_cb(s_entry_show_cb, entry_show_pw_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
     lv_obj_t *kb = lv_keyboard_create(s_entry_screen);
     lv_obj_set_size(kb, 1024, 300);
     lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -315,12 +332,16 @@ static void entry_open(entry_mode_t mode, const char *initial)
         lv_label_set_text(s_entry_title, "Enter network name (SSID)");
         lv_textarea_set_password_mode(s_entry_ta, false);
         lv_textarea_set_placeholder_text(s_entry_ta, "SSID (hidden network)");
+        lv_obj_add_flag(s_entry_show_cb, LV_OBJ_FLAG_HIDDEN);   /* SSID is never masked */
     } else {
         char t[64];
         snprintf(t, sizeof(t), "Password for %s", s_sel_ssid);
         lv_label_set_text(s_entry_title, t);
         lv_textarea_set_password_mode(s_entry_ta, true);
         lv_textarea_set_placeholder_text(s_entry_ta, "Wi-Fi password");
+        /* default to masked; user can tick "Show password" to reveal */
+        lv_obj_remove_state(s_entry_show_cb, LV_STATE_CHECKED);
+        lv_obj_remove_flag(s_entry_show_cb, LV_OBJ_FLAG_HIDDEN);
     }
     lv_textarea_set_text(s_entry_ta, initial ? initial : "");
     /* re-enable the OK button (may have been disabled after a prior save) */
@@ -338,6 +359,9 @@ void screen_wifi_show(void)
     net_mgr_get_status(status, sizeof(status));
     lv_label_set_text(s_status, status);
 
+    /* Pause the auto-join loop so the STA is idle and scannable (otherwise
+     * a scan started mid-connect fails with ESP_ERR_WIFI_STATE). */
+    net_mgr_enter_provisioning();
     net_mgr_start_scan();
     list_refresh(true);
     start_poll();

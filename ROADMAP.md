@@ -40,23 +40,32 @@ Make the analyzer useful as a real standalone instrument, not just a demonstrati
 
 ## Version 1.x — Stabilization and Usability
 
-**Status:** Planned
+**Status:** In progress
 
-The 1.x series should focus on polishing the current standalone instrument before adding major architectural complexity.
+The 1.x series focuses on polishing the current standalone instrument before adding major architectural complexity.
+
+### Completed
+
+- [x] Remember multiple Wi-Fi networks (up to 8, most-recently-used) with automatic reconnect to whichever known network is in range
+- [x] Robust on-device Wi-Fi provisioning — the SSID scan no longer conflicts with the join loop, with a scan timeout so the setup screen never hangs on "Scanning..."
+- [x] "Show password" toggle on the on-device Wi-Fi entry screen
+- [x] Per-device mDNS hostname (`spectralab-p4-xxxx.local`) so multiple units on one LAN do not collide
+- [x] Verbose network-manager diagnostics — connection state-machine tracing and decoded Wi-Fi disconnect reason codes
 
 ### Candidate Improvements
 
-- Improve documentation and setup instructions
-- Add more screenshots and diagrams
-- Improve preset management workflow
-- Improve web interface status reporting
-- Improve calibration-file validation messages
-- Add more troubleshooting guidance
-- Improve build reproducibility
-- Add additional example measurement workflows
-- Add optional CSV export of spectrum snapshots
-- Improve scope display controls
-- Add more display themes if they remain readable and useful
+- [ ] Camera QR-code Wi-Fi provisioning — point the on-board MIPI-CSI camera at a router's Wi-Fi QR code to auto-fill the SSID and password (`esp_video` capture + `quirc` decode, parsing the standard `WIFI:S:...;P:...;` payload into the saved-networks list)
+- [ ] Improve documentation and setup instructions
+- [ ] Add more screenshots and diagrams
+- [ ] Improve preset management workflow
+- [ ] Improve web interface status reporting
+- [ ] Improve calibration-file validation messages
+- [ ] Add more troubleshooting guidance
+- [ ] Improve build reproducibility
+- [ ] Add additional example measurement workflows
+- [ ] Add optional CSV export of spectrum snapshots
+- [ ] Improve scope display controls
+- [ ] Add more display themes if they remain readable and useful
 
 ### v1.x Goal
 

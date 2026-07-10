@@ -1,5 +1,17 @@
 ## [Unreleased]
 ### Added
+- Wi-Fi: remember multiple networks (up to 8, most-recently-used) with
+  automatic reconnect to whichever known network is in range; migrates the
+  previous single-credential storage on first boot.
+- Wi-Fi: robust on-device provisioning — the SSID scan no longer conflicts
+  with the join loop, plus an 8 s scan timeout so the setup screen never
+  hangs on "Scanning...".
+- Wi-Fi: "Show password" toggle on the on-device manual entry screen.
+- Wi-Fi: per-device mDNS hostname (`spectralab-p4-xxxx.local`) so multiple
+  units on one LAN no longer collide.
+- Wi-Fi: verbose network-manager diagnostics — connection state-machine
+  transition tracing and decoded disconnect reason codes for debugging
+  join failures.
 - Automatic Gain Control (AGC): optional software auto-gain for long
   unattended sessions. Hybrid actuator — coarse ES8311 hardware PGA
   (6 dB steps) plus a continuous software trim in the DSP input stage;
@@ -16,6 +28,11 @@
   frequency/dB graticule stays visible regardless of bar height.
 
 ### Fixed
+- Touch: GT911 init now probes both I2C addresses (0x5D and 0x14) with a
+  short retry instead of assuming 0x5D. On this board the touch INT pin is
+  not connected, so the controller's power-on I2C address can latch either
+  value; the old single-address path could silently disable the touchscreen
+  while the display kept working.
 - dB legend was painted over by the leftmost bars; it now renders on
   top of the spectrum with a background chip for legibility.
 
