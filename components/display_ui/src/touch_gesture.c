@@ -15,6 +15,7 @@
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "lvgl.h"
+#include "qr_scan.h"
 #include "src/indev/lv_indev_gesture.h"
 #include "touch_gesture.h"
 
@@ -39,16 +40,38 @@ static void touch_gesture_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
     uint16_t y[TG_SLOTS] = {0};
     uint8_t  cnt = 0;
 
-    esp_lcd_touch_read_data(ctx->tp);
-    bool pressed = esp_lcd_touch_get_coordinates(ctx->tp, x, y, NULL, &cnt, TG_SLOTS);
-    if (!pressed) cnt = 0;
-    if (cnt > TG_SLOTS) cnt = TG_SLOTS;
 
     /* Contact list for the recognizers: active slots first, then a
      * synthesized RELEASED entry for every slot that just lifted. */
     lv_indev_touch_data_t touches[TG_SLOTS];
     uint16_t tcnt = 0;
     uint32_t now = lv_tick_get();
+
+    /* Camera QR scanning and GT911 share the same board I2C path.
+     * Avoid concurrent touch reads while camera scanning is active. */
+    if (qr_scan_is_running()) {
+        for (uint8_t i = 0; i < TG_SLOTS; i++) {
+            if (!ctx->down[i]) continue;
+            touches[tcnt] = (lv_indev_touch_data_t){
+                .point     = ctx->last_point,
+                .state     = LV_INDEV_STATE_RELEASED,
+                .id        = i,
+                .timestamp = now,
+            };
+            tcnt++;
+            ctx->down[i] = false;
+        }
+        lv_indev_gesture_recognizers_update(indev, touches, tcnt);
+        lv_indev_gesture_recognizers_set_data(indev, data);
+        data->state = LV_INDEV_STATE_RELEASED;
+        data->point = ctx->last_point;
+        return;
+    }
+
+    esp_lcd_touch_read_data(ctx->tp);
+    bool pressed = esp_lcd_touch_get_coordinates(ctx->tp, x, y, NULL, &cnt, TG_SLOTS);
+    if (!pressed) cnt = 0;
+    if (cnt > TG_SLOTS) cnt = TG_SLOTS;
 
     for (uint8_t i = 0; i < cnt; i++) {
         touches[tcnt] = (lv_indev_touch_data_t){

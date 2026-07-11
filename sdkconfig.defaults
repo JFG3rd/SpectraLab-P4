@@ -48,6 +48,9 @@ CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=512
 
 # I2S — place ISR handler in IRAM to meet strict DMA timing
 CONFIG_I2S_ISR_IRAM_SAFE=y
+# I2C — some bundled board/touch/camera components still mix legacy and v2 APIs.
+# Keep the conflict guard disabled so boot does not abort during QR camera flow bring-up.
+CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK=y
 
 # HTTP server — WebSocket support for browser-based spectrum viewer
 CONFIG_HTTPD_WS_SUPPORT=y
@@ -91,3 +94,11 @@ CONFIG_FATFS_MAX_LFN=64
 
 # esp-dsp twiddle tables must cover the largest selectable FFT (16384)
 CONFIG_DSP_MAX_FFT_SIZE_16384=y
+
+# Camera / QR provisioning — enable the P4 MIPI-CSI video path, ISP output,
+# and probe the common Function EV Board MIPI camera sensors.
+CONFIG_ESP_VIDEO_ENABLE_MIPI_CSI_VIDEO_DEVICE=y
+CONFIG_ESP_VIDEO_ENABLE_ISP_VIDEO_DEVICE=y
+CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=y
+CONFIG_CAMERA_SC2336=y
+CONFIG_CAMERA_OV5647=y

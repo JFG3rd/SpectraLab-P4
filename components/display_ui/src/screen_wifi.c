@@ -10,16 +10,23 @@
 
 #include <string.h>
 #include <stdio.h>
+#include "linux/videodev2.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 #include "lvgl.h"
 #include "net_mgr.h"
+#include "qr_scan.h"
 #include "screen_settings.h"
 #include "screen_wifi.h"
 
 static const char *TAG = "scr_wifi";
 
 #define SCAN_MAX_UI 20   /* matches net_mgr's scan result cap */
+#define QR_PREVIEW_W 320
+#define QR_PREVIEW_H 180
 
 /* ── list screen ──────────────────────────────────────────────── */
 
@@ -28,6 +35,7 @@ static lv_obj_t   *s_status;
 static lv_obj_t   *s_list;
 static lv_timer_t *s_poll_timer;
 static char        s_sel_ssid[NET_SSID_MAX];
+static char        s_prefill_pass[NET_PASS_MAX];
 
 /* ── entry screen (manual SSID + password) ────────────────────── */
 
@@ -40,8 +48,30 @@ static lv_obj_t    *s_entry_ok_btn;
 static lv_obj_t    *s_entry_show_cb;   /* "Show password" toggle (password mode only) */
 static entry_mode_t s_entry_mode;
 
+/* ── QR scan screen ────────────────────────────────────────────── */
+
+static lv_obj_t         *s_qr_screen;
+static lv_obj_t         *s_qr_status;
+static lv_obj_t         *s_qr_payload;
+static lv_obj_t         *s_qr_canvas;
+static lv_timer_t       *s_qr_timer;
+static SemaphoreHandle_t s_qr_mutex;
+static uint16_t         *s_qr_canvas_buf;
+static uint16_t         *s_qr_pending_frame;
+static bool              s_qr_has_pending_status;
+static bool              s_qr_has_pending_result;
+static bool              s_qr_has_pending_frame;
+static qr_scan_status_t  s_qr_pending_status;
+static char              s_qr_status_msg[QR_SCAN_PAYLOAD_MAX];
+static qr_scan_result_t  s_qr_pending_result;
+
 static void entry_open(entry_mode_t mode, const char *initial);
 static void list_refresh(bool scanning);
+static void qr_open(void);
+static void qr_stop_scan(void);
+static void qr_stop_timer(void);
+static void list_resume_scan(void);
+static void qr_downsample_frame_to_preview(const qr_scan_frame_t *frame, uint16_t *dst);
 
 /* ── list logic ───────────────────────────────────────────────── */
 
@@ -50,6 +80,49 @@ static void stop_poll(void)
     if (s_poll_timer) {
         lv_timer_delete(s_poll_timer);
         s_poll_timer = NULL;
+    }
+}
+
+static void qr_downsample_frame_to_preview(const qr_scan_frame_t *frame, uint16_t *dst)
+{
+    if (!frame || !dst || frame->width == 0 || frame->height == 0) return;
+
+    const uint32_t src_w = frame->width;
+    const uint32_t src_h = frame->height;
+    const uint8_t *src = frame->data;
+    const bool is_rgb565 = (frame->pixelformat == V4L2_PIX_FMT_RGB565);
+    const bool is_yuyv = (frame->pixelformat == V4L2_PIX_FMT_YUYV);
+    const size_t expected_src_len = (size_t)src_w * (size_t)src_h * 2U;
+
+    if (!is_rgb565 && !is_yuyv) {
+        return;
+    }
+    if (frame->data_len < expected_src_len) {
+        return;
+    }
+
+    for (uint32_t y = 0; y < QR_PREVIEW_H; y++) {
+        uint32_t sy = (y * src_h) / QR_PREVIEW_H;
+        if (sy >= src_h) sy = src_h - 1;
+        for (uint32_t x = 0; x < QR_PREVIEW_W; x++) {
+            uint32_t sx = (x * src_w) / QR_PREVIEW_W;
+            if (sx >= src_w) sx = src_w - 1;
+
+            if (is_rgb565) {
+                const uint16_t *p = (const uint16_t *)src;
+                dst[y * QR_PREVIEW_W + x] = p[sy * src_w + sx];
+            } else {
+                /* YUYV -> grayscale RGB565 preview */
+                uint32_t pair_x = sx & ~1U;
+                size_t idx = ((size_t)sy * src_w + pair_x) * 2;
+                if (idx + 3 >= frame->data_len) continue;
+                uint8_t y0 = src[idx];
+                uint8_t y1 = src[idx + 2];
+                uint8_t lum = (sx & 1U) ? y1 : y0;
+                uint16_t gray565 = (uint16_t)(((lum >> 3) << 11) | ((lum >> 2) << 5) | (lum >> 3));
+                dst[y * QR_PREVIEW_W + x] = gray565;
+            }
+        }
     }
 }
 
@@ -70,6 +143,14 @@ static void start_poll(void)
 {
     stop_poll();
     s_poll_timer = lv_timer_create(poll_cb, 1000, NULL);
+}
+
+static void list_resume_scan(void)
+{
+    net_mgr_start_scan();
+    lv_label_set_text(s_status, "Scanning for networks...");
+    list_refresh(true);
+    start_poll();
 }
 
 static void ssid_item_cb(lv_event_t *e)
@@ -139,6 +220,13 @@ static void manual_cb(lv_event_t *e)
     entry_open(ENTRY_SSID, "");
 }
 
+static void scan_qr_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    stop_poll();
+    qr_open();
+}
+
 static void back_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
@@ -198,7 +286,7 @@ static void list_create(void)
 
 #define MAKE_WIFI_BTN(label_str, cb, y_pos) do {          \
     lv_obj_t *_b = lv_button_create(s_screen);            \
-    lv_obj_set_size(_b, 300, 56);                         \
+    lv_obj_set_size(_b, 300, 48);                         \
     lv_obj_set_pos(_b, 690, y_pos);                       \
     lv_obj_add_event_cb(_b, cb, LV_EVENT_CLICKED, NULL);  \
     lv_obj_t *_l = lv_label_create(_b);                   \
@@ -207,10 +295,11 @@ static void list_create(void)
 } while (0)
 
     MAKE_WIFI_BTN(LV_SYMBOL_REFRESH "  Rescan",  rescan_cb,   72);
-    MAKE_WIFI_BTN(LV_SYMBOL_OK "  Connect",      connect_cb, 152);
-    MAKE_WIFI_BTN(LV_SYMBOL_KEYBOARD "  Manual", manual_cb,  232);
+    MAKE_WIFI_BTN(LV_SYMBOL_OK "  Connect",      connect_cb, 132);
+    MAKE_WIFI_BTN(LV_SYMBOL_KEYBOARD "  Manual", manual_cb,  192);
+    MAKE_WIFI_BTN(LV_SYMBOL_IMAGE "  Scan QR",   scan_qr_cb, 252);
     MAKE_WIFI_BTN(LV_SYMBOL_POWER "  Restart",   restart_cb, 312);
-    MAKE_WIFI_BTN(LV_SYMBOL_LEFT "  Back",       back_cb,    392);
+    MAKE_WIFI_BTN(LV_SYMBOL_LEFT "  Back",       back_cb,    372);
 
 #undef MAKE_WIFI_BTN
 
@@ -246,6 +335,7 @@ static void entry_commit(void)
 
 static void entry_cancel(void)
 {
+    s_prefill_pass[0] = '\0';
     lv_screen_load(s_screen);
 }
 
@@ -347,6 +437,269 @@ static void entry_open(entry_mode_t mode, const char *initial)
     /* re-enable the OK button (may have been disabled after a prior save) */
     lv_obj_remove_state(s_entry_ok_btn, LV_STATE_DISABLED);
     lv_screen_load(s_entry_screen);
+}
+
+/* ── QR scan screen logic ─────────────────────────────────────── */
+
+static void qr_callbacks_status(qr_scan_status_t status, const char *message, void *ctx)
+{
+    (void)ctx;
+    if (!s_qr_mutex) return;
+    if (xSemaphoreTake(s_qr_mutex, pdMS_TO_TICKS(5)) != pdTRUE) return;
+    s_qr_pending_status = status;
+    s_qr_has_pending_status = true;
+    strlcpy(s_qr_status_msg, message ? message : "", sizeof(s_qr_status_msg));
+    xSemaphoreGive(s_qr_mutex);
+}
+
+static void qr_callbacks_frame(const qr_scan_frame_t *frame, void *ctx)
+{
+    (void)ctx;
+    if (!s_qr_mutex || !s_qr_pending_frame || !frame || !frame->data) return;
+    if ((frame->sequence % 3U) != 0U) return;
+    if (xSemaphoreTake(s_qr_mutex, pdMS_TO_TICKS(5)) != pdTRUE) return;
+    qr_downsample_frame_to_preview(frame, s_qr_pending_frame);
+    s_qr_has_pending_frame = true;
+    xSemaphoreGive(s_qr_mutex);
+}
+
+static void qr_callbacks_result(const qr_scan_result_t *result, void *ctx)
+{
+    (void)ctx;
+    if (!s_qr_mutex || !result) return;
+    if (xSemaphoreTake(s_qr_mutex, pdMS_TO_TICKS(5)) != pdTRUE) return;
+    s_qr_pending_result = *result;
+    s_qr_has_pending_result = true;
+    xSemaphoreGive(s_qr_mutex);
+}
+
+static const qr_scan_callbacks_t s_qr_callbacks = {
+    .on_status = qr_callbacks_status,
+    .on_frame  = qr_callbacks_frame,
+    .on_result = qr_callbacks_result,
+};
+
+static void qr_stop_timer(void)
+{
+    if (s_qr_timer) {
+        lv_timer_delete(s_qr_timer);
+        s_qr_timer = NULL;
+    }
+}
+
+static void qr_stop_scan(void)
+{
+    if (qr_scan_is_running()) {
+        qr_scan_stop();
+    }
+}
+
+static void qr_back_to_list(void)
+{
+    qr_stop_timer();
+    qr_stop_scan();
+    lv_screen_load(s_screen);
+    list_resume_scan();
+}
+
+static void qr_manual_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    qr_stop_timer();
+    qr_stop_scan();
+    entry_open(ENTRY_SSID, "");
+}
+
+static void qr_back_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    qr_back_to_list();
+}
+
+static void qr_rescan_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    qr_open();
+}
+
+static void qr_timer_cb(lv_timer_t *t)
+{
+    bool has_status = false;
+    bool has_result = false;
+    bool has_frame = false;
+    qr_scan_status_t status = QR_SCAN_STATUS_STOPPED;
+    char status_msg[QR_SCAN_PAYLOAD_MAX] = "";
+    qr_scan_result_t result = { 0 };
+
+    (void)t;
+    if (s_qr_mutex && xSemaphoreTake(s_qr_mutex, 0) == pdTRUE) {
+        has_status = s_qr_has_pending_status;
+        has_result = s_qr_has_pending_result;
+        has_frame = s_qr_has_pending_frame;
+        status = s_qr_pending_status;
+        strlcpy(status_msg, s_qr_status_msg, sizeof(status_msg));
+        if (has_frame && s_qr_canvas_buf && s_qr_pending_frame) {
+            memcpy(s_qr_canvas_buf, s_qr_pending_frame,
+                   QR_PREVIEW_W * QR_PREVIEW_H * sizeof(uint16_t));
+        }
+        if (has_result) {
+            result = s_qr_pending_result;
+        }
+        s_qr_has_pending_status = false;
+        s_qr_has_pending_result = false;
+        s_qr_has_pending_frame = false;
+        xSemaphoreGive(s_qr_mutex);
+    }
+
+    if (has_frame && s_qr_canvas) {
+        lv_obj_invalidate(s_qr_canvas);
+    }
+
+    if (has_status && s_qr_status) {
+        switch (status) {
+        case QR_SCAN_STATUS_STARTED:
+            lv_label_set_text(s_qr_status, "Opening camera...");
+            break;
+        case QR_SCAN_STATUS_CAMERA_READY:
+            lv_label_set_text(s_qr_status, "Camera ready — point at a Wi-Fi QR code");
+            break;
+        case QR_SCAN_STATUS_DECODED:
+            lv_label_set_text(s_qr_status, "QR code detected");
+            break;
+        case QR_SCAN_STATUS_ERROR:
+            lv_label_set_text(s_qr_status, "Camera/QR scan error");
+            break;
+        case QR_SCAN_STATUS_STOPPED:
+        default:
+            if (!has_result) lv_label_set_text(s_qr_status, "Scanner stopped");
+            break;
+        }
+        if (status_msg[0] != '\0' && s_qr_payload) {
+            lv_label_set_text(s_qr_payload, status_msg);
+        }
+    }
+
+    if (!has_result) return;
+
+    if (!result.is_wifi_qr) {
+        lv_label_set_text(s_qr_status, "QR found, but it is not a Wi-Fi code");
+        lv_label_set_text(s_qr_payload, result.payload);
+        return;
+    }
+
+    strlcpy(s_sel_ssid, result.ssid, sizeof(s_sel_ssid));
+    strlcpy(s_prefill_pass, result.password, sizeof(s_prefill_pass));
+    qr_stop_timer();
+    qr_stop_scan();
+    entry_open(ENTRY_PASS, s_prefill_pass);
+}
+
+static void qr_create(void)
+{
+    s_qr_screen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_qr_screen, lv_color_hex(0x0D1B2A), 0);
+    lv_obj_set_style_pad_all(s_qr_screen, 0, 0);
+
+    lv_obj_t *title = lv_label_create(s_qr_screen);
+    lv_label_set_text(title, LV_SYMBOL_IMAGE "  Scan Wi-Fi QR");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xCCDDEE), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_pos(title, 20, 14);
+
+    s_qr_status = lv_label_create(s_qr_screen);
+    lv_label_set_text(s_qr_status, "Opening camera...");
+    lv_obj_set_style_text_color(s_qr_status, lv_color_hex(0xCCDDEE), 0);
+    lv_obj_set_style_text_font(s_qr_status, &lv_font_montserrat_16, 0);
+    lv_obj_set_pos(s_qr_status, 20, 70);
+
+    s_qr_payload = lv_label_create(s_qr_screen);
+    lv_label_set_text(s_qr_payload, "Point the camera at your router's Wi-Fi QR code.\nDecoded payloads will appear below.");
+    lv_label_set_long_mode(s_qr_payload, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_qr_payload, 630);
+    lv_obj_set_style_text_color(s_qr_payload, lv_color_hex(0x88AACC), 0);
+    lv_obj_set_style_text_font(s_qr_payload, &lv_font_montserrat_14, 0);
+    lv_obj_set_pos(s_qr_payload, 20, 130);
+
+    if (!s_qr_canvas_buf) {
+        s_qr_canvas_buf = heap_caps_calloc(QR_PREVIEW_W * QR_PREVIEW_H,
+                                           sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (!s_qr_pending_frame) {
+        s_qr_pending_frame = heap_caps_calloc(QR_PREVIEW_W * QR_PREVIEW_H,
+                                              sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (s_qr_canvas_buf && s_qr_pending_frame) {
+        s_qr_canvas = lv_canvas_create(s_qr_screen);
+        lv_canvas_set_buffer(s_qr_canvas, s_qr_canvas_buf, QR_PREVIEW_W, QR_PREVIEW_H,
+                             LV_COLOR_FORMAT_RGB565);
+        lv_obj_set_size(s_qr_canvas, QR_PREVIEW_W, QR_PREVIEW_H);
+        lv_obj_set_pos(s_qr_canvas, 20, 190);
+    } else {
+        s_qr_canvas = NULL;
+        lv_label_set_text(s_qr_payload, "Preview buffer allocation failed.\nQR decoding still works without live preview.");
+    }
+
+#define MAKE_QR_BTN(label_str, cb, y_pos) do {            \
+    lv_obj_t *_b = lv_button_create(s_qr_screen);         \
+    lv_obj_set_size(_b, 300, 56);                         \
+    lv_obj_set_pos(_b, 690, y_pos);                       \
+    lv_obj_add_event_cb(_b, cb, LV_EVENT_CLICKED, NULL);  \
+    lv_obj_t *_l = lv_label_create(_b);                   \
+    lv_label_set_text(_l, label_str);                     \
+    lv_obj_center(_l);                                    \
+} while (0)
+
+    MAKE_QR_BTN(LV_SYMBOL_REFRESH "  Rescan",  qr_rescan_cb,  72);
+    MAKE_QR_BTN(LV_SYMBOL_KEYBOARD "  Manual", qr_manual_cb, 152);
+    MAKE_QR_BTN(LV_SYMBOL_LEFT "  Back",       qr_back_cb,   232);
+
+#undef MAKE_QR_BTN
+
+    if (!s_qr_mutex) {
+        s_qr_mutex = xSemaphoreCreateMutex();
+    }
+}
+
+static void qr_open(void)
+{
+    esp_err_t ret;
+
+    if (!s_qr_screen) qr_create();
+    if (!s_qr_mutex) {
+        lv_label_set_text(s_status, "Could not allocate QR scan state");
+        lv_screen_load(s_screen);
+        return;
+    }
+
+    qr_stop_timer();
+    qr_stop_scan();
+
+    if (xSemaphoreTake(s_qr_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+        s_qr_has_pending_status = false;
+        s_qr_has_pending_result = false;
+        s_qr_has_pending_frame = false;
+        s_qr_status_msg[0] = '\0';
+        memset(&s_qr_pending_result, 0, sizeof(s_qr_pending_result));
+        if (s_qr_canvas_buf) {
+            memset(s_qr_canvas_buf, 0, QR_PREVIEW_W * QR_PREVIEW_H * sizeof(uint16_t));
+        }
+        if (s_qr_pending_frame) {
+            memset(s_qr_pending_frame, 0, QR_PREVIEW_W * QR_PREVIEW_H * sizeof(uint16_t));
+        }
+        xSemaphoreGive(s_qr_mutex);
+    }
+
+    lv_label_set_text(s_qr_status, "Opening camera...");
+    lv_label_set_text(s_qr_payload, "Point the camera at your router's Wi-Fi QR code.\nDecoded payloads will appear below.");
+
+    ret = qr_scan_start(&s_qr_callbacks, NULL);
+    if (ret != ESP_OK) {
+        lv_label_set_text(s_qr_status, "Could not start camera scanner");
+        lv_label_set_text(s_qr_payload, "Try Rescan, use Manual instead, or go Back.");
+    }
+
+    s_qr_timer = lv_timer_create(qr_timer_cb, 150, NULL);
+    lv_screen_load(s_qr_screen);
 }
 
 /* ── public entry point ───────────────────────────────────────── */

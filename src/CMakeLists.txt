@@ -27,5 +27,6 @@ idf_component_register(
         esp_timer
         app_update
         net_mgr
+        qr_scan
         web_server
 )

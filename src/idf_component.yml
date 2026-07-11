@@ -51,3 +51,9 @@ dependencies:
   ## (miniDSP UMIK-1 and generic UAC1 mics), Phase 2 M1.
   espressif/usb_host_uac:
     version: "^1"
+
+  ## Camera capture + QR decoding for on-device Wi-Fi provisioning.
+  espressif/esp_video:
+    version: "1.4.1"
+  espressif/quirc:
+    version: "^1.2.0"

@@ -1,0 +1,13 @@
+idf_component_register(
+    SRCS
+        "src/qr_scan.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        esp_common
+        esp_system
+        esp_timer
+        esp_video
+        quirc
+        freertos
+)
