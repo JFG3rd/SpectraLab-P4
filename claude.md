@@ -7,12 +7,23 @@ on-board ESP32-C6, SD card, 32 MB PSRAM). PlatformIO + ESP-IDF 5.5.
 
 ## Build / Flash / Monitor
 
+Two envs, one per P4 silicon revision (breaking major revision — one
+binary cannot serve both boards):
+
 ```bash
-pio run                 # build
-pio run -t upload       # flash (esp-builtin / OpenOCD via USB-C)
-pio run -t erase        # full chip erase (needed after partition changes)
+pio run                                   # build BOTH envs
+pio run -e esp32-p4-evboard -t upload     # EV-Board v1.5.2 (chip rev v1.x)
+pio run -e esp32-p4x-evboard -t upload    # P4X EV-Board v1.6 (chip rev v3.x)
+pio run -e <env> -t erase                 # full chip erase (after partition changes)
 ```
 
+- Each env has its own `sdkconfig.<env>`; silicon-revision keys
+  (`ESP32P4_SELECTS_REV_LESS_V3`, `ESP32P4_REV_MIN_*`) live ONLY there,
+  never in `sdkconfig.defaults`. Chip rev ≥3.0 needs ESP-IDF ≥5.5.3
+  (platform pinned to pioarduino 55.03.39 = IDF v5.5.4).
+- `tools/check_chip_rev.py` probes the connected chip before every upload
+  and aborts on env/silicon mismatch — flashing the wrong image leaves a
+  board unbootable until reflashed. Don't remove it from platformio.ini.
 - Serial monitor port: `/dev/cu.usbmodem1101` @ 115200. Reset via
   DTR/RTS pulse works for capturing boot logs with pyserial
   (PlatformIO's python has pyserial: `~/.platformio/penv/bin/python3`).
@@ -76,6 +87,21 @@ pio run -t erase        # full chip erase (needed after partition changes)
 9. **settings_t growth**: adding fields invalidates the NVS blob
    (size check) → one-time reset on first boot; SD settings.json keeps
    old values for existing keys. Expected, not a bug.
+10. **P4 rev-3 ("P4X") DSI clock**: `MIPI_DSI_PHY_CLK_SRC_DEFAULT` is
+    the rev<3-only LEGACY source (PLL_F20M); on rev-3 silicon the LL
+    driver hits `default: abort()` during `esp_lcd_new_dsi_bus`. Use
+    `MIPI_DSI_PHY_PLLREF_CLK_SRC_DEFAULT` (XTAL) on rev-3 — see the
+    `#if CONFIG_ESP32P4_SELECTS_REV_LESS_V3` in display_init.c.
+11. **Never flash the P4X board via OpenOCD** (esp-builtin): as of
+    openocd 20260424 it writes without overlap checks and its rev-3
+    flash layer is unreliable → "Checksum failure" boot loops. The p4x
+    env pins `upload_protocol = esptool`. Related: bootloader.bin must
+    stay < 0x6000 (24576 B) or it collides with the partition table at
+    0x8000 — bootloader log level WARN keeps it under.
+12. **USB-Serial/JTAG download latch**: after esptool/OpenOCD sessions
+    the P4X can keep rebooting into ROM download mode ("waiting for
+    download") — no software reset clears it (RTS, watchdog, JTAG, SW
+    all fail). Only the physical RST button or a power cycle recovers.
 
 ## Conventions
 

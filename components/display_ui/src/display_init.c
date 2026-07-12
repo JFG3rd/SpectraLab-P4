@@ -103,7 +103,14 @@ esp_err_t display_hw_init(lv_display_t **disp_out)
     esp_lcd_dsi_bus_config_t bus_cfg = {
         .bus_id             = 0,
         .num_data_lanes     = BSP_LCD_MIPI_DSI_LANE_NUM,
-        .phy_clk_src        = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
+        /* MIPI_DSI_PHY_CLK_SRC_DEFAULT aliases the LEGACY PLL ref source
+         * (PLL_F20M), which only exists on P4 silicon rev <3.0 — on rev
+         * >=3.0 (P4X board) the LL driver aborts on it. Pick per family. */
+#if CONFIG_ESP32P4_SELECTS_REV_LESS_V3
+        .phy_clk_src        = MIPI_DSI_PHY_PLLREF_CLK_SRC_DEFAULT_LEGACY,
+#else
+        .phy_clk_src        = MIPI_DSI_PHY_PLLREF_CLK_SRC_DEFAULT,
+#endif
         .lane_bit_rate_mbps = BSP_LCD_MIPI_DSI_LANE_BITRATE_MBPS,
     };
     ESP_RETURN_ON_ERROR(esp_lcd_new_dsi_bus(&bus_cfg, &mipi_dsi_bus),

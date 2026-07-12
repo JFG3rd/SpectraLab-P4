@@ -1,11 +1,9 @@
-# ESP32-P4 Function EV Board V1.5.2 - Default Configuration
+# ESP32-P4 Function EV Board - Shared Default Configuration
 #
-# Chip revision: ECO2 (pre-rev3 silicon)
-# Rev <3.0 and >=3.0 are mutually exclusive in ESP-IDF — must select this first
-CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
-CONFIG_ESP32P4_REV_MIN_1=y
-CONFIG_ESP32P4_REV_MIN_FULL=1
-CONFIG_ESP_REV_MIN_FULL=1
+# NOTE: silicon revision is env-specific and lives in sdkconfig.<env>, NOT
+# here (rev <3.0 and >=3.0 are mutually exclusive in ESP-IDF):
+#   sdkconfig.esp32-p4-evboard  — SELECTS_REV_LESS_V3=y, REV_MIN v0.1 (v1.5.2 board)
+#   sdkconfig.esp32-p4x-evboard — gate off, REV_MIN v3.1 (P4X v1.6 board)
 
 # PSRAM — P4 Function EV Board uses HEX-8 mode (NOT OCT).
 # The generated sdkconfig confirms CONFIG_SPIRAM_MODE_HEX=y; using OCT

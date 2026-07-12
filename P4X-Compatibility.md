@@ -17,12 +17,19 @@ There are two distinct compatibility goals, and they have very different cost:
    silicon revision, PSRAM/flash, display panel, audio codec, pin map, and
    companion radio. This requires a real **board-abstraction layer**.
 
-> **Open question — what exactly is "P4X"?** The build is currently pinned to
-> the `esp32-p4-evboard` board and its BSP. Before a board profile can be
-> written we need the P4X specifics: SoC/silicon revision, PSRAM type (HEX vs
-> OCT) and size, flash size, LCD panel controller + resolution, touch
-> controller, audio codec + I2S/I2C pin map, SD wiring, and whether it carries
-> an ESP32-C6 (or other) companion radio for Wi-Fi. See §6.
+> **Answered (2026-07-12) — "P4X" is the ESP32-P4X-Function-EV-Board v1.6.**
+> It is peripheral-identical to the v1.5.2 board (same EK79007 1024×600 DSI
+> panel, GT911 touch, ES8311 codec, ESP32-C6-MINI-1 radio, SD wiring, 16 MB
+> flash, 32 MB HEX PSRAM). The only difference is the P4 silicon: chip rev
+> **v3.x** (ECO7 ROM, 400 MHz-capable) — a *breaking major revision* that
+> cannot run rev-1.x binaries and requires ESP-IDF ≥ 5.5.3. None of the §4.2
+> board-abstraction work was needed; the split was done purely at build level:
+> per-env `sdkconfig` (`esp32-p4-evboard` = rev v1.x, `esp32-p4x-evboard` =
+> rev v3.x), platform upgraded to pioarduino 55.03.39 (IDF v5.5.4), and
+> `tools/check_chip_rev.py` guards uploads against silicon mismatch.
+> One code change was required: the DSI PHY PLL reference clock default
+> differs per silicon family (`display_init.c`, CLAUDE.md gotcha #10).
+> The P4X env flashes via esptool, not OpenOCD (gotcha #11).
 
 ## 2. Where the firmware is board-coupled
 
