@@ -100,3 +100,10 @@ CONFIG_ESP_VIDEO_ENABLE_ISP_VIDEO_DEVICE=y
 CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=y
 CONFIG_CAMERA_SC2336=y
 CONFIG_CAMERA_OV5647=y
+
+# NOTE: do NOT disable CONFIG_ESP_IPA_AWB_ALGORITHM to work around the rev-3
+# AWB bug (see CLAUDE.md). The generated IPA config lists esp_ipa_awb as a
+# required algorithm because the sensor JSON has an "awb" block, so turning the
+# algorithm off makes esp_ipa_pipeline_create() fail outright with
+# "failed to detect IPA index=1 name=esp_ipa_awb" — the camera then does not
+# even initialise. The AWB block has to be removed from the JSON instead.

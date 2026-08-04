@@ -844,6 +844,20 @@ void screen_settings_sync_brightness(int percent)
     }
 }
 
+void screen_settings_sync_color_scheme(int scheme)
+{
+    if (!s_dd_color_scheme) return;
+    if (scheme < 0 || scheme >= COLOR_SCHEME_COUNT) return;
+    lv_dropdown_set_selected(s_dd_color_scheme, (uint32_t)scheme);
+}
+
+void screen_settings_sync_display_mode(int mode)
+{
+    if (!s_dd_disp_mode) return;
+    if (mode < 0 || mode >= DISPLAY_MODE_COUNT) return;
+    lv_dropdown_set_selected(s_dd_disp_mode, (uint32_t)mode);
+}
+
 void screen_settings_load(void)
 {
     if (!s_screen) return;

@@ -152,6 +152,11 @@ Although it began as a personal engineering project, it is released as open sour
 |-----------|
 | ![](Docu/images/Screenshots/settings.jpg) |
 
+Touch drives everything. The one exception is the Wi-Fi QR scanner: the
+camera and the touch controller share an I2C bus, so touch pauses while the
+camera is live. Optional front-panel keycaps cover that gap and add a
+hardware display-mode shortcut — see [hardware-setup.md](hardware-setup.md).
+
 ---
 
 # What makes this project different?
@@ -193,6 +198,7 @@ Every feature is evaluated against one goal:
 | Wi-Fi Provisioning | ✅ |
 | Multiple Saved Wi-Fi Networks | ✅ |
 | Camera QR Wi-Fi Setup | ✅ |
+| Front-Panel Keycaps (optional) | ✅ |
 | Distributed Stereo Analyzer | 🚧 Planned for v2.0 |
 
 ---
@@ -206,6 +212,11 @@ Every feature is evaluated against one goal:
 - microSD card
 - Optional USB UAC1 interface, such as the Behringer UCA222
 - Optional calibrated USB measurement microphone
+- Optional 1-2 x Seeed Grove-Mech Keycap — front-panel keys whose RGB LEDs
+  show what each key selects: one cycles the colour theme (and cancels a
+  camera QR scan while touch is suspended, or restarts the board on a 2 s
+  hold), the other cycles the spectrum display mode (wiring in
+  [hardware-setup.md](hardware-setup.md) — power them from 3V3, never 5V)
 
 ## Clone
 
@@ -338,6 +349,8 @@ src/
 - ✅ Robust on-device Wi-Fi scanning and provisioning, with a "Show password" toggle
 - ✅ Per-device mDNS name (`spectralab-p4-xxxx.local`) so multiple units coexist on one network
 - ✅ Camera QR-code Wi-Fi provisioning — point the on-board camera at a router's Wi-Fi QR code to auto-fill SSID/password from the on-device Wi-Fi setup flow
+- ✅ QR scanner stability — real camera errors are shown instead of a bare "Scanner stopped", touch and audio survive a scan, the UI is never blocked while stopping, and an idle scan gives up after 45 s
+- ✅ Optional front-panel Grove-Mech Keycaps — a colour-theme/scan-abort/restart key usable while touch is suspended for a camera scan, plus a display-mode key; each LED glows the colour of what its key currently selects
 
 ## Version 2.0 — Distributed Stereo Analyzer
 

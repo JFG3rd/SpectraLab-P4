@@ -99,6 +99,33 @@ void      display_ui_set_max_hold(bool enabled);
 /* Set LCD backlight brightness (10-100 %). Applies immediately via BSP. */
 void      display_ui_set_brightness(int percent);
 
+/* Panel-button bridge (see components/panel_button).
+ *
+ * display_ui_panel_abort() is the "get me out of here" action: it aborts an
+ * in-progress QR camera scan. Safe from any task — it only posts a request
+ * that the LVGL timer acts on — which matters because during a scan the
+ * camera owns the shared I2C pads and touch input is suspended, so this is
+ * the only working input. Returns true if there was something to abort.
+ *
+ * display_ui_qr_scan_active() reports whether a scan session is live.
+ *
+ * display_ui_panel_next_display_mode() advances the spectrum view by one mode,
+ * wrapping, and persists the choice. Also safe from any task, and for the same
+ * reason: it posts a flag that the LVGL timer acts on rather than taking the
+ * LVGL lock, which has no timeout and would strand the button task — and with
+ * it the long-press restart — if the UI ever wedged. */
+bool      display_ui_panel_abort(void);
+bool      display_ui_qr_scan_active(void);
+void      display_ui_panel_next_display_mode(void);
+
+/* Advance the colour theme by one, wrapping, and persist it. The abort key's
+ * second job when no QR scan is running. Same post-a-flag contract. */
+void      display_ui_panel_cycle_color_scheme(void);
+
+/* Paint both panel LEDs from the restored theme/display mode. Call once after
+ * panel_button_init(), which comes up after the settings restore. */
+void      display_ui_panel_refresh_leds(void);
+
 #ifdef __cplusplus
 }
 #endif

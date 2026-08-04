@@ -1,0 +1,120 @@
+menu "Panel Button (Grove-Mech Keycap)"
+
+    config PANEL_BUTTON_ENABLE
+        bool "Enable front-panel buttons + RGB status LEDs"
+        default y
+        help
+            Front-panel Seeed Grove-Mech Keycaps: MX-style switches with an
+            SK6805 RGB LED under each cap, wired to the J1 header.
+
+            Key 1 is the only usable input during a QR camera scan, because
+            the camera's SCCB bus takes the same GPIO 7/8 pads the GT911 touch
+            controller uses and touch polling is suspended for the duration.
+
+            Safe to leave enabled with no keycap fitted: the pin idles low
+            through the module's pull-down, and with nothing connected the
+            internal pull-down keeps it from floating.
+
+    config PANEL_BUTTON_COUNT
+        int "Number of keycaps fitted"
+        depends on PANEL_BUTTON_ENABLE
+        range 1 2
+        default 2
+        help
+            1 = abort key only. 2 = adds the display-mode key.
+
+            Each keycap needs its OWN switch pin and its OWN LED pin. Do not
+            wire two switches in parallel: the firmware would see one signal
+            and could not tell which cap was pressed, and paralleled SK6805
+            data lines make both LEDs show the same colour. See
+            hardware-setup.md.
+
+    comment "Key 1 — abort a QR scan (click) / restart (hold)"
+        depends on PANEL_BUTTON_ENABLE
+
+    config PANEL_BUTTON_GPIO
+        int "Key 1 switch GPIO (SIG1)"
+        depends on PANEL_BUTTON_ENABLE
+        range 0 54
+        default 22
+        help
+            J1 pin wired to the keycap's SIG1. Active HIGH: the switch shorts
+            SIG1 to VCC when pressed, and an on-module resistor pulls it down
+            when released.
+
+            WARNING: power the module from 3V3, never 5V. Because SIG1 is tied
+            straight to VCC when pressed, a 5 V supply would put 5 V on this
+            pin and ESP32-P4 GPIOs are not 5 V tolerant.
+
+            Must not collide with pins this board already uses: 7/8 (I2C),
+            9-13 (I2S), 14-19 (SDIO to the C6), 24/25 (USB-Serial/JTAG),
+            26/27 (LCD), 37/38 (console UART), 39-44 (SD card), 54 (C6 reset).
+
+            Also avoid every EMAC RMII IO_MUX pad, since this board has an
+            IP101GRI Ethernet PHY wired to them: 23, 28-36, 39-54. On the J1
+            header that leaves GPIO 2-6 and 20/21/22; of those, 20/21/22 are
+            the pins with no alternate function at all. GPIO 2-5 are the
+            external JTAG pins (MTCK/MTDI/MTMS/MTDO) but are usable here,
+            because this project debugs over esp-builtin (the USB
+            Serial/JTAG peripheral) rather than pin JTAG.
+
+    config PANEL_BUTTON_LED_GPIO
+        int "Key 1 RGB LED data GPIO (SIG2)"
+        depends on PANEL_BUTTON_ENABLE
+        range -1 54
+        default 21
+        help
+            J1 pin wired to the keycap's SIG2 (SK6805 data). Set to -1 to run
+            the button without the status LED. Same pin-collision rules as
+            above.
+
+    comment "Key 2 — cycle the spectrum display mode"
+        depends on PANEL_BUTTON_ENABLE && PANEL_BUTTON_COUNT > 1
+
+    config PANEL_BUTTON2_GPIO
+        int "Key 2 switch GPIO (SIG1)"
+        depends on PANEL_BUTTON_ENABLE && PANEL_BUTTON_COUNT > 1
+        range 0 54
+        default 20
+        help
+            Second keycap's SIG1. Same rules and the same 3V3-only warning as
+            key 1. GPIO 20 is J1 pin 13, immediately alongside key 1's pins
+            with GND on pin 14.
+
+    config PANEL_BUTTON2_LED_GPIO
+        int "Key 2 RGB LED data GPIO (SIG2)"
+        depends on PANEL_BUTTON_ENABLE && PANEL_BUTTON_COUNT > 1
+        range -1 54
+        default 6
+        help
+            Second keycap's SIG2. Set to -1 to run the key without its LED.
+
+            GPIO 6 is J1 pin 15; its only alternate function is SPI2_HOLD,
+            which this project does not use.
+
+    comment "Shared behaviour"
+        depends on PANEL_BUTTON_ENABLE
+
+    config PANEL_BUTTON_LED_BRIGHTNESS
+        int "LED brightness (0-255)"
+        depends on PANEL_BUTTON_ENABLE
+        range 0 255
+        default 64
+        help
+            Peak channel value, applied to every key's LED. The SK6805 runs
+            dimmer on a 3.3 V supply than at 5 V, but as a status indicator it
+            is still easily readable, and keeping this low avoids a
+            distractingly bright panel light.
+
+    config PANEL_BUTTON_LONG_PRESS_MS
+        int "Long-press reboot time (ms)"
+        depends on PANEL_BUTTON_ENABLE
+        range 500 10000
+        default 2000
+        help
+            Hold time on KEY 1 that triggers esp_restart(). This is the
+            last-resort escape: if the camera driver parks in an
+            uninterruptible wait, nothing in software can recover it and only
+            a restart will. Key 2 has no long-press action.
+
+endmenu

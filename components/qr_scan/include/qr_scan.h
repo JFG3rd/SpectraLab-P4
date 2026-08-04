@@ -53,7 +53,21 @@ typedef struct {
 } qr_scan_callbacks_t;
 
 esp_err_t qr_scan_start(const qr_scan_callbacks_t *callbacks, void *ctx);
-void      qr_scan_stop(void);
+
+/* Ask the scanner to shut down and return immediately. Safe from any task,
+ * including LVGL callbacks and the panel-button handler — it only sets a flag.
+ *
+ * Shutdown is NOT instant: the scanner task finishes its current frame, tears
+ * the camera down and hands the shared I2C pads back before it exits. Poll
+ * qr_scan_is_running() to observe completion. Never block on it from the LVGL
+ * task — that holds the LVGL mutex and freezes the whole UI. */
+void      qr_scan_request_stop(void);
+
+/* Request a stop and wait up to timeout_ms for it. Returns false if the
+ * scanner is still running, which means its frame pump is unrecoverably parked
+ * in the camera driver and only a reboot will clear it. For non-LVGL callers. */
+bool      qr_scan_stop_wait(uint32_t timeout_ms);
+
 bool      qr_scan_is_running(void);
 
 #ifdef __cplusplus

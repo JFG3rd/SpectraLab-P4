@@ -36,6 +36,14 @@ void      screen_settings_set_status(const char *msg);
 /* Sync the brightness slider widget to a value set elsewhere (boot restore). */
 void      screen_settings_sync_brightness(int percent);
 
+/* Sync the display-mode dropdown to a mode selected elsewhere — currently the
+ * panel-button mode key. Without this the dropdown keeps showing whatever was
+ * picked the last time the Settings screen was used. */
+void      screen_settings_sync_display_mode(int mode);
+
+/* Same, for the colour-theme dropdown when the panel abort key cycles it. */
+void      screen_settings_sync_color_scheme(int scheme);
+
 /* Gray out the mic-gain dropdown while a USB mic is the active source. */
 void      screen_settings_set_usb_active(bool usb_active);
 

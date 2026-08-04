@@ -57,3 +57,17 @@ dependencies:
     version: "1.4.1"
   espressif/quirc:
     version: "^1.2.0"
+
+  ## Front-panel Grove-Mech Keycap (components/panel_button): debounced GPIO
+  ## button + SK6805 status LED. The switch is the only input that survives a
+  ## QR scan, since the camera takes the I2C pads the touch controller uses.
+  ## The SK6805 is protocol-identical to the WS2812, so led_strip drives it
+  ## with led_model = WS2812.
+  espressif/button:
+    ## Pinned to 3.x: esp_lvgl_port 2.4 auto-compiles esp_lvgl_port_button.c
+    ## whenever this component is in the build, and that file is written
+    ## against the v3 API (v4 renamed iot_button_create and changed the
+    ## register_cb signature).
+    version: "^3.5.0"
+  espressif/led_strip:
+    version: "^3.0.0"

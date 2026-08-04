@@ -28,5 +28,6 @@ idf_component_register(
         app_update
         net_mgr
         qr_scan
+        panel_button
         web_server
 )

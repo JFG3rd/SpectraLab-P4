@@ -10,4 +10,5 @@ idf_component_register(
         esp_video
         quirc
         freertos
+        driver       # legacy i2c_param_config() — reclaims the shared GPIO 7/8 pads
 )

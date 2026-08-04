@@ -28,6 +28,7 @@ idf_component_register(
         agc
         net_mgr
         qr_scan
+        panel_button
         esp_hw_support
         esp_lcd
         esp_lcd_ek79007

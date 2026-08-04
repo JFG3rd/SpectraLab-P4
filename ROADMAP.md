@@ -51,10 +51,12 @@ The 1.x series focuses on polishing the current standalone instrument before add
 - [x] "Show password" toggle on the on-device Wi-Fi entry screen
 - [x] Per-device mDNS hostname (`spectralab-p4-xxxx.local`) so multiple units on one LAN do not collide
 - [x] Verbose network-manager diagnostics — connection state-machine tracing and decoded Wi-Fi disconnect reason codes
+- [x] Camera QR-code Wi-Fi provisioning — point the on-board MIPI-CSI camera at a router's Wi-Fi QR code to auto-fill the SSID and password (`esp_video` capture + `quirc` decode of the standard `WIFI:S:...;P:...;` payload)
+- [x] QR provisioning stability — the scanner now reports the real camera error instead of a bare "Scanner stopped", hands the shared GPIO 7/8 pads back to the touch controller and audio codec on teardown (they used to stay dead until reboot), never blocks the LVGL task while stopping, and auto-stops after 45 s
+- [x] Optional front-panel Grove-Mech Keycaps (up to two) — on the GPIO matrix rather than the contended I2C bus, so they still work while touch is suspended for a camera scan. Key 1 cycles the colour theme (aborting a running scan instead, and restarting the board on a 2 s hold); key 2 cycles the spectrum display mode. Each RGB LED glows the colour of what its key currently selects
 
 ### Candidate Improvements
 
-- [ ] Camera QR-code Wi-Fi provisioning — point the on-board MIPI-CSI camera at a router's Wi-Fi QR code to auto-fill the SSID and password (`esp_video` capture + `quirc` decode, parsing the standard `WIFI:S:...;P:...;` payload into the saved-networks list)
 - [ ] Improve documentation and setup instructions
 - [ ] Add more screenshots and diagrams
 - [ ] Improve preset management workflow
@@ -226,6 +228,12 @@ These ideas are not scheduled, but they fit naturally with the project direction
 
 ### Hardware Options
 
+- More front-panel keys on the Grove-Mech Keycap surface (two are supported
+  today — scan abort/restart and display-mode cycling): AGC toggle, display
+  freeze/hold, and a hardware recording trigger with the RGB LED as a
+  recording/clip indicator once SD recording lands. GPIO 2-5 are still free
+  on J1 for a third and fourth key; beyond that an ADC resistor ladder
+  (`iot_button` BUTTON_TYPE_ADC) puts many keys on one pin
 - Alternative USB audio interfaces
 - External I2S microphones
 - Line-level input front end

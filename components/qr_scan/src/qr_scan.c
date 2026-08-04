@@ -1,14 +1,17 @@
 #include <ctype.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "linux/videodev2.h"
+#include "driver/i2c.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -19,19 +22,38 @@
 
 static const char *TAG = "qr_scan";
 
+/* SCCB (camera control) bus. NOTE: esp_video brings this up with the *new*
+ * i2c_master driver on port 0, while the board bus (GT911 touch + ES8311
+ * codec) is the *legacy* driver on CONFIG_BSP_I2C_NUM — over the very same
+ * GPIO 7/8 pads. A pad carries one output signal, so starting the camera
+ * detaches the board bus and esp_video_deinit() resets the pads outright.
+ * qr_scan_board_i2c_reclaim() below hands them back; without it touch and
+ * audio stay dead until reboot. */
 #define QR_SCAN_I2C_PORT          0
 #define QR_SCAN_I2C_SCL_PIN       8
 #define QR_SCAN_I2C_SDA_PIN       7
 #define QR_SCAN_I2C_FREQ_HZ       100000
 #define QR_SCAN_RESET_PIN         (-1)
 #define QR_SCAN_PWDN_PIN          (-1)
-#define QR_SCAN_REQ_WIDTH         640
-#define QR_SCAN_REQ_HEIGHT        480
 #define QR_SCAN_REQBUFS           2
 #define QR_SCAN_TASK_STACK        24576
-#define QR_SCAN_TASK_PRIO         5
-#define QR_SCAN_DQBUF_TIMEOUT_MS  1000
+/* Must stay BELOW the LVGL port task (priority 4) — the frame pump is a
+ * long-running CPU hog and both cores are already claimed at 20/22 by the
+ * DSP and I2S reader tasks. At 5 it starved the UI for the whole session. */
+#define QR_SCAN_TASK_PRIO         3
 #define QR_SCAN_DUP_HOLDOFF_US    (3 * 1000 * 1000LL)
+/* Give up on an unattended scan rather than holding the camera (and the
+ * board I2C pads) forever. The UI enforces the same deadline independently,
+ * because a task parked in VIDIOC_DQBUF never gets to check its own clock. */
+#define QR_SCAN_SESSION_TIMEOUT_US (45 * 1000 * 1000LL)
+/* Decode budget. S_FMT cannot change sensor dimensions (esp_video rejects any
+ * width/height that differs from the sensor's configured mode), so we always
+ * stream native — 800x800 or 1280x720. Decimating by an integer factor before
+ * quirc cuts the per-frame work ~4x with no meaningful loss of QR range. */
+#define QR_SCAN_DECODE_MAX_W      640
+/* Board (touch + codec) I2C bus we have to hand the pads back to. */
+#define QR_SCAN_BOARD_I2C_PORT    CONFIG_BSP_I2C_NUM
+#define QR_SCAN_BOARD_I2C_FREQ_HZ CONFIG_BSP_I2C_CLK_SPEED_HZ
 
 typedef struct {
     void  *addr;
@@ -199,8 +221,22 @@ static esp_err_t qr_scan_ensure_video_init(void)
 
     ret = esp_video_init(&s_video_config);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_video_init failed: %s", esp_err_to_name(ret));
-        return ret;
+        /* esp_video_init() registers the ISP device (/dev/video20) first but
+         * esp_video_deinit() destroys it last, behind a chain of
+         * ESP_RETURN_ON_ERROR calls. One failing teardown step therefore leaks
+         * the registration, and every later init fails with "Failed to
+         * register video VFS dev name=video20" — turning a one-off camera
+         * error into a permanent one until reboot. Force a teardown and retry
+         * once so a failed session cannot poison the next attempt. */
+        ESP_LOGW(TAG, "esp_video_init failed: %s — forcing deinit and retrying once",
+                 esp_err_to_name(ret));
+        esp_video_deinit();
+
+        ret = esp_video_init(&s_video_config);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "esp_video_init failed again: %s", esp_err_to_name(ret));
+            return ret;
+        }
     }
 
     s_state.video_initialized = true;
@@ -216,6 +252,34 @@ static void qr_scan_deinit_video(void)
     s_state.video_initialized = false;
 }
 
+/* Re-attach GPIO 7/8 to the board's legacy I2C controller after the camera
+ * SCCB bus stole (and then reset) them — see the note by QR_SCAN_I2C_PORT.
+ *
+ * i2c_param_config() reprograms the controller and re-runs the pin routing
+ * without touching the installed driver, so the live es8311 handle and the
+ * GT911 panel-io — which only store the port number — stay valid. Deliberately
+ * NOT i2c_driver_delete()/install(): that would race the AGC's ES8311 PGA
+ * writes from the DSP task. */
+static void qr_scan_board_i2c_reclaim(void)
+{
+    const i2c_config_t conf = {
+        .mode             = I2C_MODE_MASTER,
+        .sda_io_num       = QR_SCAN_I2C_SDA_PIN,
+        .sda_pullup_en    = GPIO_PULLUP_DISABLE,
+        .scl_io_num       = QR_SCAN_I2C_SCL_PIN,
+        .scl_pullup_en    = GPIO_PULLUP_DISABLE,
+        .master.clk_speed = QR_SCAN_BOARD_I2C_FREQ_HZ,
+    };
+    esp_err_t ret = i2c_param_config(QR_SCAN_BOARD_I2C_PORT, &conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "board I2C reclaim failed: %s — touch/audio will stay dead",
+                 esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "board I2C port %d reclaimed on GPIO %d/%d",
+                 QR_SCAN_BOARD_I2C_PORT, QR_SCAN_I2C_SCL_PIN, QR_SCAN_I2C_SDA_PIN);
+    }
+}
+
 static void qr_scan_cleanup_buffers(qr_scan_map_buf_t bufs[], int count)
 {
     for (int i = 0; i < count; i++) {
@@ -227,20 +291,19 @@ static void qr_scan_cleanup_buffers(qr_scan_map_buf_t bufs[], int count)
     }
 }
 
+/* detail_out receives a plain-language reason for the UI on every failure —
+ * the serial log has the precise call, but the person holding the board needs
+ * to know which thing to go and check. */
 static esp_err_t qr_scan_open_stream(uint16_t *width_out,
                                      uint16_t *height_out,
                                      qr_scan_map_buf_t bufs[],
-                                     int *buf_count_out)
+                                     int *buf_count_out,
+                                     const char **detail_out)
 {
-    static const struct {
-        uint16_t width;
-        uint16_t height;
-    } s_size_candidates[] = {
-        { 640, 480 },
-        { 800, 600 },
-        { 1280, 720 },
-        { 320, 240 },
-    };
+    /* Pixel format only. Resolution is NOT negotiable here: esp_video's CSI
+     * set_format rejects any width/height that differs from the sensor's
+     * configured mode, so we take whatever the sensor gives us (800x800 for
+     * the OV5647, 1280x720 for the SC2336) and decimate at decode time. */
     static const uint32_t s_pixfmt_candidates[] = {
         V4L2_PIX_FMT_RGB565,
         V4L2_PIX_FMT_YUYV,
@@ -252,7 +315,12 @@ static esp_err_t qr_scan_open_stream(uint16_t *width_out,
 
     s_state.fd = open(ESP_VIDEO_MIPI_CSI_DEVICE_NAME, O_RDWR);
     if (s_state.fd < 0) {
-        ESP_LOGE(TAG, "open(%s) failed", ESP_VIDEO_MIPI_CSI_DEVICE_NAME);
+        /* esp_video only registers /dev/video0 once it has detected a sensor
+         * over SCCB, so this is what "no camera plugged in" looks like. */
+        ESP_LOGE(TAG, "open(%s) failed — no CSI sensor was detected",
+                 ESP_VIDEO_MIPI_CSI_DEVICE_NAME);
+        *detail_out = "No camera detected. Check the MIPI-CSI camera module is "
+                      "connected and fully seated in its connector.";
         return ESP_FAIL;
     }
 
@@ -264,44 +332,46 @@ static esp_err_t qr_scan_open_stream(uint16_t *width_out,
     qr_scan_try_set_ctrl(s_state.fd, V4L2_CID_BRIGHTNESS, 0, "brightness");
     qr_scan_try_set_ctrl(s_state.fd, V4L2_CID_CONTRAST, 32, "contrast");
 
-    for (size_t pf = 0; pf < sizeof(s_pixfmt_candidates) / sizeof(s_pixfmt_candidates[0]) && !format_set; pf++) {
-        for (size_t sz = 0; sz < sizeof(s_size_candidates) / sizeof(s_size_candidates[0]); sz++) {
-            memset(&fmt, 0, sizeof(fmt));
-            fmt.type = type;
-            fmt.fmt.pix.width = s_size_candidates[sz].width;
-            fmt.fmt.pix.height = s_size_candidates[sz].height;
-            fmt.fmt.pix.pixelformat = s_pixfmt_candidates[pf];
-            fmt.fmt.pix.field = V4L2_FIELD_NONE;
-            if (ioctl(s_state.fd, VIDIOC_S_FMT, &fmt) == 0) {
-                format_set = true;
-                break;
-            }
+    /* Ask for a format we can decode, keeping the sensor's own dimensions. */
+    memset(&fmt, 0, sizeof(fmt));
+    fmt.type = type;
+    if (ioctl(s_state.fd, VIDIOC_G_FMT, &fmt) != 0) {
+        ESP_LOGE(TAG, "VIDIOC_G_FMT failed");
+        *detail_out = "The camera did not report a video format.";
+        return ESP_FAIL;
+    }
+
+    for (size_t pf = 0; pf < sizeof(s_pixfmt_candidates) / sizeof(s_pixfmt_candidates[0]); pf++) {
+        struct v4l2_format try_fmt = fmt;
+
+        try_fmt.fmt.pix.pixelformat = s_pixfmt_candidates[pf];
+        try_fmt.fmt.pix.field = V4L2_FIELD_NONE;
+        if (ioctl(s_state.fd, VIDIOC_S_FMT, &try_fmt) == 0) {
+            format_set = true;
+            break;
         }
     }
 
+    memset(&fmt, 0, sizeof(fmt));
+    fmt.type = type;
+    if (ioctl(s_state.fd, VIDIOC_G_FMT, &fmt) != 0) {
+        ESP_LOGE(TAG, "VIDIOC_G_FMT failed after format negotiation");
+        *detail_out = "The camera did not report a video format.";
+        return ESP_FAIL;
+    }
     if (!format_set) {
-        memset(&fmt, 0, sizeof(fmt));
-        fmt.type = type;
-        if (ioctl(s_state.fd, VIDIOC_G_FMT, &fmt) != 0) {
-            ESP_LOGE(TAG, "VIDIOC_G_FMT failed after format negotiation");
-            return ESP_FAIL;
-        }
-    } else {
-        memset(&fmt, 0, sizeof(fmt));
-        fmt.type = type;
-        if (ioctl(s_state.fd, VIDIOC_G_FMT, &fmt) != 0) {
-            ESP_LOGE(TAG, "VIDIOC_G_FMT failed");
-            return ESP_FAIL;
-        }
+        ESP_LOGW(TAG, "no pixel format accepted; using the sensor default");
     }
 
     if (fmt.fmt.pix.width == 0 || fmt.fmt.pix.height == 0) {
         ESP_LOGE(TAG, "camera returned invalid format dimensions");
+        *detail_out = "The camera reported an invalid frame size.";
         return ESP_FAIL;
     }
     if (fmt.fmt.pix.pixelformat != V4L2_PIX_FMT_RGB565 &&
         fmt.fmt.pix.pixelformat != V4L2_PIX_FMT_YUYV) {
         ESP_LOGE(TAG, "unsupported pixel format: 0x%08" PRIx32, fmt.fmt.pix.pixelformat);
+        *detail_out = "The camera is using a pixel format this build cannot decode.";
         return ESP_FAIL;
     }
 
@@ -316,6 +386,7 @@ static esp_err_t qr_scan_open_stream(uint16_t *width_out,
     req.memory = V4L2_MEMORY_MMAP;
     if (ioctl(s_state.fd, VIDIOC_REQBUFS, &req) != 0 || req.count == 0) {
         ESP_LOGE(TAG, "VIDIOC_REQBUFS failed");
+        *detail_out = "Could not allocate camera frame buffers — out of memory.";
         return ESP_FAIL;
     }
 
@@ -328,6 +399,7 @@ static esp_err_t qr_scan_open_stream(uint16_t *width_out,
         buf.index = (uint32_t)i;
         if (ioctl(s_state.fd, VIDIOC_QUERYBUF, &buf) != 0) {
             ESP_LOGE(TAG, "VIDIOC_QUERYBUF failed for index %d", i);
+            *detail_out = "Could not query the camera frame buffers.";
             return ESP_FAIL;
         }
 
@@ -337,17 +409,20 @@ static esp_err_t qr_scan_open_stream(uint16_t *width_out,
         if (!bufs[i].addr || bufs[i].addr == MAP_FAILED) {
             bufs[i].addr = NULL;
             ESP_LOGE(TAG, "mmap failed for index %d", i);
+            *detail_out = "Could not map the camera frame buffers into memory.";
             return ESP_FAIL;
         }
 
         if (ioctl(s_state.fd, VIDIOC_QBUF, &buf) != 0) {
             ESP_LOGE(TAG, "VIDIOC_QBUF failed for index %d", i);
+            *detail_out = "The camera rejected its frame buffers.";
             return ESP_FAIL;
         }
     }
 
     if (ioctl(s_state.fd, VIDIOC_STREAMON, &type) != 0) {
         ESP_LOGE(TAG, "VIDIOC_STREAMON failed");
+        *detail_out = "The camera refused to start streaming.";
         return ESP_FAIL;
     }
 
@@ -373,17 +448,32 @@ static bool qr_scan_payload_is_duplicate(const char *payload)
     return true;
 }
 
+/* Decimation factor that keeps the decoded image within QR_SCAN_DECODE_MAX_W. */
+static uint8_t qr_scan_decim_for(uint16_t width)
+{
+    uint8_t decim = 1;
+
+    while ((width / decim) > QR_SCAN_DECODE_MAX_W && decim < 8) {
+        decim = (uint8_t)(decim * 2);
+    }
+    return decim;
+}
+
 static void qr_scan_process_frame(const uint8_t *frame_data,
                                   size_t frame_len,
                                   uint16_t width,
                                   uint16_t height,
                                   uint32_t pixelformat,
+                                  uint8_t decim,
                                   uint32_t sequence)
 {
     int qr_w;
     int qr_h;
     uint8_t *gray;
     const uint16_t *pixels = (const uint16_t *)frame_data;
+    const uint32_t out_w = (uint32_t)width / decim;
+    const uint32_t out_h = (uint32_t)height / decim;
+    const size_t expected_len = (size_t)width * (size_t)height * 2;
     qr_scan_frame_t frame = {
         .data = frame_data,
         .data_len = frame_len,
@@ -397,29 +487,41 @@ static void qr_scan_process_frame(const uint8_t *frame_data,
         s_state.callbacks.on_frame(&frame, s_state.cb_ctx);
     }
 
+    /* Both source layouts are 2 bytes per pixel; a short frame means a torn
+     * or truncated capture, and reading past it would fault. */
+    if (frame_len < expected_len) {
+        return;
+    }
+
     gray = quirc_begin(s_state.decoder, &qr_w, &qr_h);
-    if (!gray || qr_w != width || qr_h != height) {
+    if (!gray || (uint32_t)qr_w != out_w || (uint32_t)qr_h != out_h) {
         quirc_end(s_state.decoder);
         return;
     }
 
     if (pixelformat == V4L2_PIX_FMT_RGB565) {
-        for (uint32_t i = 0; i < (uint32_t)width * (uint32_t)height; i++) {
-            uint16_t px = pixels[i];
-            uint8_t r = (uint8_t)(((px >> 11) & 0x1F) * 255 / 31);
-            uint8_t g = (uint8_t)(((px >> 5) & 0x3F) * 255 / 63);
-            uint8_t b = (uint8_t)((px & 0x1F) * 255 / 31);
-            gray[i] = (uint8_t)((r * 77 + g * 150 + b * 29) >> 8);
+        for (uint32_t y = 0; y < out_h; y++) {
+            const uint16_t *row = pixels + (size_t)(y * decim) * width;
+            uint8_t *grow = gray + (size_t)y * out_w;
+
+            for (uint32_t x = 0; x < out_w; x++) {
+                uint16_t px = row[x * decim];
+                /* Replicate the high bits instead of dividing — same result
+                 * to within 1 LSB, without three integer divides per pixel. */
+                uint8_t r = (uint8_t)((px >> 8) & 0xF8); r = (uint8_t)(r | (r >> 5));
+                uint8_t g = (uint8_t)((px >> 3) & 0xFC); g = (uint8_t)(g | (g >> 6));
+                uint8_t b = (uint8_t)((px << 3) & 0xF8); b = (uint8_t)(b | (b >> 5));
+                grow[x] = (uint8_t)((r * 77 + g * 150 + b * 29) >> 8);
+            }
         }
     } else if (pixelformat == V4L2_PIX_FMT_YUYV) {
-        size_t expected_len = (size_t)width * (size_t)height * 2;
-        if (frame_len < expected_len) {
-            quirc_end(s_state.decoder);
-            return;
-        }
-        for (uint32_t i = 0, gidx = 0; i + 3 < expected_len; i += 4) {
-            gray[gidx++] = frame_data[i];
-            gray[gidx++] = frame_data[i + 2];
+        for (uint32_t y = 0; y < out_h; y++) {
+            const uint8_t *row = frame_data + (size_t)(y * decim) * width * 2;
+            uint8_t *grow = gray + (size_t)y * out_w;
+
+            for (uint32_t x = 0; x < out_w; x++) {
+                grow[x] = row[(size_t)(x * decim) * 2];   /* Y plane, stride 2 */
+            }
         }
     } else {
         quirc_end(s_state.decoder);
@@ -468,8 +570,19 @@ static void qr_scan_task(void *arg)
     qr_scan_map_buf_t bufs[QR_SCAN_REQBUFS] = { 0 };
     uint16_t width = 0;
     uint16_t height = 0;
+    uint8_t decim = 1;
     int buf_count = 0;
+    uint32_t dqbuf_errors = 0;
+    int64_t deadline_us = 0;
     esp_err_t ret;
+    /* Exactly one of these describes how the session ended. Keeping the error
+     * distinct from the normal stop is what makes the real cause reach the
+     * screen — the UI status channel keeps only the last message, so emitting
+     * ERROR and then STOPPED (as this used to) threw the diagnosis away. */
+    char fail_buf[112];
+    const char *fail_reason = NULL;
+    const char *detail = NULL;      /* set by qr_scan_open_stream on failure */
+    const char *stop_note = "stopped";
 
     (void)arg;
     s_state.running = true;
@@ -477,45 +590,67 @@ static void qr_scan_task(void *arg)
 
     ret = qr_scan_ensure_video_init();
     if (ret != ESP_OK) {
-        qr_scan_emit_status(QR_SCAN_STATUS_ERROR, "camera init failed");
+        snprintf(fail_buf, sizeof(fail_buf),
+                 "Camera driver init failed (%s).", esp_err_to_name(ret));
+        fail_reason = fail_buf;
         goto done;
     }
 
-    ret = qr_scan_open_stream(&width, &height, bufs, &buf_count);
+    ret = qr_scan_open_stream(&width, &height, bufs, &buf_count, &detail);
     if (ret != ESP_OK) {
-        qr_scan_emit_status(QR_SCAN_STATUS_ERROR, "camera stream open failed");
+        fail_reason = detail ? detail : "Could not open the camera stream.";
         goto done;
     }
 
+    decim = qr_scan_decim_for(width);
     s_state.decoder = quirc_new();
-    if (!s_state.decoder || quirc_resize(s_state.decoder, width, height) != 0) {
-        qr_scan_emit_status(QR_SCAN_STATUS_ERROR, "QR decoder init failed");
+    if (!s_state.decoder ||
+        quirc_resize(s_state.decoder, width / decim, height / decim) != 0) {
+        snprintf(fail_buf, sizeof(fail_buf),
+                 "QR decoder init failed — out of memory for a %ux%u image.",
+                 (unsigned)(width / decim), (unsigned)(height / decim));
+        fail_reason = fail_buf;
         goto done;
     }
+    ESP_LOGI(TAG, "decoding %ux%u (native %ux%u, decimate %u)",
+             (unsigned)(width / decim), (unsigned)(height / decim),
+             (unsigned)width, (unsigned)height, (unsigned)decim);
 
     qr_scan_emit_status(QR_SCAN_STATUS_CAMERA_READY, "camera ready");
+    deadline_us = esp_timer_get_time() + QR_SCAN_SESSION_TIMEOUT_US;
 
     while (!s_state.stop_requested) {
         struct v4l2_buffer buf = { 0 };
         const int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
+        if (esp_timer_get_time() >= deadline_us) {
+            stop_note = "No QR code found — scanner stopped.";
+            break;
+        }
+
         buf.type = type;
         buf.memory = V4L2_MEMORY_MMAP;
         if (ioctl(s_state.fd, VIDIOC_DQBUF, &buf) != 0) {
-            if (!s_state.stop_requested) {
-                ESP_LOGW(TAG, "VIDIOC_DQBUF failed");
+            if (!s_state.stop_requested && (dqbuf_errors % 50U) == 0U) {
+                ESP_LOGW(TAG, "VIDIOC_DQBUF failed (%" PRIu32 " so far)", dqbuf_errors + 1);
             }
+            dqbuf_errors++;
+            /* Back off: without this the loop is a tight spin that floods the
+             * 115200 baud console and steals the CPU from everything below it. */
+            vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
 
         if ((buf.flags & V4L2_BUF_FLAG_DONE) && !(buf.flags & V4L2_BUF_FLAG_ERROR) &&
             buf.index < (uint32_t)buf_count && bufs[buf.index].addr != NULL) {
             qr_scan_process_frame((const uint8_t *)bufs[buf.index].addr,
-                                  buf.bytesused, width, height, s_state.pixelformat, buf.sequence);
+                                  buf.bytesused, width, height, s_state.pixelformat,
+                                  decim, buf.sequence);
         }
 
         if (ioctl(s_state.fd, VIDIOC_QBUF, &buf) != 0) {
-            ESP_LOGW(TAG, "VIDIOC_QBUF failed");
+            snprintf(fail_buf, sizeof(fail_buf), "Camera buffer requeue failed — stream lost.");
+            fail_reason = fail_buf;
             break;
         }
     }
@@ -535,9 +670,18 @@ done:
         s_state.fd = -1;
     }
     qr_scan_deinit_video();
+    /* Must follow the deinit: that is what resets the shared GPIO 7/8 pads. */
+    qr_scan_board_i2c_reclaim();
+    /* Emit the final status BEFORE clearing `running`: that flag is what the
+     * UI polls to decide the session is over, and reaping it first would let
+     * the UI tear the session down a tick ahead of the reason it ended. */
+    if (fail_reason) {
+        qr_scan_emit_status(QR_SCAN_STATUS_ERROR, fail_reason);
+    } else {
+        qr_scan_emit_status(QR_SCAN_STATUS_STOPPED, stop_note);
+    }
     s_state.running = false;
     s_state.stop_requested = false;
-    qr_scan_emit_status(QR_SCAN_STATUS_STOPPED, "stopped");
     s_state.task = NULL;
     vTaskDelete(NULL);
 }
@@ -564,15 +708,28 @@ esp_err_t qr_scan_start(const qr_scan_callbacks_t *callbacks, void *ctx)
     return ESP_OK;
 }
 
-void qr_scan_stop(void)
+void qr_scan_request_stop(void)
 {
-    if (!s_state.running && s_state.task == NULL) {
-        return;
-    }
     s_state.stop_requested = true;
+}
+
+bool qr_scan_stop_wait(uint32_t timeout_ms)
+{
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+
+    qr_scan_request_stop();
     while (s_state.running || s_state.task != NULL) {
+        if (esp_timer_get_time() >= deadline_us) {
+            /* The pump is parked in VIDIOC_DQBUF, which esp_video services with
+             * portMAX_DELAY and which STREAMOFF cannot break out of (it drains
+             * the ready semaphore rather than giving it). Nothing can wake it —
+             * report the failure instead of blocking the caller forever. */
+            ESP_LOGE(TAG, "scanner did not stop within %" PRIu32 " ms", timeout_ms);
+            return false;
+        }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
+    return true;
 }
 
 bool qr_scan_is_running(void)

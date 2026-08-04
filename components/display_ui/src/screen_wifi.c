@@ -17,7 +17,11 @@
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 #include "lvgl.h"
+#include "agc.h"
+#include "audio_source.h"
+#include "display_ui.h"
 #include "net_mgr.h"
+#include "panel_button.h"
 #include "qr_scan.h"
 #include "screen_settings.h"
 #include "screen_wifi.h"
@@ -25,8 +29,17 @@
 static const char *TAG = "scr_wifi";
 
 #define SCAN_MAX_UI 20   /* matches net_mgr's scan result cap */
-#define QR_PREVIEW_W 320
-#define QR_PREVIEW_H 180
+
+/* Live camera preview. Fills the left column; the source is letterboxed into
+ * it so a 1:1 sensor (OV5647 at 800x800) is not squashed into the box. */
+#define QR_PREVIEW_W 640
+#define QR_PREVIEW_H 420
+#define QR_PREVIEW_X 20
+#define QR_PREVIEW_Y 152
+
+#define QR_PREVIEW_MIN_INTERVAL_MS 100  /* preview refresh cap, fps-independent */
+#define QR_SESSION_TIMEOUT_MS      45000
+#define QR_STOP_GRACE_MS           5000  /* after this, the scanner is wedged */
 
 /* ── list screen ──────────────────────────────────────────────── */
 
@@ -54,6 +67,8 @@ static lv_obj_t         *s_qr_screen;
 static lv_obj_t         *s_qr_status;
 static lv_obj_t         *s_qr_payload;
 static lv_obj_t         *s_qr_canvas;
+static lv_obj_t         *s_qr_rescan_btn;
+static lv_obj_t         *s_qr_rescan_label;
 static lv_timer_t       *s_qr_timer;
 static SemaphoreHandle_t s_qr_mutex;
 static uint16_t         *s_qr_canvas_buf;
@@ -64,12 +79,24 @@ static bool              s_qr_has_pending_frame;
 static qr_scan_status_t  s_qr_pending_status;
 static char              s_qr_status_msg[QR_SCAN_PAYLOAD_MAX];
 static qr_scan_result_t  s_qr_pending_result;
+static uint32_t          s_qr_last_frame_ms;   /* preview throttle (qr_scan task) */
+
+/* Session bookkeeping, all LVGL-task-only. The scanner is never waited on from
+ * here — a stop request is posted and qr_timer_cb reaps it — because blocking
+ * in an LVGL callback holds the LVGL mutex and freezes the entire UI. */
+static bool     s_qr_session_active;   /* between qr_scan_start() and task exit */
+static bool     s_qr_stop_pending;     /* stop requested, task not gone yet */
+static bool     s_qr_error_shown;      /* sticky: don't overwrite with "stopped" */
+static bool     s_qr_wedged;           /* scanner never exited — reboot needed */
+static uint32_t s_qr_session_start_ms;
+static uint32_t s_qr_stop_request_ms;
+/* Set from the panel button (non-LVGL context); consumed by qr_timer_cb. */
+static volatile bool s_qr_abort_request;
 
 static void entry_open(entry_mode_t mode, const char *initial);
 static void list_refresh(bool scanning);
 static void qr_open(void);
 static void qr_stop_scan(void);
-static void qr_stop_timer(void);
 static void list_resume_scan(void);
 static void qr_downsample_frame_to_preview(const qr_scan_frame_t *frame, uint16_t *dst);
 
@@ -83,6 +110,9 @@ static void stop_poll(void)
     }
 }
 
+/* Scale a camera frame into the preview buffer, preserving aspect ratio.
+ * The source is fitted (never cropped) and centred; the leftover margins are
+ * cleared to black so the previous frame's edges don't linger. */
 static void qr_downsample_frame_to_preview(const qr_scan_frame_t *frame, uint16_t *dst)
 {
     if (!frame || !dst || frame->width == 0 || frame->height == 0) return;
@@ -101,26 +131,40 @@ static void qr_downsample_frame_to_preview(const qr_scan_frame_t *frame, uint16_
         return;
     }
 
-    for (uint32_t y = 0; y < QR_PREVIEW_H; y++) {
-        uint32_t sy = (y * src_h) / QR_PREVIEW_H;
-        if (sy >= src_h) sy = src_h - 1;
-        for (uint32_t x = 0; x < QR_PREVIEW_W; x++) {
-            uint32_t sx = (x * src_w) / QR_PREVIEW_W;
-            if (sx >= src_w) sx = src_w - 1;
+    /* Fit box: the larger source dimension decides the scale. */
+    uint32_t dst_w = QR_PREVIEW_W;
+    uint32_t dst_h = (uint32_t)(((uint64_t)QR_PREVIEW_W * src_h) / src_w);
+    if (dst_h > QR_PREVIEW_H) {
+        dst_h = QR_PREVIEW_H;
+        dst_w = (uint32_t)(((uint64_t)QR_PREVIEW_H * src_w) / src_h);
+    }
+    if (dst_w == 0 || dst_h == 0) return;
 
-            if (is_rgb565) {
-                const uint16_t *p = (const uint16_t *)src;
-                dst[y * QR_PREVIEW_W + x] = p[sy * src_w + sx];
-            } else {
-                /* YUYV -> grayscale RGB565 preview */
-                uint32_t pair_x = sx & ~1U;
-                size_t idx = ((size_t)sy * src_w + pair_x) * 2;
-                if (idx + 3 >= frame->data_len) continue;
-                uint8_t y0 = src[idx];
-                uint8_t y1 = src[idx + 2];
-                uint8_t lum = (sx & 1U) ? y1 : y0;
-                uint16_t gray565 = (uint16_t)(((lum >> 3) << 11) | ((lum >> 2) << 5) | (lum >> 3));
-                dst[y * QR_PREVIEW_W + x] = gray565;
+    const uint32_t off_x = (QR_PREVIEW_W - dst_w) / 2U;
+    const uint32_t off_y = (QR_PREVIEW_H - dst_h) / 2U;
+
+    memset(dst, 0, (size_t)QR_PREVIEW_W * QR_PREVIEW_H * sizeof(uint16_t));
+
+    for (uint32_t y = 0; y < dst_h; y++) {
+        uint32_t sy = (y * src_h) / dst_h;
+        if (sy >= src_h) sy = src_h - 1;
+        uint16_t *drow = dst + (size_t)(y + off_y) * QR_PREVIEW_W + off_x;
+
+        if (is_rgb565) {
+            const uint16_t *srow = (const uint16_t *)src + (size_t)sy * src_w;
+            for (uint32_t x = 0; x < dst_w; x++) {
+                uint32_t sx = (x * src_w) / dst_w;
+                if (sx >= src_w) sx = src_w - 1;
+                drow[x] = srow[sx];
+            }
+        } else {
+            /* YUYV -> grayscale RGB565 preview */
+            const uint8_t *srow = src + (size_t)sy * src_w * 2U;
+            for (uint32_t x = 0; x < dst_w; x++) {
+                uint32_t sx = (x * src_w) / dst_w;
+                if (sx >= src_w) sx = src_w - 1;
+                uint8_t lum = srow[(size_t)sx * 2U];
+                drow[x] = (uint16_t)(((lum >> 3) << 11) | ((lum >> 2) << 5) | (lum >> 3));
             }
         }
     }
@@ -456,8 +500,16 @@ static void qr_callbacks_frame(const qr_scan_frame_t *frame, void *ctx)
 {
     (void)ctx;
     if (!s_qr_mutex || !s_qr_pending_frame || !frame || !frame->data) return;
-    if ((frame->sequence % 3U) != 0U) return;
+
+    /* Throttle by wall clock rather than frame count so the preview rate is
+     * the same whether the sensor runs at 30 or 50 fps. */
+    uint32_t now = lv_tick_get();
+    if (s_qr_last_frame_ms != 0 &&
+        (now - s_qr_last_frame_ms) < QR_PREVIEW_MIN_INTERVAL_MS) {
+        return;
+    }
     if (xSemaphoreTake(s_qr_mutex, pdMS_TO_TICKS(5)) != pdTRUE) return;
+    s_qr_last_frame_ms = now;
     qr_downsample_frame_to_preview(frame, s_qr_pending_frame);
     s_qr_has_pending_frame = true;
     xSemaphoreGive(s_qr_mutex);
@@ -479,24 +531,41 @@ static const qr_scan_callbacks_t s_qr_callbacks = {
     .on_result = qr_callbacks_result,
 };
 
-static void qr_stop_timer(void)
-{
-    if (s_qr_timer) {
-        lv_timer_delete(s_qr_timer);
-        s_qr_timer = NULL;
-    }
-}
-
+/* Ask the scanner to stop and return at once. NEVER wait here: this runs in an
+ * LVGL callback holding the LVGL mutex, and the scanner's frame pump can be
+ * parked in the camera driver indefinitely. qr_timer_cb reaps the session and
+ * re-enables audio's hardware gain once the task is actually gone. */
 static void qr_stop_scan(void)
 {
-    if (qr_scan_is_running()) {
-        qr_scan_stop();
+    if (!s_qr_session_active) return;
+    if (!s_qr_stop_pending) {
+        s_qr_stop_pending = true;
+        s_qr_stop_request_ms = lv_tick_get();
+        panel_button_set_state(PANEL_KEY_ABORT, PANEL_LED_STOPPING);
+    }
+    qr_scan_request_stop();
+}
+
+/* Restore the AGC's ES8311 PGA authority, suspended for the scan so the codec
+ * could not touch the I2C bus while the camera owned the pads. */
+static void qr_release_session(void)
+{
+    if (!s_qr_session_active) return;
+    s_qr_session_active = false;
+    s_qr_stop_pending = false;
+    agc_set_hw_gain_available(audio_source_get_active() == AUDIO_SOURCE_I2S);
+    if (s_qr_error_shown) {
+        panel_button_set_state(PANEL_KEY_ABORT, PANEL_LED_ERROR);  /* leave it visible */
+    } else {
+        display_ui_panel_refresh_leds();   /* back to showing the colour theme */
     }
 }
 
+/* Leaving the screen does NOT delete the timer — it is also the reaper that
+ * waits for the scanner task to exit and then releases the session. It deletes
+ * itself once there is nothing left to watch. */
 static void qr_back_to_list(void)
 {
-    qr_stop_timer();
     qr_stop_scan();
     lv_screen_load(s_screen);
     list_resume_scan();
@@ -505,7 +574,6 @@ static void qr_back_to_list(void)
 static void qr_manual_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-    qr_stop_timer();
     qr_stop_scan();
     entry_open(ENTRY_SSID, "");
 }
@@ -522,6 +590,38 @@ static void qr_rescan_cb(lv_event_t *e)
     qr_open();
 }
 
+/* Turn the Rescan button into a Reboot button — the only way out once the
+ * scanner task is confirmed stuck inside the camera driver. */
+static void qr_reboot_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    esp_restart();
+}
+
+static void qr_mark_wedged(void)
+{
+    if (s_qr_wedged) return;
+    s_qr_wedged = true;
+    ESP_LOGE(TAG, "QR scanner did not shut down; camera driver is stuck");
+    panel_button_set_state(PANEL_KEY_ABORT, PANEL_LED_ERROR);
+    if (s_qr_status) {
+        lv_label_set_text(s_qr_status, "Camera did not shut down — restart required");
+    }
+    if (s_qr_payload) {
+        lv_label_set_text(s_qr_payload,
+                          "The camera driver stopped responding. Touch and audio will "
+                          "stay unavailable until the board restarts.");
+    }
+    if (s_qr_rescan_btn && s_qr_rescan_label) {
+        lv_obj_remove_event_cb(s_qr_rescan_btn, qr_rescan_cb);
+        lv_obj_add_event_cb(s_qr_rescan_btn, qr_reboot_cb, LV_EVENT_CLICKED, NULL);
+        lv_label_set_text(s_qr_rescan_label, LV_SYMBOL_POWER "  Restart");
+    }
+}
+
+/* Runs every 150 ms while a scan session exists. Three jobs: drain the
+ * scanner's mailbox into the UI, enforce the session deadline, and reap the
+ * task once it has exited. */
 static void qr_timer_cb(lv_timer_t *t)
 {
     bool has_status = false;
@@ -530,17 +630,23 @@ static void qr_timer_cb(lv_timer_t *t)
     qr_scan_status_t status = QR_SCAN_STATUS_STOPPED;
     char status_msg[QR_SCAN_PAYLOAD_MAX] = "";
     qr_scan_result_t result = { 0 };
+    const bool on_qr_screen = (s_qr_screen && lv_screen_active() == s_qr_screen);
 
-    (void)t;
     if (s_qr_mutex && xSemaphoreTake(s_qr_mutex, 0) == pdTRUE) {
         has_status = s_qr_has_pending_status;
         has_result = s_qr_has_pending_result;
         has_frame = s_qr_has_pending_frame;
         status = s_qr_pending_status;
         strlcpy(status_msg, s_qr_status_msg, sizeof(status_msg));
-        if (has_frame && s_qr_canvas_buf && s_qr_pending_frame) {
-            memcpy(s_qr_canvas_buf, s_qr_pending_frame,
-                   QR_PREVIEW_W * QR_PREVIEW_H * sizeof(uint16_t));
+        /* Swap buffers rather than copying half a megabyte out of PSRAM on the
+         * LVGL task every tick — the producer keeps writing into the one we
+         * just finished showing. */
+        if (has_frame && s_qr_canvas && s_qr_canvas_buf && s_qr_pending_frame) {
+            uint16_t *shown = s_qr_canvas_buf;
+            s_qr_canvas_buf = s_qr_pending_frame;
+            s_qr_pending_frame = shown;
+            lv_canvas_set_buffer(s_qr_canvas, s_qr_canvas_buf,
+                                 QR_PREVIEW_W, QR_PREVIEW_H, LV_COLOR_FORMAT_RGB565);
         }
         if (has_result) {
             result = s_qr_pending_result;
@@ -555,27 +661,63 @@ static void qr_timer_cb(lv_timer_t *t)
         lv_obj_invalidate(s_qr_canvas);
     }
 
-    if (has_status && s_qr_status) {
+    if (has_status && s_qr_status && !s_qr_wedged) {
         switch (status) {
         case QR_SCAN_STATUS_STARTED:
             lv_label_set_text(s_qr_status, "Opening camera...");
             break;
         case QR_SCAN_STATUS_CAMERA_READY:
             lv_label_set_text(s_qr_status, "Camera ready — point at a Wi-Fi QR code");
+            panel_button_set_state(PANEL_KEY_ABORT, PANEL_LED_SCANNING);
             break;
         case QR_SCAN_STATUS_DECODED:
             lv_label_set_text(s_qr_status, "QR code detected");
+            panel_button_set_state(PANEL_KEY_ABORT, PANEL_LED_SUCCESS);
             break;
         case QR_SCAN_STATUS_ERROR:
+            /* Sticky: the scanner reports at most one status per session exit,
+             * but a stale STOPPED must never bury the reason it failed. */
+            s_qr_error_shown = true;
             lv_label_set_text(s_qr_status, "Camera/QR scan error");
+            panel_button_set_state(PANEL_KEY_ABORT, PANEL_LED_ERROR);
             break;
         case QR_SCAN_STATUS_STOPPED:
         default:
-            if (!has_result) lv_label_set_text(s_qr_status, "Scanner stopped");
+            if (!has_result && !s_qr_error_shown) {
+                lv_label_set_text(s_qr_status, "Scanner stopped");
+            }
             break;
         }
-        if (status_msg[0] != '\0' && s_qr_payload) {
+        if (status_msg[0] != '\0' && s_qr_payload &&
+            (status != QR_SCAN_STATUS_STOPPED || !s_qr_error_shown)) {
             lv_label_set_text(s_qr_payload, status_msg);
+        }
+    }
+
+    /* Deadlines and reaping. */
+    if (s_qr_session_active) {
+        uint32_t now = lv_tick_get();
+
+        if (!qr_scan_is_running()) {
+            qr_release_session();
+        } else if (s_qr_abort_request) {
+            s_qr_abort_request = false;
+            qr_stop_scan();
+            if (on_qr_screen) qr_back_to_list();
+        } else if (!s_qr_stop_pending && (now - s_qr_session_start_ms) >= QR_SESSION_TIMEOUT_MS) {
+            /* Independent of the scanner's own deadline: a task parked in the
+             * camera driver never gets to check its own clock. */
+            qr_stop_scan();
+        } else if (s_qr_stop_pending && (now - s_qr_stop_request_ms) >= QR_STOP_GRACE_MS) {
+            qr_mark_wedged();
+        }
+    } else {
+        s_qr_abort_request = false;
+        /* Nothing left to watch and no live preview to drive. */
+        if (!on_qr_screen) {
+            s_qr_timer = NULL;
+            lv_timer_delete(t);
+            return;
         }
     }
 
@@ -589,13 +731,15 @@ static void qr_timer_cb(lv_timer_t *t)
 
     strlcpy(s_sel_ssid, result.ssid, sizeof(s_sel_ssid));
     strlcpy(s_prefill_pass, result.password, sizeof(s_prefill_pass));
-    qr_stop_timer();
     qr_stop_scan();
     entry_open(ENTRY_PASS, s_prefill_pass);
 }
 
 static void qr_create(void)
 {
+    lv_obj_t *s_qr_last_btn = NULL;         /* set by MAKE_QR_BTN below */
+    lv_obj_t *s_qr_last_btn_label = NULL;
+
     s_qr_screen = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_qr_screen, lv_color_hex(0x0D1B2A), 0);
     lv_obj_set_style_pad_all(s_qr_screen, 0, 0);
@@ -610,15 +754,18 @@ static void qr_create(void)
     lv_label_set_text(s_qr_status, "Opening camera...");
     lv_obj_set_style_text_color(s_qr_status, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(s_qr_status, &lv_font_montserrat_16, 0);
-    lv_obj_set_pos(s_qr_status, 20, 70);
+    lv_obj_set_pos(s_qr_status, 20, 56);
 
+    /* Directly under the status line, spanning the left column: this carries
+     * the reason a scan failed, and it has to be where the eye already is —
+     * tucking it beside the buttons made it invisible in practice. */
     s_qr_payload = lv_label_create(s_qr_screen);
-    lv_label_set_text(s_qr_payload, "Point the camera at your router's Wi-Fi QR code.\nDecoded payloads will appear below.");
+    lv_label_set_text(s_qr_payload, "Point the camera at your router's Wi-Fi QR code.");
     lv_label_set_long_mode(s_qr_payload, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(s_qr_payload, 630);
+    lv_obj_set_width(s_qr_payload, QR_PREVIEW_W);
     lv_obj_set_style_text_color(s_qr_payload, lv_color_hex(0x88AACC), 0);
     lv_obj_set_style_text_font(s_qr_payload, &lv_font_montserrat_14, 0);
-    lv_obj_set_pos(s_qr_payload, 20, 130);
+    lv_obj_set_pos(s_qr_payload, QR_PREVIEW_X, 88);
 
     if (!s_qr_canvas_buf) {
         s_qr_canvas_buf = heap_caps_calloc(QR_PREVIEW_W * QR_PREVIEW_H,
@@ -633,7 +780,7 @@ static void qr_create(void)
         lv_canvas_set_buffer(s_qr_canvas, s_qr_canvas_buf, QR_PREVIEW_W, QR_PREVIEW_H,
                              LV_COLOR_FORMAT_RGB565);
         lv_obj_set_size(s_qr_canvas, QR_PREVIEW_W, QR_PREVIEW_H);
-        lv_obj_set_pos(s_qr_canvas, 20, 190);
+        lv_obj_set_pos(s_qr_canvas, QR_PREVIEW_X, QR_PREVIEW_Y);
     } else {
         s_qr_canvas = NULL;
         lv_label_set_text(s_qr_payload, "Preview buffer allocation failed.\nQR decoding still works without live preview.");
@@ -647,9 +794,16 @@ static void qr_create(void)
     lv_obj_t *_l = lv_label_create(_b);                   \
     lv_label_set_text(_l, label_str);                     \
     lv_obj_center(_l);                                    \
+    s_qr_last_btn = _b;                                   \
+    s_qr_last_btn_label = _l;                             \
 } while (0)
 
     MAKE_QR_BTN(LV_SYMBOL_REFRESH "  Rescan",  qr_rescan_cb,  72);
+    /* Keep the Rescan button addressable: it becomes the Restart button if the
+     * camera driver ever refuses to shut down (see qr_mark_wedged). */
+    s_qr_rescan_btn   = s_qr_last_btn;
+    s_qr_rescan_label = s_qr_last_btn_label;
+
     MAKE_QR_BTN(LV_SYMBOL_KEYBOARD "  Manual", qr_manual_cb, 152);
     MAKE_QR_BTN(LV_SYMBOL_LEFT "  Back",       qr_back_cb,   232);
 
@@ -671,14 +825,29 @@ static void qr_open(void)
         return;
     }
 
-    qr_stop_timer();
-    qr_stop_scan();
+    if (s_qr_wedged) {
+        lv_screen_load(s_qr_screen);
+        return;
+    }
+
+    /* A previous session may still be tearing the camera down. Starting now
+     * would fail, and more importantly the camera still owns the shared I2C
+     * pads — show the screen and let qr_timer_cb reap before retrying. */
+    if (s_qr_session_active || qr_scan_is_running()) {
+        qr_stop_scan();
+        lv_label_set_text(s_qr_status, "Stopping previous scan...");
+        lv_label_set_text(s_qr_payload, "Press Rescan again in a moment.");
+        if (!s_qr_timer) s_qr_timer = lv_timer_create(qr_timer_cb, 150, NULL);
+        lv_screen_load(s_qr_screen);
+        return;
+    }
 
     if (xSemaphoreTake(s_qr_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
         s_qr_has_pending_status = false;
         s_qr_has_pending_result = false;
         s_qr_has_pending_frame = false;
         s_qr_status_msg[0] = '\0';
+        s_qr_last_frame_ms = 0;
         memset(&s_qr_pending_result, 0, sizeof(s_qr_pending_result));
         if (s_qr_canvas_buf) {
             memset(s_qr_canvas_buf, 0, QR_PREVIEW_W * QR_PREVIEW_H * sizeof(uint16_t));
@@ -689,17 +858,41 @@ static void qr_open(void)
         xSemaphoreGive(s_qr_mutex);
     }
 
+    s_qr_error_shown = false;
+    s_qr_abort_request = false;
     lv_label_set_text(s_qr_status, "Opening camera...");
-    lv_label_set_text(s_qr_payload, "Point the camera at your router's Wi-Fi QR code.\nDecoded payloads will appear below.");
+    lv_label_set_text(s_qr_payload, "Point the camera at your router's Wi-Fi QR code.");
+
+    /* The camera hijacks GPIO 7/8 from the board I2C bus for the duration of
+     * the scan. Take the ES8311 PGA away from the AGC so the codec cannot
+     * write to a bus the camera owns; qr_release_session() gives it back. */
+    agc_set_hw_gain_available(false);
+    s_qr_session_active = true;
+    s_qr_stop_pending = false;
+    s_qr_session_start_ms = lv_tick_get();
 
     ret = qr_scan_start(&s_qr_callbacks, NULL);
     if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "qr_scan_start failed: %s", esp_err_to_name(ret));
         lv_label_set_text(s_qr_status, "Could not start camera scanner");
         lv_label_set_text(s_qr_payload, "Try Rescan, use Manual instead, or go Back.");
+        qr_release_session();
+        lv_screen_load(s_qr_screen);
+        return;   /* no scanner to poll — a stale tick would bury this message */
     }
 
-    s_qr_timer = lv_timer_create(qr_timer_cb, 150, NULL);
+    if (!s_qr_timer) s_qr_timer = lv_timer_create(qr_timer_cb, 150, NULL);
     lv_screen_load(s_qr_screen);
+}
+
+void screen_wifi_qr_abort(void)
+{
+    s_qr_abort_request = true;
+}
+
+bool screen_wifi_qr_active(void)
+{
+    return s_qr_session_active;
 }
 
 /* ── public entry point ───────────────────────────────────────── */

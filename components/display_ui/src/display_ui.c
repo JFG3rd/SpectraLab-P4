@@ -16,11 +16,13 @@
 #include "audio_source.h"
 #include "settings_mgr.h"
 #include "agc.h"
+#include "panel_button.h"
 #include "display_ui.h"
 #include "display_init.h"
 #include "screen_spectrum.h"
 #include "screen_settings.h"
 #include "screen_splash.h"
+#include "screen_wifi.h"
 
 static const char *TAG = "display_ui";
 
@@ -55,6 +57,53 @@ static char         s_last_cal_file[32] = "";
 static bool         s_last_agc_enabled = false;
 static int          s_last_agc_target  = -12;
 static int          s_last_agc_speed   = AGC_SPEED_SLOW;
+
+/* Posted by the panel buttons (their own timer task), consumed in LVGL context
+ * by spectrum_timer_cb. See display_ui_panel_next_display_mode(). */
+static volatile bool s_panel_mode_request  = false;
+static volatile bool s_panel_theme_request = false;
+
+/* Panel LED colours. Full-scale RGB; panel_button_set_rgb() scales them to the
+ * configured brightness. Chosen to stay apart from each other on a small
+ * diffused cap — that is the whole point of an at-a-glance indicator. */
+static const uint8_t s_scheme_rgb[COLOR_SCHEME_COUNT][3] = {
+    [COLOR_SCHEME_DARK]          = {   0, 170, 255 },  /* cyan            */
+    [COLOR_SCHEME_CLASSIC]       = {   0, 255,  70 },  /* phosphor green  */
+    [COLOR_SCHEME_HIGH_CONTRAST] = { 255, 255, 255 },  /* white           */
+    [COLOR_SCHEME_AMBER]         = { 255, 140,   0 },  /* amber           */
+    [COLOR_SCHEME_BLUE_NEON]     = {  40,  60, 255 },  /* blue            */
+    [COLOR_SCHEME_MATRIX]        = { 150, 255,   0 },  /* yellow-green    */
+    [COLOR_SCHEME_RED_NEON]      = { 255,   0,  40 },  /* red             */
+};
+
+/* Rainbow order, so stepping through the modes reads as a progression. */
+static const uint8_t s_mode_rgb[DISPLAY_MODE_COUNT][3] = {
+    [DISPLAY_MODE_BARS]      = { 255,   0,   0 },  /* red     */
+    [DISPLAY_MODE_LINE]      = { 255, 110,   0 },  /* orange  */
+    [DISPLAY_MODE_RTA]       = { 255, 210,   0 },  /* yellow  */
+    [DISPLAY_MODE_PERSIST]   = {   0, 255,   0 },  /* green   */
+    [DISPLAY_MODE_WATERFALL] = {   0, 210, 255 },  /* cyan    */
+    [DISPLAY_MODE_SCOPE]     = {  50,  70, 255 },  /* blue    */
+    [DISPLAY_MODE_VU]        = { 255,   0, 170 },  /* magenta */
+    [DISPLAY_MODE_MIRROR]    = { 255, 255, 255 },  /* white   */
+};
+
+/* Key 0 doubles as the QR-scan abort key: while a scan owns it, its LED is
+ * reporting scan state and must not be repainted with the theme colour. */
+static void panel_led_show_scheme(void)
+{
+    if (screen_wifi_qr_active()) return;
+    if ((unsigned)s_last_scheme >= COLOR_SCHEME_COUNT) return;
+    const uint8_t *c = s_scheme_rgb[s_last_scheme];
+    panel_button_set_rgb(PANEL_KEY_ABORT, c[0], c[1], c[2]);
+}
+
+static void panel_led_show_mode(void)
+{
+    if ((unsigned)s_last_disp_mode >= DISPLAY_MODE_COUNT) return;
+    const uint8_t *c = s_mode_rgb[s_last_disp_mode];
+    panel_button_set_rgb(PANEL_KEY_MODE, c[0], c[1], c[2]);
+}
 
 /* Persist the full current settings snapshot. Every s_last_* field is
  * captured here so no auto-save site can zero-clobber another's value —
@@ -237,6 +286,9 @@ void display_ui_set_display_mode(int mode)
     if (mode < 0 || mode >= DISPLAY_MODE_COUNT) mode = DISPLAY_MODE_BARS;
     s_last_disp_mode = mode;
     screen_spectrum_set_mode(mode);
+    /* Here rather than only in the panel path, so the key 2 LED tracks the
+     * mode however it was changed — Settings dropdown, preset load or boot. */
+    panel_led_show_mode();
 }
 
 /* Forward raw audio to the scope view. Called from the audio reader task;
@@ -274,12 +326,81 @@ void display_ui_set_brightness(int percent)
     screen_settings_sync_brightness(percent);   /* keep slider widget in sync */
 }
 
+/* Panel-button bridge. Deliberately does NOT take display_ui_lock(): the
+ * request is a single flag write that the LVGL timer consumes, so this stays
+ * callable from the button's own task even while the UI is busy. */
+bool display_ui_panel_abort(void)
+{
+    if (!screen_wifi_qr_active()) {
+        return false;
+    }
+    screen_wifi_qr_abort();
+    return true;
+}
+
+bool display_ui_qr_scan_active(void)
+{
+    return screen_wifi_qr_active();
+}
+
+void display_ui_panel_cycle_color_scheme(void)
+{
+    s_panel_theme_request = true;   /* flag only — see the note below */
+}
+
+void display_ui_panel_refresh_leds(void)
+{
+    /* Called once after panel_button_init(), which runs late in boot: the
+     * restore path already set the mode and theme while the LEDs did not yet
+     * exist, so without this they would sit at the generic idle colour. */
+    panel_led_show_scheme();
+    panel_led_show_mode();
+}
+
+void display_ui_panel_next_display_mode(void)
+{
+    /* Flag only. Cycling the mode touches LVGL objects, so it has to happen in
+     * LVGL context — but taking display_ui_lock() here would be a trap: it
+     * waits with portMAX_DELAY, so a wedged LVGL task would park the panel
+     * button's shared timer task forever and key 0's long-press restart could
+     * never be detected again. That escape hatch has to survive everything. */
+    s_panel_mode_request = true;
+}
+
+/* Advance the spectrum display mode by one, wrapping. Runs in LVGL context
+ * (drained by spectrum_timer_cb). */
+static void panel_apply_next_display_mode(void)
+{
+    int mode = (s_last_disp_mode + 1) % DISPLAY_MODE_COUNT;
+
+    display_ui_set_display_mode(mode);
+    /* Keep the Settings dropdown honest — it would otherwise still show the
+     * mode that was selected the last time the screen was used. */
+    screen_settings_sync_display_mode(mode);
+    /* display_ui_set_display_mode() deliberately does not persist (the
+     * Settings screen saves on Back), so the panel path must do it. */
+    save_current_settings();
+    ESP_LOGI(TAG, "panel key: display mode -> %d", mode);
+}
+
+/* Advance the colour theme by one, wrapping. Runs in LVGL context. */
+static void panel_apply_next_color_scheme(void)
+{
+    color_scheme_t scheme = (color_scheme_t)((s_last_scheme + 1) % COLOR_SCHEME_COUNT);
+
+    /* Applies the palette, repaints the key 1 LED and persists, all in one. */
+    display_ui_notify_color_scheme(scheme);
+    screen_settings_sync_color_scheme((int)scheme);
+    ESP_LOGI(TAG, "panel key: colour theme -> %d", (int)scheme);
+}
+
 /* Apply a color scheme — can be called from main.c (initial load) or
  * from screen_settings.c (user change). Always applies visually and saves. */
 void display_ui_notify_color_scheme(color_scheme_t scheme)
 {
     s_last_scheme = scheme;
     screen_spectrum_set_color_scheme(scheme);  /* update palette + invalidate */
+    panel_led_show_scheme();                   /* key 1 LED shows the theme */
     save_current_settings();
 }
 
@@ -287,6 +408,19 @@ void display_ui_notify_color_scheme(color_scheme_t scheme)
 static void spectrum_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
+
+    /* Drain panel-button requests first: this must run even when no spectrum
+     * frame is pending (silent input, paused source), which the early return
+     * below would otherwise skip. */
+    if (s_panel_mode_request) {
+        s_panel_mode_request = false;
+        panel_apply_next_display_mode();
+    }
+    if (s_panel_theme_request) {
+        s_panel_theme_request = false;
+        panel_apply_next_color_scheme();
+    }
+
     if (!s_data_pending) return;
     if (xSemaphoreTake(s_pend_mutex, 0) != pdTRUE) return;
 

@@ -27,9 +27,35 @@
 #include "settings_mgr.h"
 #include "agc.h"
 #include "net_mgr.h"
+#include "panel_button.h"
 #include "web_server.h"
 
 static const char *TAG = "main";
+
+/* ── front-panel button ───────────────────────────────────────── */
+
+/* Both handlers run in the button component's shared timer task, NOT in LVGL.
+ * They call only post-a-flag helpers, so neither can block — which matters
+ * because a stalled handler would also stop key 0's long-press restart from
+ * being detected, and during a QR scan (camera owns the shared I2C pads, touch
+ * suspended) these keys are the only working input. */
+static void on_panel_abort_click(void *ctx)
+{
+    (void)ctx;
+    /* Dual purpose: while a QR scan is running this is the only working input,
+     * so aborting wins. The rest of the time it cycles the colour theme. */
+    if (display_ui_panel_abort()) {
+        ESP_LOGI(TAG, "panel key: aborted the QR scan");
+    } else {
+        display_ui_panel_cycle_color_scheme();
+    }
+}
+
+static void on_panel_mode_click(void *ctx)
+{
+    (void)ctx;
+    display_ui_panel_next_display_mode();
+}
 
 /* ── DSP → display bridge ─────────────────────────────────────── */
 
@@ -170,6 +196,20 @@ void app_main(void)
         web_server_start();
     } else {
         ESP_LOGW(TAG, "WiFi unavailable — continuing without network");
+    }
+
+    /* 9. Front-panel keycaps. Non-fatal: without them the QR screen still has
+     * its 45 s auto-stop, they just give the user a way out on demand while
+     * touch is suspended for the scan, plus a display-mode shortcut.
+     * Registering a callback for a key that isn't fitted is a no-op. */
+    ESP_LOGI(TAG, "Step 9: panel_button");
+    if (panel_button_init() == ESP_OK) {
+        panel_button_set_click_cb(PANEL_KEY_ABORT, on_panel_abort_click, NULL);
+        panel_button_set_click_cb(PANEL_KEY_MODE,  on_panel_mode_click,  NULL);
+        /* LEDs come up after the settings restore, so paint them now. */
+        display_ui_lock();
+        display_ui_panel_refresh_leds();
+        display_ui_unlock();
     }
 
     /* Everything initialized and running — accept this firmware image.

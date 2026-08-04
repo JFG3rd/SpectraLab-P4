@@ -56,6 +56,18 @@ pio run -e <env> -t erase                 # full chip erase (after partition cha
   dedup, NVS creds, mDNS `spectralab-p4.local`
 - `components/web_server` — httpd: provisioning portal, cal upload,
   status API; assets from `web/`
+- `components/qr_scan` — MIPI-CSI capture (esp_video/V4L2) + quirc decode
+  for Wi-Fi QR provisioning. Own task; stop is request-only (see gotcha 14)
+- `components/panel_button` — optional Grove-Mech Keycaps (up to 2):
+  debounced GPIO buttons + SK6805 status LEDs. Key 0 click aborts a QR
+  scan (or cycles the colour theme when no scan is running) and 2 s hold
+  reboots; key 1 click cycles the display mode. All
+  handlers share ONE esp_timer task, so none may block — a stalled handler
+  also stops the long-press restart from being detected. They post flags
+  only, never call LVGL, and must never take `display_ui_lock()` (it has
+  no timeout). Wired to display_ui via `display_ui_panel_abort()` /
+  `display_ui_panel_next_display_mode()` from main.c; the flags are drained
+  by `spectrum_timer_cb` in LVGL context
 
 ## Critical hardware/config gotchas (each cost a debugging session)
 
@@ -102,13 +114,97 @@ pio run -e <env> -t erase                 # full chip erase (after partition cha
     the P4X can keep rebooting into ROM download mode ("waiting for
     download") — no software reset clears it (RTS, watchdog, JTAG, SW
     all fail). Only the physical RST button or a power cycle recovers.
+13. **Camera SCCB steals the board I2C pads**: esp_video brings up a
+    *new-driver* i2c_master on port 0 / GPIO 8+7, but GT911 touch and the
+    ES8311 codec are the *legacy* driver on `CONFIG_BSP_I2C_NUM` over the
+    same pads. A pad carries one output signal, so starting the camera
+    detaches the board bus, and `esp_video_deinit()` resets the pads
+    outright — touch and audio stay dead until reboot unless
+    `qr_scan_board_i2c_reclaim()` re-runs `i2c_param_config()` after the
+    deinit. (`CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK=y` is what lets the
+    collision happen quietly.) Touch is suspended for the whole scan;
+    the panel button exists because it is the only input that survives.
+14. **`VIDIOC_DQBUF` cannot be interrupted**: esp_video hardcodes
+    `portMAX_DELAY` and `esp_video_stop_capture()` *drains* `ready_sem`
+    instead of giving it, so STREAMOFF from another task will not wake a
+    blocked pump. Never wait for the scanner from an LVGL callback —
+    that holds the LVGL mutex and freezes the whole UI. Use
+    `qr_scan_request_stop()` and poll `qr_scan_is_running()`.
+15. **qr_scan task priority must stay below 4** (the LVGL port task).
+    At 5 it starved the UI for the entire scan: both cores are already
+    claimed at 20/22 by the I2S reader and DSP tasks.
+16. **GPIO 6/20/21/22 are claimed** by the optional panel keycaps
+    (`components/panel_button`, Kconfig-configurable): key 1 = 22/21
+    (colour-theme cycle, QR abort while scanning, long-press restart),
+    key 2 = 20/6 (display-mode cycle). Each LED shows what its key selects;
+    the colour tables live in display_ui.c.
+    Power the modules from 3V3 only — the switch ties its signal pin
+    straight to VCC and P4 GPIOs are not 5 V tolerant. Each key needs its
+    own pins; paralleling switches yields one indistinguishable key and
+    paralleling the SK6805 data lines makes both LEDs show the same pixel.
+17. **Free J1 GPIOs are scarcer than the header table suggests.** Besides
+    the obvious on-board users, the board has an IP101GRI Ethernet PHY on
+    RMII, and the P4's RMII signals are IO_MUX pads: 23, 28-36, 39-54
+    (see `components/soc/esp32p4/emac_periph.c` in IDF). GPIO 23 is the
+    trap — unannotated in the header table, but one of only two RMII
+    50 MHz clock-out pads, and the BSP's backlight pin for the alternate
+    1280x800 LCD. That leaves GPIO 2-6 and 20/21/22 on J1; 20/21/22 have
+    no alternate function at all and GPIO 6 only SPI2_HOLD (unused here).
+    GPIO 2-5 are the external JTAG pins but remain usable, because this
+    project debugs over `esp-builtin` (USB Serial/JTAG), not pin JTAG.
+    Header layout is identical on v1.5.2 and P4X v1.6 for these pins.
+
+18. **Camera ISP tuning (IPA) — three traps, all fatal to streaming.**
+    Symptom is always `VIDIOC_STREAMON failed` / "The camera refused to
+    start streaming" on the QR screen.
+    a. `espressif__esp_ipa`'s prebuilt `lib/<tgt>/<idf>/libesp_ipa.a`
+       contains a **stale, empty `esp_video_ipa_config.c.obj`** built from
+       Espressif's `test_apps_dummy` JSON. It defines the same
+       `esp_ipa_pipeline_get_config()` as the generated config, and under
+       PlatformIO's link order the prebuilt wins → the lookup returns NULL
+       for every sensor → "failed to get configuration to initialize ISP
+       controller" → white-balance gains never set → `esp_isp_wbg_set_wb_gain`
+       fails. `tools/generate_esp_ipa_config.py` strips that member.
+       **The component manager restores the archive during CMake configure**,
+       so a reconfigure build links the stale copy and the NEXT build is the
+       first correct one. Verify with:
+       `grep esp_ipa_pipeline_get_config .pio/build/<env>/firmware.map`
+       — it must resolve to `libespressif__esp_ipa.a`, not `libesp_ipa.a`.
+    b. The sc2336 tuning JSON is **per silicon revision**
+       (`CONFIG_ESP32P4_SELECTS_REV_LESS_V3` → eco4, else eco5), exactly as
+       `espressif__esp_cam_sensor/project_include.cmake` chooses it.
+       `tools/generate_esp_ipa_config.py` must mirror that or the P4X env
+       silently gets rev-<3 tuning.
+    c. **Open bug (P4X only, not yet fixed):** esp_video 1.4.1's
+       `isp_start_awb()` declares `esp_isp_awb_config_t` on the stack and
+       never initialises `.subwindow`, passing stack garbage to the driver.
+       `esp_driver_isp` only validates the subwindow on chip rev ≥ 3.0
+       (rev <3 warns and ignores), so the P4X fails with "subwindow exceeds
+       window range" → AWB → pipeline → STREAMON. Do **not** try to dodge it
+       by clearing `CONFIG_ESP_IPA_AWB_ALGORITHM`: the generated config lists
+       `esp_ipa_awb` as required (because the sensor JSON has an `awb` block),
+       so the pipeline then fails to create at all. The fix is to remove the
+       `awb` block from a project-local copy of the sensor JSON and point
+       `CONFIG_CAMERA_SC2336_CUSTOMIZED_IPA_JSON_CONFIGURATION_FILE_PATH` at
+       it — or bump esp_video (2.x is current; we pin 1.4.1).
+19. **esp_video device leak on failed teardown**: `esp_video_init()`
+    registers the ISP device `/dev/video20` **first** but
+    `esp_video_deinit()` destroys it **last**, behind a chain of
+    `ESP_RETURN_ON_ERROR`s. Any failing teardown step leaks the
+    registration, and every later init dies with "Failed to register video
+    VFS dev name=video20" — a one-off camera error becomes permanent until
+    reboot. `qr_scan_ensure_video_init()` forces a deinit and retries once;
+    that is a mitigation, not a cure (the deinit itself can fail).
 
 ## Conventions
 
 - UI callbacks run in the LVGL task; calls from other tasks (USB
-  worker, httpd) must wrap LVGL work in `display_ui_lock()` /
-  `display_ui_unlock()` — the lock is NOT recursive, never take it
-  from LVGL-context code.
+  worker, httpd, panel button) must wrap LVGL work in `display_ui_lock()` /
+  `display_ui_unlock()`. The underlying `lvgl_port_lock()` *is* recursive
+  (`xSemaphoreTakeRecursive`), but it has no timeout — the rule that
+  matters is **never block while holding it**, and don't take it from
+  LVGL-context code. The cheap alternative, used by the QR screen and the
+  panel button, is to post a flag and let an `lv_timer` act on it.
 - All persisted/external input is hostile: size-cap before buffering,
   sanitize filenames, `isfinite()` floats, clamp enums (see
   settings_sanitize and the cal parser for the pattern).
