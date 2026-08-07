@@ -3,7 +3,6 @@ from pathlib import Path
 
 required = [
     Path("Docu/images/demo-readme.gif"),
-    Path("Docu/images/demo-readme.mp4"),
     Path("Docu/images/hero-from-video.jpg"),
 ]
 

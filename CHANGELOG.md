@@ -30,6 +30,21 @@
   camera — and the shared I2C pads — open indefinitely.
 
 ### Fixed
+- **The camera now streams on the P4X (ESP32-P4 rev 3.x).** Bumped
+  `espressif/esp_video` 1.4.1 → 2.3.0 (pulling `esp_cam_sensor` 2.3.0 and
+  `esp_ipa` 2.2.0). esp_video 2.2.0 fixed "AWB subwindow validation failure on
+  ESP32-P4 chip revision >= 3.0" — 1.4.1 left `esp_isp_awb_config_t.subwindow`
+  uninitialised and only rev >=3.0 validates it, so `VIDIOC_STREAMON` always
+  failed on that silicon. QR provisioning now works end to end: stream, decode,
+  prefill, save, reboot, join.
+- **The ISP tuning table was never reaching the firmware.** esp_ipa's prebuilt
+  library ships a dummy `esp_video_ipa_config.c.obj` (built from Espressif's
+  `test_apps_dummy` JSON) and its CMakeLists creates a circular link that lets
+  the dummy win, so `esp_ipa_pipeline_get_config()` returned NULL for every
+  sensor. The strip now runs from the project `CMakeLists.txt` after
+  `project()`; doing it from the PlatformIO pre-script was undone by the
+  component manager repopulating `managed_components/` during configure, which
+  is why it previously took two builds to take effect.
 - **QR scanner reported "Scanner stopped" instead of the real error.** Every
   failure path emitted a specific `ERROR` status and then immediately fell
   through the shared teardown, which emitted `STOPPED`; the UI's single-slot
@@ -66,29 +81,21 @@
   was also missing the frame-length bounds check the YUYV path had.
 - AGC no longer writes the ES8311 PGA during a QR scan, when the camera owns
   the I2C pads.
-- Camera ISP tuning never reached the firmware: `espressif__esp_ipa`'s prebuilt
-  library ships a stale, empty `esp_video_ipa_config.c.obj` (built from
-  Espressif's `test_apps_dummy` JSON) that shadows the generated sensor tuning
-  table, so `esp_ipa_pipeline_get_config()` returned NULL for every sensor and
-  the ISP pipeline was never configured. `tools/generate_esp_ipa_config.py` now
-  strips that member.
-- The same script also selects the sc2336 tuning JSON per silicon revision
+- `tools/generate_esp_ipa_config.py` selects the sc2336 tuning JSON per silicon revision
   (eco4 for rev <3, eco5 otherwise), mirroring
   `espressif__esp_cam_sensor/project_include.cmake`; it previously hardcoded
   eco4, so the P4X env was built with rev-<3 tuning.
-- `qr_scan` now forces a deinit and retries once when `esp_video_init()` fails,
-  so a leaked `/dev/video20` registration from a failed teardown no longer
-  turns a one-off camera error into a permanent one until reboot.
+- `qr_scan` keeps the ISP video device up for the whole boot and cycles only the
+  CSI device, which stopped a failed teardown from leaking `/dev/video20` and
+  bricking the camera until reboot.
 
 ### Known issues
-- **Camera QR scanning does not stream yet on the P4X (ESP32-P4 rev 3.x).**
-  The sensor is detected and the ISP tuning tables now link correctly, but
-  esp_video 1.4.1's `isp_start_awb()` passes an uninitialised `.subwindow` to
-  the ISP driver. Only chip rev >= 3.0 validates it, so the P4X fails with
-  "subwindow exceeds window range" and `VIDIOC_STREAMON` fails. See CLAUDE.md
-  gotcha 18c for the two candidate fixes (project-local sensor JSON without
-  the `awb` block, or an esp_video bump). Everything else on the QR screen —
-  error reporting, the I2C pad reclaim, the panel keys — is working.
+- **The camera can only be started once per restart.** esp_video 2.3.0's
+  teardown reports success but leaves the CSI video device registered, so a
+  second scan in the same boot fails with "Failed to register video VFS dev
+  name=video0". The QR screen now says so plainly and points at the panel-key
+  restart rather than showing an error code. A scan that decodes a QR reboots
+  to join anyway, so the normal path is unaffected.
 
 ### Changed
 - QR screen layout: the failure-reason line sits directly under the status

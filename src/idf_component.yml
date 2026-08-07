@@ -54,7 +54,10 @@ dependencies:
 
   ## Camera capture + QR decoding for on-device Wi-Fi provisioning.
   espressif/esp_video:
-    version: "1.4.1"
+    ## 2.2.0 fixed "AWB subwindow validation failure on ESP32-P4 chip revision
+    ## >= 3.0" — the uninitialised esp_isp_awb_config_t.subwindow that stopped
+    ## the P4X from ever streaming. Do not go back below 2.2.0.
+    version: "~2.3.0"
   espressif/quirc:
     version: "^1.2.0"
 

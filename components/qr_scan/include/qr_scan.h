@@ -70,6 +70,13 @@ bool      qr_scan_stop_wait(uint32_t timeout_ms);
 
 bool      qr_scan_is_running(void);
 
+/* True once a scan has run since boot. esp_video 2.3.0 leaves /dev/video0
+ * registered after teardown (reporting success while doing so), which makes a
+ * second camera start fail on the device name with no software recovery. The
+ * UI uses this to tell the user a restart is needed rather than showing a bare
+ * error. Remove once esp_video unregisters the device correctly. */
+bool      qr_scan_needs_restart(void);
+
 #ifdef __cplusplus
 }
 #endif

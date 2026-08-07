@@ -154,47 +154,44 @@ pio run -e <env> -t erase                 # full chip erase (after partition cha
     project debugs over `esp-builtin` (USB Serial/JTAG), not pin JTAG.
     Header layout is identical on v1.5.2 and P4X v1.6 for these pins.
 
-18. **Camera ISP tuning (IPA) — three traps, all fatal to streaming.**
-    Symptom is always `VIDIOC_STREAMON failed` / "The camera refused to
-    start streaming" on the QR screen.
-    a. `espressif__esp_ipa`'s prebuilt `lib/<tgt>/<idf>/libesp_ipa.a`
-       contains a **stale, empty `esp_video_ipa_config.c.obj`** built from
-       Espressif's `test_apps_dummy` JSON. It defines the same
-       `esp_ipa_pipeline_get_config()` as the generated config, and under
-       PlatformIO's link order the prebuilt wins → the lookup returns NULL
-       for every sensor → "failed to get configuration to initialize ISP
-       controller" → white-balance gains never set → `esp_isp_wbg_set_wb_gain`
-       fails. `tools/generate_esp_ipa_config.py` strips that member.
-       **The component manager restores the archive during CMake configure**,
-       so a reconfigure build links the stale copy and the NEXT build is the
-       first correct one. Verify with:
-       `grep esp_ipa_pipeline_get_config .pio/build/<env>/firmware.map`
-       — it must resolve to `libespressif__esp_ipa.a`, not `libesp_ipa.a`.
-    b. The sc2336 tuning JSON is **per silicon revision**
-       (`CONFIG_ESP32P4_SELECTS_REV_LESS_V3` → eco4, else eco5), exactly as
-       `espressif__esp_cam_sensor/project_include.cmake` chooses it.
-       `tools/generate_esp_ipa_config.py` must mirror that or the P4X env
-       silently gets rev-<3 tuning.
-    c. **Open bug (P4X only, not yet fixed):** esp_video 1.4.1's
-       `isp_start_awb()` declares `esp_isp_awb_config_t` on the stack and
-       never initialises `.subwindow`, passing stack garbage to the driver.
-       `esp_driver_isp` only validates the subwindow on chip rev ≥ 3.0
-       (rev <3 warns and ignores), so the P4X fails with "subwindow exceeds
-       window range" → AWB → pipeline → STREAMON. Do **not** try to dodge it
-       by clearing `CONFIG_ESP_IPA_AWB_ALGORITHM`: the generated config lists
-       `esp_ipa_awb` as required (because the sensor JSON has an `awb` block),
-       so the pipeline then fails to create at all. The fix is to remove the
-       `awb` block from a project-local copy of the sensor JSON and point
-       `CONFIG_CAMERA_SC2336_CUSTOMIZED_IPA_JSON_CONFIGURATION_FILE_PATH` at
-       it — or bump esp_video (2.x is current; we pin 1.4.1).
-19. **esp_video device leak on failed teardown**: `esp_video_init()`
-    registers the ISP device `/dev/video20` **first** but
-    `esp_video_deinit()` destroys it **last**, behind a chain of
-    `ESP_RETURN_ON_ERROR`s. Any failing teardown step leaks the
-    registration, and every later init dies with "Failed to register video
-    VFS dev name=video20" — a one-off camera error becomes permanent until
-    reboot. `qr_scan_ensure_video_init()` forces a deinit and retries once;
-    that is a mitigation, not a cure (the deinit itself can fail).
+18. **Camera ISP tuning (IPA) — the generated table must win the link.**
+    `espressif__esp_ipa`'s prebuilt `lib/<tgt>/<idf>/libesp_ipa.a` ships an
+    `esp_video_ipa_config.c.obj` built from Espressif's `test_apps_dummy`
+    JSON. It defines the same `esp_ipa_pipeline_get_config()` as the config
+    generated from the real sensor JSONs, and esp_ipa's CMakeLists creates a
+    *circular* link (`target_link_libraries(prebuilt INTERFACE
+    ${COMPONENT_LIB})`) so the archives repeat on the link line and the
+    prebuilt can win. Then the lookup returns NULL for every sensor,
+    esp_video logs "failed to get configuration to initialize ISP
+    controller", white-balance gains are never set and `VIDIOC_STREAMON`
+    fails. The project `CMakeLists.txt` strips that member **after
+    `project()`** — it must be there, not in
+    `tools/generate_esp_ipa_config.py`, because the component manager
+    repopulates `managed_components/` during configure and would undo an
+    earlier strip. Verify before flashing:
+    `grep esp_ipa_pipeline_get_config .pio/build/<env>/firmware.map`
+    must resolve to `libespressif__esp_ipa.a`, not `libesp_ipa.a`.
+    The sc2336 tuning JSON is also per silicon revision
+    (`CONFIG_ESP32P4_SELECTS_REV_LESS_V3` → eco4, else eco5);
+    `tools/generate_esp_ipa_config.py` mirrors
+    `espressif__esp_cam_sensor/project_include.cmake`.
+19. **esp_video is pinned to 2.3.0 — do not downgrade below 2.2.0.** 2.2.0
+    fixed "AWB subwindow validation failure on ESP32-P4 chip revision >= 3.0":
+    1.4.1's `isp_start_awb()` left `esp_isp_awb_config_t.subwindow`
+    uninitialised, and only rev ≥3.0 validates it (rev <3 warns and ignores),
+    so the P4X could never stream. 1.4.1 had a second rev-3 defect too:
+    `isp_start_wbg()` does a shadow-register update before any VSYNC (the
+    sensor stream starts *after* the ISP), and rev-3 links the real
+    `isp_ll_shadow_update_wbg()` where rev <3 gets a stub returning true.
+20. **The camera can only be started once per boot** (esp_video 2.3.0).
+    Teardown reports success but does not unregister the CSI video device, so
+    the second `esp_video_init_with_flags(..., MIPI_CSI)` fails with "Failed
+    to register video VFS dev name=video0" / `ESP_ERR_NO_MEM`. Nothing in
+    software recovers it — `qr_scan_needs_restart()` exists so the UI can say
+    "restart to scan again" instead of showing a bare error. `qr_scan` already
+    keeps the ISP device (`/dev/video20`) up for the whole boot and cycles only
+    the CSI device, which fixed the same leak one level up. Re-test on the next
+    esp_video release and delete the workaround when it unregisters correctly.
 
 ## Conventions
 

@@ -24,10 +24,6 @@ The animation below was generated from the actual hardware demonstration video.
 <img src="Docu/images/demo-readme.gif" alt="SpectraLab-P4 running on hardware" width="900">
 </p>
 
-A compressed MP4 version is also included here:
-
-[Watch the demo video](Docu/images/demo-readme.mp4)
-
 The animation demonstrates live spectrum analysis, waterfall display, oscilloscope mode, display mode switching and the touchscreen user interface.
 
 ---

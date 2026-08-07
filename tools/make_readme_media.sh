@@ -30,15 +30,9 @@ ffmpeg -y -ss 2 -t 12 -i "$INPUT" \
   -vf "fps=8,scale=640:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=64[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5" \
   Docu/images/demo-readme.gif
 
-ffmpeg -y -ss 2 -t 12 -i "$INPUT" \
-  -vf "scale=900:-2:flags=lanczos" \
-  -c:v libx264 -preset medium -crf 25 -pix_fmt yuv420p -movflags +faststart -an \
-  Docu/images/demo-readme.mp4
-
 ffmpeg -y -ss 4 -i "$INPUT" -frames:v 1 -vf "scale=1600:-2:flags=lanczos" \
   Docu/images/hero-from-video.jpg
 
 echo "Created:"
 echo "  Docu/images/demo-readme.gif"
-echo "  Docu/images/demo-readme.mp4"
 echo "  Docu/images/hero-from-video.jpg"

@@ -72,6 +72,7 @@ typedef struct {
     uint32_t             pixelformat;
     char                 last_payload[QR_SCAN_PAYLOAD_MAX];
     int64_t              last_payload_time_us;
+    unsigned             sessions_this_boot;
 } qr_scan_state_t;
 
 static qr_scan_state_t s_state = {
@@ -211,6 +212,22 @@ static bool qr_scan_parse_wifi_payload(const char *payload, qr_scan_result_t *ou
     return out->ssid[0] != '\0';
 }
 
+/* The ISP video device (/dev/video20) is brought up once for the lifetime of
+ * the firmware and never torn down; only the MIPI-CSI device is cycled per
+ * scan.
+ *
+ * Reason: esp_video registers the ISP device but its teardown can fail, and a
+ * failed teardown leaks the VFS registration — after which every later init
+ * dies with "Failed to register video VFS dev name=video20" and the camera is
+ * unusable until reboot. Observed on esp_video 2.3.0: the first scan works,
+ * the second and every one after it fail. Re-initialising cannot recover it,
+ * because the deinit that would clean up is the step that fails.
+ *
+ * esp_video_{init,deinit}_with_flags() lets us simply never destroy it. The
+ * SCCB I2C bus teardown is unconditional in deinit, so cycling MIPI_CSI alone
+ * still frees GPIO 7/8 for qr_scan_board_i2c_reclaim() to hand back. */
+static bool s_isp_device_up;    /* one-shot, deliberately never cleared */
+
 static esp_err_t qr_scan_ensure_video_init(void)
 {
     esp_err_t ret;
@@ -219,28 +236,30 @@ static esp_err_t qr_scan_ensure_video_init(void)
         return ESP_OK;
     }
 
-    ret = esp_video_init(&s_video_config);
-    if (ret != ESP_OK) {
-        /* esp_video_init() registers the ISP device (/dev/video20) first but
-         * esp_video_deinit() destroys it last, behind a chain of
-         * ESP_RETURN_ON_ERROR calls. One failing teardown step therefore leaks
-         * the registration, and every later init fails with "Failed to
-         * register video VFS dev name=video20" — turning a one-off camera
-         * error into a permanent one until reboot. Force a teardown and retry
-         * once so a failed session cannot poison the next attempt. */
-        ESP_LOGW(TAG, "esp_video_init failed: %s — forcing deinit and retrying once",
-                 esp_err_to_name(ret));
-        esp_video_deinit();
-
-        ret = esp_video_init(&s_video_config);
+    if (!s_isp_device_up) {
+        ret = esp_video_init_with_flags(&s_video_config, ESP_VIDEO_INIT_FLAGS_ISP);
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "esp_video_init failed again: %s", esp_err_to_name(ret));
+            ESP_LOGE(TAG, "ISP video device init failed: %s", esp_err_to_name(ret));
             return ret;
         }
+        s_isp_device_up = true;
     }
 
+    ret = esp_video_init_with_flags(&s_video_config, ESP_VIDEO_INIT_FLAGS_MIPI_CSI);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "MIPI-CSI video device init failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    s_state.sessions_this_boot++;
     s_state.video_initialized = true;
     return ESP_OK;
+}
+
+/* True once a scan has already run this boot — see qr_scan_deinit_video(). */
+bool qr_scan_needs_restart(void)
+{
+    return s_state.sessions_this_boot > 0;
 }
 
 static void qr_scan_deinit_video(void)
@@ -248,7 +267,8 @@ static void qr_scan_deinit_video(void)
     if (!s_state.video_initialized) {
         return;
     }
-    esp_video_deinit();
+    /* MIPI_CSI only — see the note above on why the ISP device stays up. */
+    esp_video_deinit_with_flags(ESP_VIDEO_INIT_FLAGS_MIPI_CSI);
     s_state.video_initialized = false;
 }
 
@@ -590,9 +610,19 @@ static void qr_scan_task(void *arg)
 
     ret = qr_scan_ensure_video_init();
     if (ret != ESP_OK) {
-        snprintf(fail_buf, sizeof(fail_buf),
-                 "Camera driver init failed (%s).", esp_err_to_name(ret));
-        fail_reason = fail_buf;
+        if (s_state.sessions_this_boot > 0) {
+            /* esp_video 2.3.0 does not fully unregister the CSI video device on
+             * teardown — it reports success but leaves /dev/video0 taken, so
+             * the next init fails on the name. Nothing in software recovers it;
+             * say so plainly instead of showing a bare error code. */
+            fail_reason = "The camera can only be started once per restart in this "
+                          "build. Restart the board (hold panel key 1 for 2 s) to "
+                          "scan again.";
+        } else {
+            snprintf(fail_buf, sizeof(fail_buf),
+                     "Camera driver init failed (%s).", esp_err_to_name(ret));
+            fail_reason = fail_buf;
+        }
         goto done;
     }
 

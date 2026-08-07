@@ -12,17 +12,12 @@ instead, which makes key 1 the only input that still works.
 
 | Key | Single click | Hold 2 s |
 |-----|--------------|----------|
-| **1** — theme / abort | Normally: next colour theme. During a QR scan: abort it | Restart the board |
-| **2** — mode | Step to the next spectrum display mode | — |
-
-Key 1 has two jobs. While a QR scan is running it is the only working input,
-so aborting wins. The rest of the time it steps through the seven colour
-themes.
+| **1** — abort | Abort the QR scan, return to the network list | Restart the board |
+| **2** — mode  | Step to the next spectrum display mode | — |
 
 Key 2 cycles all eight display modes (Bars, Line, 1/3 Octave, Persistence,
-Waterfall, Scope, VU, Mirror) and wraps.
-
-Both choices are saved, and the matching Settings dropdown follows along.
+Waterfall, Scope, VU, Mirror) and wraps. The choice is saved, and the
+Settings screen's Display Mode dropdown follows along.
 
 ### Parts
 
@@ -33,16 +28,16 @@ Both choices are saved, and the matching Settings dropdown follows along.
 
 ```text
 Both keycaps:
-  VCC  -> J1 3V3   (pin 1 or 17)
-  GND  -> J1 GND   (any)
+  VCC  -> (purple) J1 3V3   (pin 1 or 17)
+  GND  -> (Blue) J1 GND   (any)
 
 Key 1 (abort / restart):
-  SIG1 -> J1 GPIO22   (switch,       J1 pin 12)
-  SIG2 -> J1 GPIO21   (RGB LED data, J1 pin 11)
+  SIG1 -> (yellow) J1 GPIO22   (switch,       J1 pin 12)
+  SIG2 -> (green) J1 GPIO21   (RGB LED data, J1 pin 11)
 
 Key 2 (display mode):
-  SIG1 -> J1 GPIO20   (switch,       J1 pin 13)
-  SIG2 -> J1 GPIO6    (RGB LED data, J1 pin 15)
+  SIG1 -> (orange) J1 GPIO20   (switch,       J1 pin 13)
+  SIG2 -> (white) J1 GPIO6    (RGB LED data, J1 pin 15)
 ```
 
 Pins and the key count are set in `menuconfig` under **Panel Button
@@ -123,43 +118,20 @@ unaffected.
 
 ### LED Colours
 
-Each LED shows what its own key currently selects, so the panel tells you the
-state at a glance without waking the screen.
+| Colour     | Meaning                                        |
+|------------|------------------------------------------------|
+| Dim blue   | Idle — armed, nothing happening                |
+| Green      | Camera live — click key 1 to abort             |
+| Green-cyan | QR code decoded                                |
+| Amber      | Shutting the camera down                       |
+| Red        | Scan failed, or the camera is stuck            |
+| White flash| Key 2 — display mode changed                   |
 
-**Key 1 — current colour theme**
+Key 1's LED tracks the QR scanner; key 2's sits at dim blue and flashes
+white on each mode change.
 
-| Theme | LED |
-|-------|-----|
-| Dark | Cyan |
-| Classic | Green |
-| High Contrast | White |
-| Amber | Amber |
-| Blue Neon | Blue |
-| Matrix | Yellow-green |
-| Red Neon | Red |
-
-**Key 2 — current display mode** (rainbow order, so stepping through reads as
-a progression)
-
-| Mode | LED | | Mode | LED |
-|------|-----|-|------|-----|
-| Bars | Red | | Waterfall | Cyan |
-| Line | Orange | | Scope | Blue |
-| 1/3 Octave | Yellow | | VU Meter | Magenta |
-| Persistence | Green | | Mirror | White |
-
-**Key 1 during a QR scan** — the theme colour is replaced by scan state:
-
-| Colour | Meaning |
-|--------|---------|
-| Green | Camera live — click to abort |
-| Green-cyan | QR code decoded |
-| Amber | Shutting the camera down |
-| Red | Scan failed, or the camera is stuck |
-
-It returns to the theme colour once the scan ends cleanly. A red LED with a
-frozen screen means the camera driver did not shut down; hold key 1 for
-2 seconds to restart.
+A red LED with a frozen screen means the camera driver did not shut down;
+hold key 1 for 2 seconds to restart.
 
 ## Recommended Connection (AVR Line-Level)
 
