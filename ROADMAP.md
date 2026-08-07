@@ -2,11 +2,15 @@
 
 This roadmap describes the intended direction of SpectraLab-P4. It is not a promise of delivery dates; it is a working plan for how the project may evolve.
 
+This file is the authoritative plan. [feature_suggestions.md](feature_suggestions.md)
+is a looser idea backlog written earlier — several of its entries have since
+shipped, so where the two disagree, trust this one.
+
 ---
 
 ## Version 1.0.0 — Standalone Analyzer
 
-**Status:** Current public release
+**Status:** Released 2026-07-07 — superseded by v1.2.0
 
 The v1.0.0 milestone establishes the project as a complete standalone embedded audio measurement instrument.
 
@@ -40,7 +44,12 @@ Make the analyzer useful as a real standalone instrument, not just a demonstrati
 
 ## Version 1.x — Stabilization and Usability
 
-**Status:** In progress
+**Status:** In progress — **v1.2.0** is the current release
+
+| Release | Date | Theme |
+|---------|------|-------|
+| v1.1.0 | 2026-07-11 | Multi-network Wi-Fi, software AGC, first camera QR provisioning |
+| v1.2.0 | 2026-08-07 | Camera QR working on both silicon revisions, front-panel keycaps, QR reliability |
 
 The 1.x series focuses on polishing the current standalone instrument before adding major architectural complexity.
 
@@ -56,10 +65,44 @@ The 1.x series focuses on polishing the current standalone instrument before add
 - [x] Optional front-panel Grove-Mech Keycaps (up to two) — on the GPIO matrix rather than the contended I2C bus, so they still work while touch is suspended for a camera scan. Key 1 cycles the colour theme (aborting a running scan instead, and restarting the board on a 2 s hold); key 2 cycles the spectrum display mode. Each RGB LED glows the colour of what its key currently selects
 - [x] Camera QR provisioning working on ESP32-P4 rev 3.x ("P4X") — required esp_video 2.3.0 (2.2.0 fixed an uninitialised ISP AWB subwindow that only rev >=3.0 validates) plus a build fix so the generated ISP tuning table wins the link over a dummy one shipped in esp_ipa's prebuilt library. Released as **v1.2.0**
 
+### Known Limitations
+
+- [ ] **The camera can only be started once per restart.** esp_video 2.3.0's
+      teardown reports success but does not unregister the CSI video device, so
+      a second scan in the same session fails. The QR screen detects this up
+      front and asks for a restart instead of opening a camera that cannot
+      work. Re-test on each esp_video release and drop the workaround when
+      teardown behaves; see CLAUDE.md gotcha 20.
+- [ ] Touch input is suspended for the duration of a camera scan, because the
+      camera's SCCB bus and the GT911 touch controller share GPIO 7/8. The
+      optional front-panel keycaps exist to cover this gap.
+
+### Quick Wins — the hard part is already done
+
+These are UI-only jobs; the underlying engine work has shipped and is persisted
+in `settings_t` / `dsp_config_t` already.
+
+- [ ] **A-weighting toggle.** `dsp_engine` computes IEC 61672 A-weighted SPL and
+      `dsp_config_t.a_weighting` is saved and restored — there is simply no
+      control on the Settings screen to turn it on.
+- [ ] **Mic sensitivity entry.** `dsp_config_t.mic_sensitivity_dbv` is plumbed
+      through and persisted; entering the value from the mic's datasheet is what
+      makes the SPL readout match a calibrated meter. No UI for it yet.
+- [ ] **Saved Wi-Fi network management** — list stored SSIDs and delete
+      individually. `net_mgr_list_networks()` and `net_mgr_forget_network()`
+      already exist and work; only the screen is missing.
+
 ### Candidate Improvements
 
-- [ ] Saved Wi-Fi network management on-device — list stored SSIDs and delete individually. `net_mgr_list_networks()` and `net_mgr_forget_network()` already exist and work; only the UI is missing
 - [ ] Manual/static IP configuration, with a conflict check before applying
+- [ ] Named settings profiles (`settings_music.json`, `settings_voice.json`, …)
+      with a profile selector, so different rooms don't mean re-tuning by hand
+- [ ] Show the active hostname and DHCP address on the Wi-Fi/status screen, so
+      first-time setup never involves guessing a URL
+- [ ] Peak readout cursor — tap a peak to freeze exact frequency, level and
+      nearest 1/3-octave band. Many measurements need a number, not a bar
+- [ ] Harmonic marker overlay — long-press a bar to mark its fundamental and
+      harmonics, for separating overtones from real peaks
 - [ ] Improve documentation and setup instructions
 - [ ] Add more screenshots and diagrams
 - [ ] Improve preset management workflow
@@ -68,9 +111,20 @@ The 1.x series focuses on polishing the current standalone instrument before add
 - [ ] Add more troubleshooting guidance
 - [ ] Improve build reproducibility
 - [ ] Add additional example measurement workflows
-- [ ] Add optional CSV export of spectrum snapshots
 - [ ] Improve scope display controls
 - [ ] Add more display themes if they remain readable and useful
+
+### Phase 2 Platform Milestones
+
+Tracked in CLAUDE.md; recorded here so the plan is visible in one place.
+M0-M4 are complete (partitions, USB mic, mic calibration, Wi-Fi portal with web
+calibration upload, REST config API).
+
+- [ ] **M5** — WebSocket live spectrum stream, for browser-side logging,
+      export and remote monitoring
+- [ ] **M6** — signed OTA updates
+- [ ] **M7** — SD recording and CSV export of spectrum snapshots
+- [ ] **M8** — CI plus host-side tests
 
 ### v1.x Goal
 
