@@ -504,11 +504,6 @@ esp_err_t display_ui_push_spectrum(const dsp_result_t *result)
     return ESP_OK;
 }
 
-void display_ui_set_status(const display_status_t *status)
-{
-    /* Phase 1: no-op — status bar only shows SPL/peak from spectrum data */
-    (void)status;
-}
 
 void display_ui_deinit(void)
 {

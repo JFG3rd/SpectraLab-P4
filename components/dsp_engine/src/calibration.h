@@ -20,7 +20,6 @@ esp_err_t calibration_parse_file(const char *path);
 void      calibration_clear(void);
 bool      calibration_loaded(void);
 int       calibration_point_count(void);
-float     calibration_sens_factor(void);   /* dB, 0 if none in file */
 
 /* Build the per-bin response table (dB) for the current FFT layout.
  * Log-frequency linear interpolation; clamped to the edge points. */

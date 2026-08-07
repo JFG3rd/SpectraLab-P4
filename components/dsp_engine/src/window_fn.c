@@ -84,10 +84,3 @@ float window_fn_coherent_gain(const float *coeffs, uint32_t N)
     for (uint32_t n = 0; n < N; n++) sum += coeffs[n];
     return sum / (float)N;
 }
-
-float window_fn_rms_gain(const float *coeffs, uint32_t N)
-{
-    float sum = 0.0f;
-    for (uint32_t n = 0; n < N; n++) sum += coeffs[n] * coeffs[n];
-    return sqrtf(sum / (float)N);
-}

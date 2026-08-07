@@ -38,7 +38,6 @@ void calibration_clear(void)
 
 bool  calibration_loaded(void)      { return s_count >= CAL_MIN_POINTS; }
 int   calibration_point_count(void) { return s_count; }
-float calibration_sens_factor(void) { return s_sens_factor; }
 
 esp_err_t calibration_parse_file(const char *path)
 {

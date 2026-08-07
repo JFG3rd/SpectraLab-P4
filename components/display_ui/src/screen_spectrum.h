@@ -15,7 +15,6 @@ void      screen_spectrum_set_ambient_status(bool active);
 void      screen_spectrum_set_source_status(bool usb_active);
 void      screen_spectrum_set_db_range(int range_db);
 void      screen_spectrum_set_mode(int mode);            /* display_mode_t */
-int       screen_spectrum_get_mode(void);
 void      screen_spectrum_push_waveform(const int16_t *samples, size_t count);
 void      screen_spectrum_set_bar_decay(float rate);
 void      screen_spectrum_set_peak_hold(bool enabled);

@@ -830,6 +830,21 @@ static void qr_open(void)
         return;
     }
 
+    /* esp_video does not unregister the CSI video device on teardown, so a
+     * second camera start in the same boot always fails on the device name.
+     * Say so up front instead of opening the camera, waiting, and then showing
+     * an error — the outcome is known before we try. */
+    if (qr_scan_needs_restart() && !s_qr_session_active && !qr_scan_is_running()) {
+        lv_label_set_text(s_qr_status, "Restart required to scan again");
+        lv_label_set_text(s_qr_payload,
+                          "The camera can only be started once per restart in this "
+                          "build. Hold panel key 1 for 2 s to restart, or use Manual "
+                          "to type the network details instead.");
+        panel_button_set_state(PANEL_KEY_ABORT, PANEL_LED_ERROR);
+        lv_screen_load(s_qr_screen);
+        return;
+    }
+
     /* A previous session may still be tearing the camera down. Starting now
      * would fail, and more importantly the camera still owns the shared I2C
      * pads — show the screen and let qr_timer_cb reap before retrying. */

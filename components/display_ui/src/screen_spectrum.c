@@ -1630,11 +1630,6 @@ void screen_spectrum_set_mode(int mode)
     lv_obj_invalidate(s_spectrum_obj);
 }
 
-int screen_spectrum_get_mode(void)
-{
-    return (int)s_mode;
-}
-
 void screen_spectrum_load(void)
 {
     if (s_screen) lv_screen_load(s_screen);

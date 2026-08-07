@@ -10,14 +10,6 @@
 extern "C" {
 #endif
 
-typedef struct {
-    float cpu_pct;
-    float temp_c;
-    bool  usb_connected;
-    bool  wifi_connected;
-    bool  sd_mounted;
-} display_status_t;
-
 esp_err_t display_ui_init(void);
 esp_err_t display_ui_push_spectrum(const dsp_result_t *result);
 
@@ -27,7 +19,6 @@ esp_err_t display_ui_push_spectrum(const dsp_result_t *result);
  * lock is not recursive. */
 void      display_ui_lock(void);
 void      display_ui_unlock(void);
-void      display_ui_set_status(const display_status_t *status);
 void      display_ui_deinit(void);
 
 /* Called from screen_settings.c when the user applies a colour scheme change */
