@@ -5,6 +5,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
@@ -12,6 +13,8 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_netif_net_stack.h"   /* esp_netif_get_netif_impl() for the ARP probe */
+#include "lwip/etharp.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
@@ -27,7 +30,7 @@ static const char *TAG = "net_mgr";
 #define KEY_PASS      "pass"
 #define KEY_KNOWN     "known"   /* known-networks list blob                   */
 
-#define KNOWN_BLOB_VERSION 1
+#define KNOWN_BLOB_VERSION 2
 
 /* Rejoin resilience: at boot the router or the C6 link may not be ready
  * for a second or two. Retrying esp_wifi_connect() immediately burned the
@@ -47,8 +50,9 @@ static const char *TAG = "net_mgr";
 typedef enum { NET_OFF, NET_JOINING, NET_STA_UP, NET_AP_UP } net_state_t;
 
 typedef struct {
-    char ssid[NET_SSID_MAX];
-    char pass[NET_PASS_MAX];
+    char         ssid[NET_SSID_MAX];
+    char         pass[NET_PASS_MAX];
+    net_ip_cfg_t ip;      /* v2: per-network addressing; zeroed = DHCP */
 } wifi_net_t;
 
 /* Persisted known-networks list. Fixed-size so it maps straight to an NVS
@@ -59,6 +63,21 @@ typedef struct {
     wifi_net_t nets[NET_MAX_KNOWN];
 } known_blob_t;
 
+/* v1 layout, kept solely so an existing install's saved networks survive the
+ * upgrade. load_known() rejects any blob whose size does not match exactly, so
+ * without this the v2 struct growth would silently drop every stored network
+ * and strand the unit off the LAN. */
+typedef struct {
+    char ssid[NET_SSID_MAX];
+    char pass[NET_PASS_MAX];
+} wifi_net_v1_t;
+
+typedef struct {
+    uint8_t       version;
+    uint8_t       count;
+    wifi_net_v1_t nets[NET_MAX_KNOWN];
+} known_blob_v1_t;
+
 static net_state_t        s_state = NET_OFF;
 static SemaphoreHandle_t  s_lock;
 static int                s_retry;          /* attempts against the current known net  */
@@ -67,6 +86,10 @@ static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_scan_timeout_timer;
 static char               s_sta_ssid[NET_SSID_MAX];
 static char               s_ip_str[16] = "";
+static esp_netif_t       *s_sta_netif;      /* kept for static-IP and ARP probing */
+static esp_ip4_addr_t     s_sta_ip;         /* live lease/static address, network order */
+static esp_ip4_addr_t     s_sta_netmask;
+static esp_ip4_addr_t     s_sta_gw;
 static char               s_ap_ssid[NET_SSID_MAX];
 static char               s_ap_pass[16];
 static char               s_mdns_host[32];      /* per-device hostname: spectralab-p4-xxxx */
@@ -188,8 +211,9 @@ static void load_known(void)
         known_blob_t blob;
         size_t sz = sizeof(blob);
         esp_err_t err = nvs_get_blob(h, KEY_KNOWN, &blob, &sz);
-        nvs_close(h);
+
         if (err == ESP_OK && sz == sizeof(blob) && blob.version == KNOWN_BLOB_VERSION) {
+            nvs_close(h);
             int cnt = blob.count > NET_MAX_KNOWN ? NET_MAX_KNOWN : blob.count;
             for (int i = 0; i < cnt; i++) {
                 blob.nets[i].ssid[NET_SSID_MAX - 1] = '\0';
@@ -198,6 +222,32 @@ static void load_known(void)
             }
             ESP_LOGI(TAG, "loaded %d known network(s)", s_known_count);
             return;   /* blob is authoritative once present (even if empty) */
+        }
+
+        /* v1 -> v2: the struct grew an IP-config field, so the size check above
+         * fails on an existing install. Read the old layout explicitly and
+         * carry the credentials across (defaulting every network to DHCP)
+         * rather than silently dropping them and stranding the unit. */
+        known_blob_v1_t v1;
+        size_t v1_sz = sizeof(v1);
+        esp_err_t v1_err = nvs_get_blob(h, KEY_KNOWN, &v1, &v1_sz);
+        nvs_close(h);
+
+        if (v1_err == ESP_OK && v1_sz == sizeof(v1) && v1.version == 1) {
+            int cnt = v1.count > NET_MAX_KNOWN ? NET_MAX_KNOWN : v1.count;
+            for (int i = 0; i < cnt; i++) {
+                v1.nets[i].ssid[NET_SSID_MAX - 1] = '\0';
+                v1.nets[i].pass[NET_PASS_MAX - 1] = '\0';
+                if (!v1.nets[i].ssid[0]) continue;
+                wifi_net_t *dst = &s_known[s_known_count++];
+                memset(dst, 0, sizeof(*dst));          /* ip.use_static = false */
+                strlcpy(dst->ssid, v1.nets[i].ssid, NET_SSID_MAX);
+                strlcpy(dst->pass, v1.nets[i].pass, NET_PASS_MAX);
+            }
+            save_known();   /* rewrite in the v2 layout so this runs once */
+            ESP_LOGI(TAG, "migrated %d known network(s) from v1 (all set to DHCP)",
+                     s_known_count);
+            return;
         }
     }
 
@@ -323,12 +373,56 @@ static void scan_timeout_cb(void *arg)
 
 /* ── join loop across the known-networks list ─────────────────── */
 
+/* Apply this network's addressing to the STA interface. Must run before
+ * esp_wifi_connect(): switching the DHCP client on or off after association
+ * leaves the interface in an inconsistent state. */
+static void apply_ip_config(const net_ip_cfg_t *cfg)
+{
+    if (!s_sta_netif) return;
+
+    if (!cfg->use_static) {
+        /* Back to DHCP. Starting the client is what clears any static address
+         * left over from a previous join, so do it unconditionally and ignore
+         * ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED. */
+        esp_err_t err = esp_netif_dhcpc_start(s_sta_netif);
+        if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED)
+            ESP_LOGW(TAG, "dhcpc start: %s", esp_err_to_name(err));
+        return;
+    }
+
+    esp_netif_dhcpc_stop(s_sta_netif);   /* must stop before setting an address */
+
+    esp_netif_ip_info_t info = { 0 };
+    info.ip.addr      = htonl(cfg->ip);
+    info.netmask.addr = htonl(cfg->netmask);
+    info.gw.addr      = htonl(cfg->gateway);
+
+    esp_err_t err = esp_netif_set_ip_info(s_sta_netif, &info);
+    if (err != ESP_OK) {
+        /* Fall back to DHCP rather than joining with no usable address. */
+        ESP_LOGE(TAG, "static IP rejected (%s) — falling back to DHCP",
+                 esp_err_to_name(err));
+        esp_netif_dhcpc_start(s_sta_netif);
+        return;
+    }
+
+    esp_netif_dns_info_t dns = { 0 };
+    dns.ip.type = ESP_IPADDR_TYPE_V4;
+    dns.ip.u_addr.ip4.addr = htonl(cfg->dns ? cfg->dns : cfg->gateway);
+    esp_netif_set_dns_info(s_sta_netif, ESP_NETIF_DNS_MAIN, &dns);
+
+    ESP_LOGI(TAG, "static addressing: " IPSTR " mask " IPSTR " gw " IPSTR,
+             IP2STR(&info.ip), IP2STR(&info.netmask), IP2STR(&info.gw));
+}
+
 static void connect_current_known(void)
 {
     wifi_config_t sta_cfg = { 0 };
     strlcpy((char *)sta_cfg.sta.ssid,     s_known[s_join_idx].ssid, sizeof(sta_cfg.sta.ssid));
     strlcpy((char *)sta_cfg.sta.password, s_known[s_join_idx].pass, sizeof(sta_cfg.sta.password));
     strlcpy(s_sta_ssid, s_known[s_join_idx].ssid, sizeof(s_sta_ssid));
+
+    apply_ip_config(&s_known[s_join_idx].ip);
 
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
@@ -426,6 +520,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
         snprintf(s_ip_str, sizeof(s_ip_str), IPSTR, IP2STR(&ev->ip_info.ip));
+        s_sta_ip      = ev->ip_info.ip;
+        s_sta_netmask = ev->ip_info.netmask;
+        s_sta_gw      = ev->ip_info.gw;
         set_state(NET_STA_UP, "got IP");
         s_retry = 0;
         s_pass_fail = 0;
@@ -468,6 +565,9 @@ esp_err_t net_mgr_add_network(const char *ssid, const char *pass)
     for (int i = 0; i < s_known_count; i++)
         if (strncmp(s_known[i].ssid, ssid, NET_SSID_MAX) == 0) { found = i; break; }
     if (found >= 0) {
+        /* Re-saving credentials must not silently discard a static address the
+         * user configured for this network. */
+        entry.ip = s_known[found].ip;
         for (int i = found; i < s_known_count - 1; i++) s_known[i] = s_known[i + 1];
         s_known_count--;
     } else if (s_known_count >= NET_MAX_KNOWN) {
@@ -512,6 +612,112 @@ int net_mgr_list_networks(char ssids[][NET_SSID_MAX], int max)
         strlcpy(ssids[i], s_known[i].ssid, NET_SSID_MAX);
     xSemaphoreGive(s_lock);
     return n;
+}
+
+/* ── per-network IP configuration ─────────────────────────────── */
+
+esp_err_t net_mgr_get_network(int idx, char *ssid, size_t ssid_len,
+                              char *pass, size_t pass_len,
+                              net_ip_cfg_t *ip_cfg)
+{
+    if (idx < 0) return ESP_ERR_INVALID_ARG;
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = ESP_ERR_NOT_FOUND;
+    if (idx < s_known_count) {
+        if (ssid && ssid_len) strlcpy(ssid, s_known[idx].ssid, ssid_len);
+        if (pass && pass_len) strlcpy(pass, s_known[idx].pass, pass_len);
+        if (ip_cfg)           *ip_cfg = s_known[idx].ip;
+        err = ESP_OK;
+    }
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
+esp_err_t net_mgr_set_network_ip(const char *ssid, const net_ip_cfg_t *ip_cfg)
+{
+    if (!ssid || !ssid[0] || !ip_cfg) return ESP_ERR_INVALID_ARG;
+    /* A static config with no address is meaningless and would strand the
+     * unit; treat it as a caller bug rather than silently falling back. */
+    if (ip_cfg->use_static && (ip_cfg->ip == 0 || ip_cfg->netmask == 0))
+        return ESP_ERR_INVALID_ARG;
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = ESP_ERR_NOT_FOUND;
+    for (int i = 0; i < s_known_count; i++) {
+        if (strncmp(s_known[i].ssid, ssid, NET_SSID_MAX) != 0) continue;
+        s_known[i].ip = *ip_cfg;
+        err = save_known();
+        break;
+    }
+    xSemaphoreGive(s_lock);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "'%s' addressing set to %s", ssid,
+                 ip_cfg->use_static ? "static" : "DHCP");
+    }
+    return err;
+}
+
+uint32_t net_mgr_get_sta_ip(void)      { return s_sta_ip.addr ? ntohl(s_sta_ip.addr) : 0; }
+uint32_t net_mgr_get_sta_netmask(void) { return s_sta_netmask.addr ? ntohl(s_sta_netmask.addr) : 0; }
+uint32_t net_mgr_get_sta_gateway(void) { return s_sta_gw.addr ? ntohl(s_sta_gw.addr) : 0; }
+
+/* ── ARP probe (address-in-use check) ─────────────────────────── */
+
+/* lwIP is built without core locking here (CONFIG_LWIP_TCPIP_CORE_LOCKING is
+ * unset), so its internals must not be touched from an arbitrary task. Both
+ * halves of the probe run inside esp_netif_tcpip_exec(), which dispatches into
+ * the TCP/IP thread. */
+typedef struct {
+    ip4_addr_t target;
+    bool       found;
+} arp_probe_ctx_t;
+
+static esp_err_t arp_send_request(void *ctx)
+{
+    arp_probe_ctx_t *p = (arp_probe_ctx_t *)ctx;
+    struct netif *nif = (struct netif *)esp_netif_get_netif_impl(s_sta_netif);
+    if (!nif) return ESP_ERR_INVALID_STATE;
+    return etharp_request(nif, &p->target) == ERR_OK ? ESP_OK : ESP_FAIL;
+}
+
+static esp_err_t arp_check_cache(void *ctx)
+{
+    arp_probe_ctx_t *p = (arp_probe_ctx_t *)ctx;
+    struct netif *nif = (struct netif *)esp_netif_get_netif_impl(s_sta_netif);
+    if (!nif) return ESP_ERR_INVALID_STATE;
+
+    struct eth_addr  *eth = NULL;
+    const ip4_addr_t *ip  = NULL;
+    p->found = (etharp_find_addr(nif, &p->target, &eth, &ip) >= 0);
+    return ESP_OK;
+}
+
+bool net_mgr_ip_in_use(uint32_t ip, uint32_t timeout_ms)
+{
+    if (ip == 0 || s_state != NET_STA_UP || !s_sta_netif) return false;
+
+    /* Our own current address always answers — that is not a conflict. */
+    if (s_sta_ip.addr && ntohl(s_sta_ip.addr) == ip) return false;
+
+    arp_probe_ctx_t ctx = { .found = false };
+    ip4_addr_set_u32(&ctx.target, htonl(ip));
+
+    if (esp_netif_tcpip_exec(arp_send_request, &ctx) != ESP_OK) return false;
+
+    const int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    while (esp_timer_get_time() < deadline) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        if (esp_netif_tcpip_exec(arp_check_cache, &ctx) == ESP_OK && ctx.found) {
+            ESP_LOGW(TAG, "ARP probe: " IPSTR " is already in use",
+                     IP2STR(&ctx.target));
+            return true;
+        }
+    }
+    ESP_LOGI(TAG, "ARP probe: no reply for " IPSTR " in %" PRIu32 " ms",
+             IP2STR(&ctx.target), timeout_ms);
+    return false;
 }
 
 esp_err_t net_mgr_save_credentials(const char *ssid, const char *pass)
@@ -591,7 +797,7 @@ esp_err_t net_mgr_init(void)
         return ESP_FAIL;
     }
 
-    esp_netif_create_default_wifi_sta();
+    s_sta_netif = esp_netif_create_default_wifi_sta();
     esp_netif_create_default_wifi_ap();
 
     wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();

@@ -1,6 +1,7 @@
 #pragma once
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -59,6 +60,51 @@ esp_err_t net_mgr_forget_network(const char *ssid);
 
 /* Copy up to `max` saved SSIDs (MRU order) into `ssids`. Returns the count. */
 int       net_mgr_list_networks(char ssids[][NET_SSID_MAX], int max);
+
+/* ── Per-network IP configuration ─────────────────────────────────── */
+
+/* Static addressing for one saved network. All fields are host-order IPv4.
+ * use_static == false means DHCP, which is the default for every network and
+ * what every previously-saved network migrates to. dns may be 0 (unset), in
+ * which case the gateway is used. */
+typedef struct {
+    bool     use_static;
+    uint32_t ip;
+    uint32_t netmask;
+    uint32_t gateway;
+    uint32_t dns;
+} net_ip_cfg_t;
+
+/* Read one saved network by MRU index (0 = most recent). Any out-pointer may
+ * be NULL. Returns ESP_ERR_NOT_FOUND if idx is past the end.
+ *
+ * NOTE: this hands back the stored password in clear text, which is why the
+ * on-device UI masks it behind a reveal toggle. */
+esp_err_t net_mgr_get_network(int idx, char *ssid, size_t ssid_len,
+                              char *pass, size_t pass_len,
+                              net_ip_cfg_t *ip_cfg);
+
+/* Replace the IP configuration of a saved network and persist it. Takes effect
+ * on the next join, so callers that want it applied now should reboot. */
+esp_err_t net_mgr_set_network_ip(const char *ssid, const net_ip_cfg_t *ip_cfg);
+
+/* Is `ip` (host order) already answering on the current subnet?
+ *
+ * Sends an ARP request and waits up to timeout_ms for the address to appear in
+ * the ARP cache (RFC 5227 style — the same probe a DHCP client uses). Only
+ * meaningful while the STA is connected, since it needs a live interface to
+ * probe from; returns false when not connected, so callers should check
+ * net_mgr_is_sta_connected() first if a definite answer matters.
+ *
+ * A false result means "no host replied", not a guarantee the address is free:
+ * a powered-off device still owns its lease. */
+bool      net_mgr_ip_in_use(uint32_t ip, uint32_t timeout_ms);
+
+/* Current STA address (host order), or 0 when not connected. Useful to
+ * pre-fill the static-IP form with something in the right subnet. */
+uint32_t  net_mgr_get_sta_ip(void);
+uint32_t  net_mgr_get_sta_netmask(void);
+uint32_t  net_mgr_get_sta_gateway(void);
 
 /* Store credentials and reboot ~1.5 s later (lets the HTTP response flush)
  * to join. Thin wrapper over net_mgr_add_network() kept for the web/UI
