@@ -1,14 +1,15 @@
 # Updating the On-board ESP32-C6 Co-processor (ESP-Hosted Slave Firmware)
 
-> **Status: DEFERRED — do not attempt remotely.**
-> This procedure flashes the on-board ESP32-C6. The safe/reliable method needs
-> a USB-to-UART (3.3 V) adapter or ESP-Prog physically wired to the board, and
-> that adapter is *also* the only recovery path if anything goes wrong. Wait
-> until you are home and have an adapter on hand before doing the serial-flash
-> method. See [§7 Risk & why we're waiting](#7-risk--why-were-waiting).
+> **Status: RESOLVED (2026-07-19).** Flashed via ESP-Prog 2 (Method B). The
+> `Version mismatch: Host [2.12.0] > Co-proc [0.0.0]` warning is gone and
+> Wi‑Fi join is now consistently fast (~1.7 s association → IP, vs. 9–40 s
+> before). See [§8 Result — what actually worked](#8-result--what-actually-worked)
+> for the verified recipe and boot-log evidence; §6 below is kept as the
+> original plan for reference, with corrections inline.
 
 This document records the investigation into the boot-time warning and lays out
-exactly how to fix it later. It is a runbook, not a to-do for today.
+exactly how it was fixed. It is a runbook, kept for reference if the C6 ever
+needs reflashing (e.g. after a future esp_hosted host-side version bump).
 
 ---
 
@@ -163,6 +164,15 @@ The slave is a standard ESP-IDF app. Two ways to build it:
 > The slave source already declares v2.12.9, so the built image will match the
 > host and clear the mismatch.
 
+> **Correction (2026-07-19):** neither of the above worked as written.
+> PlatformIO's bundled `framework-espidf` ships `idf.py`, but PlatformIO's own
+> Python venvs (`~/.platformio/penv`, `~/.platformio/penv/.espidf-5.5.4`) are
+> split/incomplete for running `idf.py` directly — missing `pip`, `pyyaml`,
+> `idf-component-manager`, etc. What actually worked: run the framework's own
+> `install.sh esp32c6` (scoped to just that target) to build a real IDF Python
+> env under `~/.espressif`, then `source export.sh`. Full recipe in
+> [§8](#8-result--what-actually-worked).
+
 ### Step 7a — Flash via ESP-Prog (Method B, recommended)
 
 1. Wire the adapter to `PROG_C6` per the table in §5 (no VDD).
@@ -204,9 +214,88 @@ The slave is a standard ESP-IDF app. Two ways to build it:
 ESP-Prog adapter. The code-side mitigations in §3 keep Wi-Fi usable in the
 meantime. Revisit this file when ready.
 
+**Update (2026-07-19):** ESP-Prog 2 was on hand — did Method B. See §8.
+
 ---
 
-## 8. References
+## 8. Result — what actually worked
+
+Done 2026-07-19 with an ESP-Prog 2 wired to `PROG_C6` (Method B). Everything
+below is the exact recipe, correcting §6 where it differed.
+
+### Build (Step 0, corrected)
+
+PlatformIO's bundled `framework-espidf` (v5.5.4, package `3.40407.240606`) and
+its RISC-V toolchain/cmake/ninja/esptool packages are enough to build the
+slave — but raw `idf.py` needs a real IDF Python env, which PlatformIO's own
+venvs don't provide out of the box. Fix: run the framework's `install.sh`
+scoped to `esp32c6` once, which builds that env under `~/.espressif` (adds
+~1 GB there; doesn't touch PlatformIO's own packages/venvs).
+
+```bash
+# One-time: install a real IDF python env + esp32c6 toolchain
+export IDF_PATH="$HOME/.platformio/packages/framework-espidf"
+cd "$IDF_PATH" && ./install.sh esp32c6
+
+# Copy the slave source out of managed_components/ so the build directory
+# doesn't land inside a PlatformIO-managed dependency tree
+cp -R "managed_components/espressif__esp_hosted/slave/." /path/to/scratch/c6-slave-build/
+
+# Every build session:
+export IDF_PATH="$HOME/.platformio/packages/framework-espidf"
+source "$IDF_PATH/export.sh"
+cd /path/to/scratch/c6-slave-build
+idf.py set-target esp32c6   # pulls iperf/wifi-cmd/mqtt deps via component manager (needs network, once)
+idf.py build                 # -> build/network_adapter.bin
+```
+
+Confirmed during config: `Building ESP-Hosted-MCU FW :: 2.12.9`, SDIO transport
+picked by default (matches the README: "By default, SDIO transport is
+pre-configured" — no menuconfig change needed for this board). Build output:
+`network_adapter.bin`, 0x127500 bytes, fits the 0x1e0000-byte OTA app
+partition with 38% free.
+
+### Flash (Step 7a, as planned)
+
+1. Wired ESP-Prog 2 UART/PROG header (not JTAG header) to `PROG_C6` per the
+   table in §5 — EN, TXD, RXD, GND, IO0; **VDD left disconnected**.
+2. ESP-Prog 2 enumerated on macOS as `/dev/cu.usbmodem206EF1ABABE41` (single
+   port, separate from the P4's own `/dev/cu.usbmodem1101`).
+3. Put the P4 in bootloader mode over its own USB port so it stops driving the
+   C6 reset line — the exact command from §5 worked as written:
+   ```bash
+   esptool.py -p /dev/cu.usbmodem1101 --before default_reset --after no_reset run
+   ```
+   (confirms `Staying in bootloader.`)
+4. Flashed the C6 from the slave build directory, targeting the *adapter's*
+   port:
+   ```bash
+   idf.py -p /dev/cu.usbmodem206EF1ABABE41 flash
+   ```
+   All four images (bootloader, partition table, `ota_data_initial`, app)
+   wrote and hash-verified.
+5. Reset the P4 (DTR/RTS pulse over pyserial, or just tap `RST`) to restart
+   both chips.
+
+### Verification
+
+Captured the boot log over `/dev/cu.usbmodem1101` @ 115200 after reset:
+
+- `transport: Version mismatch` — **no longer present anywhere in the log.**
+- `transport: Identified slave [esp32c6]` — link comes up clean.
+- Wi-Fi join timing: `STA_START` → `STA_GOT_IP` in **~1.7 s** (was 9 s
+  best-case / 40 s+ worst-case before), consistent with the RPC-timeout
+  hypothesis in §2.
+- P4 app firmware itself was never touched — booted normally as
+  `SpectraLab-P4` v1.1.0 with all subsystems up.
+
+The code-side mitigations from §3 (backoff, 12-attempt retry budget, sticky
+STA-forever) are still in place and still a good idea — they're now a safety
+net rather than a load-bearing workaround.
+
+---
+
+## 9. References
 
 - Board guide: `managed_components/espressif__esp_hosted/docs/esp32_p4_function_ev_board.md` (§5 flashing)
 - Slave OTA example: `managed_components/espressif__esp_hosted/examples/host_performs_slave_ota/README.md`
