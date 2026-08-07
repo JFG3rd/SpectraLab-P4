@@ -1,4 +1,6 @@
 ## [Unreleased]
+
+## [1.2.0] - 2026-08-07
 ### Added
 - Optional front-panel Grove-Mech Keycaps (`components/panel_button`):
   debounced GPIO buttons plus SK6805 RGB status LEDs, up to two keys.

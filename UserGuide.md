@@ -1,9 +1,10 @@
 # SpectraLab-P4 User Guide
 
-This is the operator-facing guide for SpectraLab-P4 (v1.1.0). It focuses
+This is the operator-facing guide for SpectraLab-P4 (v1.2.0). It focuses
 on how to use the current firmware, with extra detail on the newest user-visible
-functionality: USB mono policy selection, richer preset persistence, pinch zoom,
-the improved Scope mode, the more robust web workflow, and camera QR Wi-Fi provisioning.
+functionality: camera QR Wi-Fi provisioning (now working on both board
+revisions), the optional front-panel keycaps, USB mono policy selection, richer
+preset persistence, pinch zoom, the improved Scope mode, and the web workflow.
 
 ## Related Documents
 

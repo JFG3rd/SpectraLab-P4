@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.16.0)
 list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_SOURCE_DIR}/components")
 
 # Explicit firmware release version used by esp_app_get_description()->version.
-set(PROJECT_VER "1.1.0")
+set(PROJECT_VER "1.2.0")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(SpectraLab-P4)
