@@ -22,8 +22,6 @@ static const char *TAG = "settings_mgr";
 
 #define SD_DIR          "/sdcard/spectrum"
 #define SD_SETTINGS     SD_DIR "/settings.json"
-#define SD_NOISE_FLOOR  SD_DIR "/noise_floor.bin"
-#define SD_NOISE_MAGIC  0x4E464C52U  /* "NFLR" */
 #define PRESET_NF_MAGIC 0x4E465032U  /* "NFP2" */
 
 #define NVS_NS          "spectrum"
@@ -745,54 +743,6 @@ int settings_mgr_list_cal_files(char names[][SETTINGS_NAME_MAX], int max_count)
     }
     closedir(dir);
     return count;
-}
-
-/* ── noise floor binary on SD ─────────────────────────────────── */
-
-typedef struct {
-    uint32_t magic;
-    uint32_t fft_size;
-    uint32_t bin_count;
-} nf_header_t;
-
-esp_err_t settings_mgr_save_noise_floor_bin(const float *data,
-                                             uint32_t bin_count,
-                                             uint32_t fft_size)
-{
-    if (!s_sd_mounted || data == NULL) return ESP_ERR_NOT_SUPPORTED;
-
-    FILE *f = fopen(SD_NOISE_FLOOR, "wb");
-    if (!f) return ESP_FAIL;
-
-    nf_header_t hdr = { .magic = SD_NOISE_MAGIC, .fft_size = fft_size, .bin_count = bin_count };
-    fwrite(&hdr,    sizeof(hdr), 1, f);
-    fwrite(data, sizeof(float), bin_count, f);
-    fclose(f);
-    ESP_LOGI(TAG, "noise floor saved to SD (%lu bins)", bin_count);
-    return ESP_OK;
-}
-
-esp_err_t settings_mgr_load_noise_floor_bin(float *out,
-                                             uint32_t bin_count,
-                                             uint32_t fft_size)
-{
-    if (!s_sd_mounted || out == NULL) return ESP_ERR_NOT_SUPPORTED;
-
-    FILE *f = fopen(SD_NOISE_FLOOR, "rb");
-    if (!f) return ESP_ERR_NOT_FOUND;
-
-    nf_header_t hdr;
-    if (fread(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return ESP_FAIL; }
-    if (hdr.magic != SD_NOISE_MAGIC || hdr.fft_size != fft_size || hdr.bin_count != bin_count) {
-        fclose(f);
-        ESP_LOGW(TAG, "noise floor SD: header mismatch, discarding");
-        return ESP_ERR_INVALID_STATE;
-    }
-    size_t rd = fread(out, sizeof(float), bin_count, f);
-    fclose(f);
-    if (rd != bin_count) return ESP_FAIL;
-    ESP_LOGI(TAG, "noise floor loaded from SD (%lu bins)", bin_count);
-    return ESP_OK;
 }
 
 /* ── SD card management ────────────────────────────────────────── */

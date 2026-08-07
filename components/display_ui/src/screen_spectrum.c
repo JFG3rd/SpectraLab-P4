@@ -41,9 +41,6 @@ static const char *TAG = "scr_spectrum";
 #define INFO_H          18   /* thin label bar at bottom */
 #define SPECTRUM_H     (SCREEN_H - STATUS_H - INFO_H)   /* 512 */
 
-#define FREQ_MIN       20.0f
-#define FREQ_MAX    20000.0f
-
 #define NUM_BARS         50   /* log-spaced bands for bar-type modes */
 #define RTA_BANDS        31   /* 1/3-octave bands, 20 Hz – 20 kHz */
 #define BAR_GAP_PX        2   /* visible gap between bars */
@@ -52,7 +49,6 @@ static const char *TAG = "scr_spectrum";
 #define FREQ_TICK_COUNT   5
 #define FREQ_ZOOM_MIN    20.0f
 #define FREQ_ZOOM_MAX 20000.0f
-#define DB_ZOOM_MIN     -120.0f
 #define DB_ZOOM_MAX        0.0f
 
 /* ── oscilloscope view ────────────────────────────────────────────
@@ -177,16 +173,6 @@ static void reset_view_ranges(void)
     s_scope_spp         = 1.0f;
     s_scope_gain        = 1.0f;
     s_scope_gain_manual = false;
-}
-
-static float freq_x_frac(float freq)
-{
-    float min_f = s_freq_view_min;
-    float max_f = s_freq_view_max;
-    if (max_f <= min_f) return 0.0f;
-    if (freq <= min_f) return 0.0f;
-    if (freq >= max_f) return 1.0f;
-    return log10f(freq / min_f) / log10f(max_f / min_f);
 }
 
 static float x_to_freq_frac(float frac)
@@ -454,22 +440,6 @@ static lv_color_t bar_color_for_db(float db)
     if (db > -20.0f) return lv_color_hex(s_pal->bar_hi);
     if (db > -40.0f) return lv_color_hex(s_pal->bar_mid);
     return lv_color_hex(s_pal->bar_lo);
-}
-
-/* Logarithmic frequency → x pixel (0-based within width) */
-static int32_t freq_to_x(float freq, int32_t width)
-{
-    if (freq <= s_freq_view_min) return 0;
-    if (freq >= s_freq_view_max) return width - 1;
-    float ratio = freq_x_frac(freq);
-    return (int32_t)(ratio * (float)(width - 1));
-}
-
-static float x_to_freq(int32_t x, int32_t width)
-{
-    if (width <= 1) return s_freq_view_min;
-    float frac = (float)x / (float)(width - 1);
-    return x_to_freq_frac(frac);
 }
 
 /* Max-of-bins per log-spaced band. Caller must hold s_data_mutex. */
@@ -1470,7 +1440,8 @@ esp_err_t screen_spectrum_create(void)
     lv_obj_add_flag(s_btn_wf_speed, LV_OBJ_FLAG_HIDDEN);
 
     /* ── info bar (frequency axis labels) ──
-     * Each label is positioned individually via freq_to_x() so it lines
+     * Each label is positioned individually (see update_axis_ticks(), which
+     * maps evenly-spaced fractions through x_to_freq_frac()) so it lines
      * up with its grid line regardless of font metrics. A single label
      * with hand-spaced text (the previous approach) assumed a monospace
      * font; Montserrat is proportional, so the spacing collapsed and all

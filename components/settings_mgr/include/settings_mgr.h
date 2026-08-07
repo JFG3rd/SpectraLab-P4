@@ -154,24 +154,6 @@ int settings_mgr_list_named(char names[][SETTINGS_NAME_MAX], int max_count);
 int settings_mgr_list_cal_files(char names[][SETTINGS_NAME_MAX], int max_count);
 
 /**
- * @brief Save the DSP engine's noise floor binary to the SD card.
- *        Called by the DSP engine callback after a successful capture.
- *        No-op if no SD card is mounted.
- */
-esp_err_t settings_mgr_save_noise_floor_bin(const float *data,
-                                             uint32_t bin_count,
-                                             uint32_t fft_size);
-
-/**
- * @brief Load the noise floor binary from SD card into *out (caller-allocated).
- *        Validates the stored fft_size. Returns ESP_ERR_NOT_FOUND if absent
- *        or mismatched.
- */
-esp_err_t settings_mgr_load_noise_floor_bin(float *out,
-                                             uint32_t bin_count,
-                                             uint32_t fft_size);
-
-/**
  * @brief Re-attempt SD card mount (e.g. after inserting a card post-boot).
  *        Unmounts first if already mounted, then re-mounts.
  */
