@@ -61,6 +61,43 @@ static lv_obj_t    *s_entry_ok_btn;
 static lv_obj_t    *s_entry_show_cb;   /* "Show password" toggle (password mode only) */
 static entry_mode_t s_entry_mode;
 
+/* ── saved-network screens (list / detail / IP settings) ───────── */
+
+#define IPCFG_FIELD_COUNT 4      /* ip, netmask, gateway, dns */
+#define IPCFG_PROBE_MS    2000   /* ARP probe window */
+
+static lv_obj_t   *s_saved_screen;
+static lv_obj_t   *s_saved_status;
+static lv_obj_t   *s_saved_list;
+
+static lv_obj_t   *s_detail_screen;
+static lv_obj_t   *s_detail_title;
+static lv_obj_t   *s_detail_pass_lbl;
+static lv_obj_t   *s_detail_show_cb;
+static lv_obj_t   *s_detail_ip_lbl;
+static lv_obj_t   *s_detail_status;
+static lv_obj_t   *s_detail_forget_lbl;
+static int         s_detail_idx;
+static char        s_detail_pass[NET_PASS_MAX];
+static net_ip_cfg_t s_detail_ip;
+static bool        s_detail_forget_armed;   /* first tap arms, second commits */
+
+static lv_obj_t   *s_ipcfg_screen;
+static lv_obj_t   *s_ipcfg_title;
+static lv_obj_t   *s_ipcfg_mode_dd;
+static lv_obj_t   *s_ipcfg_ta[IPCFG_FIELD_COUNT];
+static lv_obj_t   *s_ipcfg_status;
+static lv_obj_t   *s_ipcfg_save_btn;
+static lv_obj_t   *s_ipcfg_kb;
+static lv_timer_t *s_ipcfg_timer;
+static uint32_t    s_ipcfg_reboot_at;       /* lv_tick deadline, 0 = not rebooting */
+
+/* ARP probe hand-off: written by the worker task, read by the LVGL timer. */
+static volatile bool s_probe_done;
+static volatile bool s_probe_in_use;
+static uint32_t      s_probe_ip;
+static net_ip_cfg_t  s_probe_cfg;
+
 /* ── QR scan screen ────────────────────────────────────────────── */
 
 static lv_obj_t         *s_qr_screen;
@@ -99,6 +136,9 @@ static void qr_open(void);
 static void qr_stop_scan(void);
 static void list_resume_scan(void);
 static void qr_downsample_frame_to_preview(const qr_scan_frame_t *frame, uint16_t *dst);
+static void saved_open(void);
+static void detail_open(void);
+static void ip_to_str(uint32_t ip, char *buf, size_t len);
 
 /* ── list logic ───────────────────────────────────────────────── */
 
@@ -306,6 +346,13 @@ static void restart_cb(lv_event_t *e)
     lv_obj_add_event_cb(no,  restart_cancel_cb,  LV_EVENT_CLICKED, mbox);
 }
 
+static void saved_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    stop_poll();          /* the saved list doesn't need scan results */
+    saved_open();
+}
+
 static void list_create(void)
 {
     s_screen = lv_obj_create(NULL);
@@ -342,8 +389,9 @@ static void list_create(void)
     MAKE_WIFI_BTN(LV_SYMBOL_OK "  Connect",      connect_cb, 132);
     MAKE_WIFI_BTN(LV_SYMBOL_KEYBOARD "  Manual", manual_cb,  192);
     MAKE_WIFI_BTN(LV_SYMBOL_IMAGE "  Scan QR",   scan_qr_cb, 252);
-    MAKE_WIFI_BTN(LV_SYMBOL_POWER "  Restart",   restart_cb, 312);
-    MAKE_WIFI_BTN(LV_SYMBOL_LEFT "  Back",       back_cb,    372);
+    MAKE_WIFI_BTN(LV_SYMBOL_SAVE "  Saved Nets", saved_cb,   312);
+    MAKE_WIFI_BTN(LV_SYMBOL_POWER "  Restart",   restart_cb, 372);
+    MAKE_WIFI_BTN(LV_SYMBOL_LEFT "  Back",       back_cb,    432);
 
 #undef MAKE_WIFI_BTN
 
@@ -908,6 +956,537 @@ void screen_wifi_qr_abort(void)
 bool screen_wifi_qr_active(void)
 {
     return s_qr_session_active;
+}
+
+/* ── saved-network management ─────────────────────────────────── */
+
+/* Screen 2 of the Wi-Fi flow: the networks already stored in NVS, what their
+ * passwords are (masked until asked), and their addressing. */
+
+static void saved_refresh(void);
+static void ipcfg_open(void);
+
+static void saved_item_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    lv_obj_t *btn = lv_event_get_target(e);
+    int idx = (int)(intptr_t)lv_obj_get_user_data(btn);
+
+    if (net_mgr_get_network(idx, s_sel_ssid, sizeof(s_sel_ssid),
+                            s_detail_pass, sizeof(s_detail_pass),
+                            &s_detail_ip) != ESP_OK) {
+        return;
+    }
+    s_detail_idx = idx;
+    detail_open();
+}
+
+static void saved_back_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    lv_screen_load(s_screen);
+}
+
+static void saved_create(void)
+{
+    s_saved_screen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_saved_screen, lv_color_hex(0x0D1B2A), 0);
+    lv_obj_set_style_pad_all(s_saved_screen, 0, 0);
+
+    lv_obj_t *title = lv_label_create(s_saved_screen);
+    lv_label_set_text(title, LV_SYMBOL_SAVE "  Saved Networks");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xCCDDEE), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_pos(title, 20, 14);
+
+    s_saved_status = lv_label_create(s_saved_screen);
+    lv_label_set_text(s_saved_status, "");
+    lv_obj_set_style_text_color(s_saved_status, lv_color_hex(0x88AACC), 0);
+    lv_obj_set_style_text_font(s_saved_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_pos(s_saved_status, 20, 44);
+
+    s_saved_list = lv_list_create(s_saved_screen);
+    lv_obj_set_size(s_saved_list, 640, 508);
+    lv_obj_set_pos(s_saved_list, 20, 72);
+
+    lv_obj_t *b = lv_button_create(s_saved_screen);
+    lv_obj_set_size(b, 300, 48);
+    lv_obj_set_pos(b, 690, 72);
+    lv_obj_add_event_cb(b, saved_back_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, LV_SYMBOL_LEFT "  Back");
+    lv_obj_center(l);
+
+    ESP_LOGI(TAG, "saved networks screen created");
+}
+
+static void saved_refresh(void)
+{
+    static char ssids[NET_MAX_KNOWN][NET_SSID_MAX];
+    int n = net_mgr_list_networks(ssids, NET_MAX_KNOWN);
+
+    lv_obj_clean(s_saved_list);
+
+    if (n == 0) {
+        lv_label_set_text(s_saved_status,
+                          "No saved networks yet — connect to one and it is remembered.");
+        return;
+    }
+
+    char msg[64];
+    snprintf(msg, sizeof(msg), "%d saved — tap one to view or edit it", n);
+    lv_label_set_text(s_saved_status, msg);
+
+    for (int i = 0; i < n; i++) {
+        net_ip_cfg_t ip = { 0 };
+        net_mgr_get_network(i, NULL, 0, NULL, 0, &ip);
+
+        char row[NET_SSID_MAX + 32];
+        snprintf(row, sizeof(row), "%s   %s", ssids[i],
+                 ip.use_static ? "[static]" : "[DHCP]");
+
+        lv_obj_t *btn = lv_list_add_button(s_saved_list, LV_SYMBOL_WIFI, row);
+        lv_obj_set_user_data(btn, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(btn, saved_item_cb, LV_EVENT_CLICKED, NULL);
+    }
+}
+
+static void saved_open(void)
+{
+    if (!s_saved_screen) saved_create();
+    saved_refresh();
+    lv_screen_load(s_saved_screen);
+}
+
+/* ── one saved network: password + addressing + forget ────────── */
+
+static void detail_show_pw_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+    bool show = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    lv_label_set_text(s_detail_pass_lbl, show ? s_detail_pass : "••••••••");
+}
+
+static void detail_forget_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+
+    /* Two-step: the first tap arms, the second commits. Deleting the network
+     * you are currently using drops the unit off the LAN, so a stray tap on a
+     * wall-mounted panel should not be enough to do it. */
+    if (!s_detail_forget_armed) {
+        s_detail_forget_armed = true;
+        lv_label_set_text(s_detail_forget_lbl, LV_SYMBOL_TRASH "  Tap again to confirm");
+        lv_label_set_text(s_detail_status, "This removes the saved password too.");
+        return;
+    }
+
+    esp_err_t err = net_mgr_forget_network(s_sel_ssid);
+    ESP_LOGI(TAG, "forget '%s': %s", s_sel_ssid, esp_err_to_name(err));
+    s_detail_forget_armed = false;
+    lv_label_set_text(s_detail_forget_lbl, LV_SYMBOL_TRASH "  Forget Network");
+    saved_open();
+}
+
+static void detail_ipcfg_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    ipcfg_open();
+}
+
+static void detail_back_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    saved_open();
+}
+
+static void detail_create(void)
+{
+    s_detail_screen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_detail_screen, lv_color_hex(0x0D1B2A), 0);
+    lv_obj_set_style_pad_all(s_detail_screen, 0, 0);
+
+    s_detail_title = lv_label_create(s_detail_screen);
+    lv_obj_set_style_text_color(s_detail_title, lv_color_hex(0xCCDDEE), 0);
+    lv_obj_set_style_text_font(s_detail_title, &lv_font_montserrat_16, 0);
+    lv_obj_set_pos(s_detail_title, 20, 14);
+
+    lv_obj_t *pw_cap = lv_label_create(s_detail_screen);
+    lv_label_set_text(pw_cap, "Password");
+    lv_obj_set_style_text_color(pw_cap, lv_color_hex(0x88AACC), 0);
+    lv_obj_set_style_text_font(pw_cap, &lv_font_montserrat_14, 0);
+    lv_obj_set_pos(pw_cap, 20, 64);
+
+    s_detail_pass_lbl = lv_label_create(s_detail_screen);
+    lv_label_set_text(s_detail_pass_lbl, "••••••••");
+    lv_obj_set_style_text_color(s_detail_pass_lbl, lv_color_hex(0xCCDDEE), 0);
+    lv_obj_set_style_text_font(s_detail_pass_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_pos(s_detail_pass_lbl, 20, 88);
+
+    s_detail_show_cb = lv_checkbox_create(s_detail_screen);
+    lv_checkbox_set_text(s_detail_show_cb, "Show password");
+    lv_obj_set_style_text_color(s_detail_show_cb, lv_color_hex(0xCCDDEE), 0);
+    lv_obj_set_pos(s_detail_show_cb, 20, 124);
+    lv_obj_add_event_cb(s_detail_show_cb, detail_show_pw_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    lv_obj_t *ip_cap = lv_label_create(s_detail_screen);
+    lv_label_set_text(ip_cap, "Addressing");
+    lv_obj_set_style_text_color(ip_cap, lv_color_hex(0x88AACC), 0);
+    lv_obj_set_style_text_font(ip_cap, &lv_font_montserrat_14, 0);
+    lv_obj_set_pos(ip_cap, 20, 174);
+
+    s_detail_ip_lbl = lv_label_create(s_detail_screen);
+    lv_label_set_long_mode(s_detail_ip_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_detail_ip_lbl, 620);
+    lv_obj_set_style_text_color(s_detail_ip_lbl, lv_color_hex(0xCCDDEE), 0);
+    lv_obj_set_style_text_font(s_detail_ip_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_pos(s_detail_ip_lbl, 20, 198);
+
+    s_detail_status = lv_label_create(s_detail_screen);
+    lv_label_set_long_mode(s_detail_status, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_detail_status, 620);
+    lv_obj_set_style_text_color(s_detail_status, lv_color_hex(0x88AACC), 0);
+    lv_obj_set_style_text_font(s_detail_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_pos(s_detail_status, 20, 300);
+
+    lv_obj_t *b_ip = lv_button_create(s_detail_screen);
+    lv_obj_set_size(b_ip, 300, 48);
+    lv_obj_set_pos(b_ip, 690, 72);
+    lv_obj_add_event_cb(b_ip, detail_ipcfg_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *l_ip = lv_label_create(b_ip);
+    lv_label_set_text(l_ip, LV_SYMBOL_SETTINGS "  IP Settings");
+    lv_obj_center(l_ip);
+
+    lv_obj_t *b_forget = lv_button_create(s_detail_screen);
+    lv_obj_set_size(b_forget, 300, 48);
+    lv_obj_set_pos(b_forget, 690, 132);
+    lv_obj_add_event_cb(b_forget, detail_forget_cb, LV_EVENT_CLICKED, NULL);
+    s_detail_forget_lbl = lv_label_create(b_forget);
+    lv_label_set_text(s_detail_forget_lbl, LV_SYMBOL_TRASH "  Forget Network");
+    lv_obj_center(s_detail_forget_lbl);
+
+    lv_obj_t *b_back = lv_button_create(s_detail_screen);
+    lv_obj_set_size(b_back, 300, 48);
+    lv_obj_set_pos(b_back, 690, 192);
+    lv_obj_add_event_cb(b_back, detail_back_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *l_back = lv_label_create(b_back);
+    lv_label_set_text(l_back, LV_SYMBOL_LEFT "  Back");
+    lv_obj_center(l_back);
+
+    ESP_LOGI(TAG, "network detail screen created");
+}
+
+/* Render "a.b.c.d" from a host-order address. */
+static void ip_to_str(uint32_t ip, char *buf, size_t len)
+{
+    snprintf(buf, len, "%u.%u.%u.%u",
+             (unsigned)((ip >> 24) & 0xFF), (unsigned)((ip >> 16) & 0xFF),
+             (unsigned)((ip >> 8) & 0xFF),  (unsigned)(ip & 0xFF));
+}
+
+static void detail_open(void)
+{
+    if (!s_detail_screen) detail_create();
+
+    char t[NET_SSID_MAX + 8];
+    snprintf(t, sizeof(t), LV_SYMBOL_WIFI "  %s", s_sel_ssid);
+    lv_label_set_text(s_detail_title, t);
+
+    /* Always re-mask when the screen is opened, whatever the checkbox was
+     * left at last time. */
+    lv_obj_remove_state(s_detail_show_cb, LV_STATE_CHECKED);
+    lv_label_set_text(s_detail_pass_lbl,
+                      s_detail_pass[0] ? "••••••••" : "(open network — no password)");
+
+    if (s_detail_ip.use_static) {
+        char ip[16], nm[16], gw[16], dns[16], buf[160];
+        ip_to_str(s_detail_ip.ip, ip, sizeof(ip));
+        ip_to_str(s_detail_ip.netmask, nm, sizeof(nm));
+        ip_to_str(s_detail_ip.gateway, gw, sizeof(gw));
+        ip_to_str(s_detail_ip.dns ? s_detail_ip.dns : s_detail_ip.gateway, dns, sizeof(dns));
+        snprintf(buf, sizeof(buf), "Static\n%s  mask %s\ngateway %s  DNS %s", ip, nm, gw, dns);
+        lv_label_set_text(s_detail_ip_lbl, buf);
+    } else {
+        lv_label_set_text(s_detail_ip_lbl, "Automatic (DHCP)");
+    }
+
+    s_detail_forget_armed = false;
+    lv_label_set_text(s_detail_forget_lbl, LV_SYMBOL_TRASH "  Forget Network");
+    lv_label_set_text(s_detail_status, "");
+    lv_screen_load(s_detail_screen);
+}
+
+/* ── static IP configuration ──────────────────────────────────── */
+
+/* Parse "a.b.c.d" into a host-order address. Rejects anything that isn't four
+ * 0-255 octets, so a typo can't be persisted as a valid-looking address. */
+static bool str_to_ip(const char *s, uint32_t *out)
+{
+    unsigned a, b, c, d;
+    char tail;
+    if (!s || sscanf(s, "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) != 4) return false;
+    if (a > 255 || b > 255 || c > 255 || d > 255) return false;
+    *out = ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)c << 8) | (uint32_t)d;
+    return true;
+}
+
+/* The ARP probe blocks for up to a couple of seconds. Running it straight from
+ * the button callback would freeze the whole UI for that long — the same trap
+ * the QR scanner teardown fell into — so it runs in a one-shot task and an
+ * lv_timer picks up the result. */
+static void ipcfg_probe_task(void *arg)
+{
+    (void)arg;
+    s_probe_in_use = net_mgr_ip_in_use(s_probe_ip, IPCFG_PROBE_MS);
+    s_probe_done   = true;
+    vTaskDelete(NULL);
+}
+
+static void ipcfg_set_busy(bool busy)
+{
+    if (busy) {
+        lv_obj_add_state(s_ipcfg_save_btn, LV_STATE_DISABLED);
+    } else {
+        lv_obj_remove_state(s_ipcfg_save_btn, LV_STATE_DISABLED);
+    }
+}
+
+static void ipcfg_commit(const net_ip_cfg_t *cfg)
+{
+    esp_err_t err = net_mgr_set_network_ip(s_sel_ssid, cfg);
+    if (err != ESP_OK) {
+        char m[96];
+        snprintf(m, sizeof(m), "Could not save: %s", esp_err_to_name(err));
+        lv_label_set_text(s_ipcfg_status, m);
+        ipcfg_set_busy(false);
+        return;
+    }
+    s_detail_ip = *cfg;
+    lv_label_set_text(s_ipcfg_status, "Saved — restarting to apply...");
+    ESP_LOGI(TAG, "IP config saved for '%s' — restarting", s_sel_ssid);
+    /* Addressing is applied at join time, so a restart is the honest way to
+     * put it into effect rather than tearing down a live connection. */
+    s_ipcfg_reboot_at = lv_tick_get() + 1200;
+}
+
+static void ipcfg_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+
+    if (s_ipcfg_reboot_at && lv_tick_get() >= s_ipcfg_reboot_at) {
+        esp_restart();
+    }
+
+    if (!s_probe_done) return;
+    s_probe_done = false;
+
+    if (s_probe_in_use) {
+        char m[128], ip[16];
+        ip_to_str(s_probe_ip, ip, sizeof(ip));
+        snprintf(m, sizeof(m),
+                 "%s is already in use on this network. Pick a different address.", ip);
+        lv_label_set_text(s_ipcfg_status, m);
+        ipcfg_set_busy(false);
+        return;
+    }
+
+    lv_label_set_text(s_ipcfg_status, "Address is free — saving...");
+    ipcfg_commit(&s_probe_cfg);
+}
+
+static void ipcfg_mode_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+    bool stat = (lv_dropdown_get_selected(s_ipcfg_mode_dd) == 1);
+    for (int i = 0; i < IPCFG_FIELD_COUNT; i++) {
+        if (stat) lv_obj_remove_state(s_ipcfg_ta[i], LV_STATE_DISABLED);
+        else      lv_obj_add_state(s_ipcfg_ta[i], LV_STATE_DISABLED);
+    }
+    lv_label_set_text(s_ipcfg_status, stat
+        ? "Enter the address to use on this network."
+        : "The router will assign an address automatically.");
+}
+
+static void ipcfg_ta_focus_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_FOCUSED) return;
+    lv_keyboard_set_textarea(s_ipcfg_kb, lv_event_get_target(e));
+}
+
+static void ipcfg_save_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+
+    net_ip_cfg_t cfg = { 0 };
+    cfg.use_static = (lv_dropdown_get_selected(s_ipcfg_mode_dd) == 1);
+
+    if (!cfg.use_static) {
+        lv_label_set_text(s_ipcfg_status, "Switching to DHCP — saving...");
+        ipcfg_set_busy(true);
+        ipcfg_commit(&cfg);
+        return;
+    }
+
+    static const char *names[IPCFG_FIELD_COUNT] = { "IP address", "Subnet mask",
+                                                    "Gateway", "DNS" };
+    uint32_t vals[IPCFG_FIELD_COUNT] = { 0 };
+    for (int i = 0; i < IPCFG_FIELD_COUNT; i++) {
+        const char *txt = lv_textarea_get_text(s_ipcfg_ta[i]);
+        /* DNS is the one optional field — blank means "use the gateway". */
+        if (i == 3 && (!txt || !txt[0])) continue;
+        if (!str_to_ip(txt, &vals[i])) {
+            char m[96];
+            snprintf(m, sizeof(m), "%s is not a valid address (expected a.b.c.d).", names[i]);
+            lv_label_set_text(s_ipcfg_status, m);
+            return;
+        }
+    }
+    cfg.ip = vals[0]; cfg.netmask = vals[1]; cfg.gateway = vals[2]; cfg.dns = vals[3];
+
+    if (!net_mgr_is_sta_connected()) {
+        /* Nothing to probe from — save anyway rather than blocking the user,
+         * but say plainly that the check did not happen. */
+        lv_label_set_text(s_ipcfg_status,
+                          "Not connected, so the address could not be checked. Saving anyway...");
+        ipcfg_set_busy(true);
+        ipcfg_commit(&cfg);
+        return;
+    }
+
+    s_probe_cfg = cfg;
+    s_probe_ip  = cfg.ip;
+    s_probe_done = false;
+    ipcfg_set_busy(true);
+    lv_label_set_text(s_ipcfg_status, "Checking whether that address is already in use...");
+
+    if (xTaskCreate(ipcfg_probe_task, "ip_probe", 3072, NULL, 4, NULL) != pdPASS) {
+        lv_label_set_text(s_ipcfg_status, "Could not start the address check — saving anyway...");
+        ipcfg_commit(&cfg);
+    }
+}
+
+static void ipcfg_cancel_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    detail_open();
+}
+
+static void ipcfg_create(void)
+{
+    s_ipcfg_screen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_ipcfg_screen, lv_color_hex(0x0D1B2A), 0);
+    lv_obj_set_style_pad_all(s_ipcfg_screen, 0, 0);
+
+    s_ipcfg_title = lv_label_create(s_ipcfg_screen);
+    lv_obj_set_style_text_color(s_ipcfg_title, lv_color_hex(0xCCDDEE), 0);
+    lv_obj_set_style_text_font(s_ipcfg_title, &lv_font_montserrat_16, 0);
+    lv_obj_set_pos(s_ipcfg_title, 20, 14);
+
+    lv_obj_t *mode_cap = lv_label_create(s_ipcfg_screen);
+    lv_label_set_text(mode_cap, "Addressing");
+    lv_obj_set_style_text_color(mode_cap, lv_color_hex(0x88AACC), 0);
+    lv_obj_set_style_text_font(mode_cap, &lv_font_montserrat_14, 0);
+    lv_obj_set_pos(mode_cap, 20, 48);
+
+    s_ipcfg_mode_dd = lv_dropdown_create(s_ipcfg_screen);
+    lv_dropdown_set_options(s_ipcfg_mode_dd, "Automatic (DHCP)\nStatic");
+    lv_obj_set_size(s_ipcfg_mode_dd, 260, 40);
+    lv_obj_set_pos(s_ipcfg_mode_dd, 20, 70);
+    lv_obj_add_event_cb(s_ipcfg_mode_dd, ipcfg_mode_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    static const char *caps[IPCFG_FIELD_COUNT] = { "IP address", "Subnet mask",
+                                                   "Gateway", "DNS (optional)" };
+    for (int i = 0; i < IPCFG_FIELD_COUNT; i++) {
+        int y = 124 + i * 58;
+
+        lv_obj_t *cap = lv_label_create(s_ipcfg_screen);
+        lv_label_set_text(cap, caps[i]);
+        lv_obj_set_style_text_color(cap, lv_color_hex(0x88AACC), 0);
+        lv_obj_set_style_text_font(cap, &lv_font_montserrat_14, 0);
+        lv_obj_set_pos(cap, 20, y);
+
+        s_ipcfg_ta[i] = lv_textarea_create(s_ipcfg_screen);
+        lv_textarea_set_one_line(s_ipcfg_ta[i], true);
+        lv_textarea_set_placeholder_text(s_ipcfg_ta[i], "0.0.0.0");
+        lv_obj_set_size(s_ipcfg_ta[i], 260, 40);
+        lv_obj_set_pos(s_ipcfg_ta[i], 190, y - 8);
+        lv_obj_add_event_cb(s_ipcfg_ta[i], ipcfg_ta_focus_cb, LV_EVENT_FOCUSED, NULL);
+    }
+
+    s_ipcfg_status = lv_label_create(s_ipcfg_screen);
+    lv_label_set_long_mode(s_ipcfg_status, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_ipcfg_status, 620);
+    lv_obj_set_style_text_color(s_ipcfg_status, lv_color_hex(0x88AACC), 0);
+    lv_obj_set_style_text_font(s_ipcfg_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_pos(s_ipcfg_status, 20, 360);
+
+    s_ipcfg_save_btn = lv_button_create(s_ipcfg_screen);
+    lv_obj_set_size(s_ipcfg_save_btn, 300, 48);
+    lv_obj_set_pos(s_ipcfg_save_btn, 690, 72);
+    lv_obj_add_event_cb(s_ipcfg_save_btn, ipcfg_save_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *l_save = lv_label_create(s_ipcfg_save_btn);
+    lv_label_set_text(l_save, LV_SYMBOL_OK "  Check & Save");
+    lv_obj_center(l_save);
+
+    lv_obj_t *b_cancel = lv_button_create(s_ipcfg_screen);
+    lv_obj_set_size(b_cancel, 300, 48);
+    lv_obj_set_pos(b_cancel, 690, 132);
+    lv_obj_add_event_cb(b_cancel, ipcfg_cancel_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *l_cancel = lv_label_create(b_cancel);
+    lv_label_set_text(l_cancel, LV_SYMBOL_LEFT "  Cancel");
+    lv_obj_center(l_cancel);
+
+    s_ipcfg_kb = lv_keyboard_create(s_ipcfg_screen);
+    lv_keyboard_set_mode(s_ipcfg_kb, LV_KEYBOARD_MODE_NUMBER);
+    lv_obj_set_size(s_ipcfg_kb, 1024, 190);
+    lv_obj_align(s_ipcfg_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+    if (!s_ipcfg_timer) s_ipcfg_timer = lv_timer_create(ipcfg_timer_cb, 100, NULL);
+
+    ESP_LOGI(TAG, "IP settings screen created");
+}
+
+static void ipcfg_open(void)
+{
+    if (!s_ipcfg_screen) ipcfg_create();
+
+    char t[NET_SSID_MAX + 24];
+    snprintf(t, sizeof(t), LV_SYMBOL_SETTINGS "  IP settings — %s", s_sel_ssid);
+    lv_label_set_text(s_ipcfg_title, t);
+
+    lv_dropdown_set_selected(s_ipcfg_mode_dd, s_detail_ip.use_static ? 1 : 0);
+
+    /* Pre-fill from the saved config, or failing that from the live lease, so
+     * the form starts in the right subnet instead of empty. */
+    uint32_t pre[IPCFG_FIELD_COUNT];
+    if (s_detail_ip.use_static) {
+        pre[0] = s_detail_ip.ip;      pre[1] = s_detail_ip.netmask;
+        pre[2] = s_detail_ip.gateway; pre[3] = s_detail_ip.dns;
+    } else {
+        pre[0] = net_mgr_get_sta_ip();      pre[1] = net_mgr_get_sta_netmask();
+        pre[2] = net_mgr_get_sta_gateway(); pre[3] = 0;
+    }
+    for (int i = 0; i < IPCFG_FIELD_COUNT; i++) {
+        char buf[16] = "";
+        if (pre[i]) ip_to_str(pre[i], buf, sizeof(buf));
+        lv_textarea_set_text(s_ipcfg_ta[i], buf);
+    }
+
+    bool stat = s_detail_ip.use_static;
+    for (int i = 0; i < IPCFG_FIELD_COUNT; i++) {
+        if (stat) lv_obj_remove_state(s_ipcfg_ta[i], LV_STATE_DISABLED);
+        else      lv_obj_add_state(s_ipcfg_ta[i], LV_STATE_DISABLED);
+    }
+
+    s_probe_done = false;
+    s_ipcfg_reboot_at = 0;
+    ipcfg_set_busy(false);
+    lv_keyboard_set_textarea(s_ipcfg_kb, s_ipcfg_ta[0]);
+    lv_label_set_text(s_ipcfg_status,
+        net_mgr_is_sta_connected()
+            ? "A static address is checked against the network before it is saved."
+            : "Not connected — the in-use check will be skipped.");
+    lv_screen_load(s_ipcfg_screen);
 }
 
 /* ── public entry point ───────────────────────────────────────── */
