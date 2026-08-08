@@ -188,6 +188,15 @@ static lv_obj_t *s_lbl_scope_hud;      /* SCOPE mode: pinch axis + window/gain r
 
 static lv_obj_t *s_freq_ticks[FREQ_TICK_COUNT];
 
+/* ── peak readout cursor ──────────────────────────────────────────
+ * Long-press a peak to freeze a readout of its exact frequency, level,
+ * nearest 1/3-octave band and nearest musical note. Long press rather than
+ * tap so an ordinary touch — or a pinch that happens to land on a bar —
+ * never plants a cursor by accident. */
+static bool  s_cursor_active;
+static int   s_cursor_bin;      /* FFT bin index */
+static float s_cursor_x_frac;   /* where it sits horizontally, 0..1 of the view */
+
 static float clampf_local(float v, float lo, float hi)
 {
     if (v < lo) return lo;
@@ -334,6 +343,197 @@ static void wifi_label_timer_cb(lv_timer_t *t)
 
     if (strcmp(txt, lv_label_get_text(s_lbl_wifi)) != 0)
         lv_label_set_text(s_lbl_wifi, txt);
+}
+
+/* ── peak cursor helpers ──────────────────────────────────────── */
+
+/* Nearest ISO 266 / IEC 61260 third-octave centre frequency. */
+static float nearest_third_octave(float hz)
+{
+    static const float centres[] = {
+        20, 25, 31.5f, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500,
+        630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000,
+        10000, 12500, 16000, 20000,
+    };
+    float best = centres[0], bestd = 1e9f;
+    for (size_t i = 0; i < sizeof(centres) / sizeof(centres[0]); i++) {
+        /* Compare in log space — band spacing is proportional, not linear. */
+        float d = fabsf(logf(hz / centres[i]));
+        if (d < bestd) { bestd = d; best = centres[i]; }
+    }
+    return best;
+}
+
+/* Nearest equal-tempered note name, A4 = 440 Hz, plus the cents error. */
+static void nearest_note(float hz, char *out, size_t len)
+{
+    static const char *names[12] = { "C","C#","D","D#","E","F","F#","G","G#","A","A#","B" };
+    if (hz <= 0.0f) { strlcpy(out, "-", len); return; }
+
+    float  semis = 12.0f * log2f(hz / 440.0f);      /* relative to A4 */
+    int    n     = (int)lroundf(semis);
+    float  cents = (semis - (float)n) * 100.0f;
+
+    /* A4 is MIDI 69; octave numbering rolls over at C. */
+    int midi   = n + 69;
+    int idx    = ((midi % 12) + 12) % 12;
+    int octave = midi / 12 - 1;
+
+    /* "ct" spelled out, not the ¢ sign: Montserrat has no glyph for it and it
+     * would render as a tofu box (CLAUDE.md gotcha 8). */
+    snprintf(out, len, "%s%d %+.0fct", names[idx], octave, (double)cents);
+}
+
+/* Map a horizontal fraction of the view to an FFT bin, then snap to the
+ * strongest bin nearby so a slightly-off press still lands on the peak. */
+static int bin_at_frac(float frac)
+{
+    if (s_bin_count == 0 || s_sample_rate == 0) return -1;
+
+    float bin_hz = (float)s_sample_rate / 2.0f / (float)s_bin_count;
+    if (bin_hz <= 0.0f) return -1;
+
+    int centre = (int)lroundf(x_to_freq_frac(frac) / bin_hz);
+    if (centre < 1) centre = 1;
+    if (centre >= (int)s_bin_count) centre = (int)s_bin_count - 1;
+
+    /* Search window scaled to the zoom: at full span one pixel covers many
+     * bins, zoomed in it covers a fraction of one, so a fixed bin count would
+     * be far too wide when zoomed and too narrow when not. */
+    float span_per_px = (x_to_freq_frac(1.0f) - x_to_freq_frac(0.0f)) / (float)SCREEN_W;
+    int   window      = (int)(span_per_px * 12.0f / bin_hz);
+    if (window < 2)  window = 2;
+    if (window > 64) window = 64;
+
+    int lo = centre - window, hi = centre + window;
+    if (lo < 1) lo = 1;
+    if (hi >= (int)s_bin_count) hi = (int)s_bin_count - 1;
+
+    int   best = centre;
+    float bestv = -1e9f;
+    for (int i = lo; i <= hi; i++) {
+        if (s_mag_db[i] > bestv) { bestv = s_mag_db[i]; best = i; }
+    }
+    return best;
+}
+
+/* Where a bin sits horizontally in the current (possibly zoomed) view.
+ * Returns <0 or >1 when the bin has been zoomed off-screen. */
+static float bin_to_frac(int bin)
+{
+    if (s_sample_rate == 0 || s_bin_count == 0) return -1.0f;
+    if (s_freq_view_min <= 0.0f || s_freq_view_max <= s_freq_view_min) return -1.0f;
+
+    float hz = (float)bin * ((float)s_sample_rate / 2.0f / (float)s_bin_count);
+    if (hz <= 0.0f) return -1.0f;
+    return logf(hz / s_freq_view_min) / logf(s_freq_view_max / s_freq_view_min);
+}
+
+static void spectrum_long_press_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_LONG_PRESSED) return;
+
+    /* A held pinch can also cross LVGL's long-press threshold. */
+    if (s_zoom_active) return;
+
+    /* FFT modes only — Scope plots time and VU has no frequency axis. */
+    if (s_mode == DISPLAY_MODE_SCOPE || s_mode == DISPLAY_MODE_VU) return;
+    if (!s_data_valid) return;
+
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return;
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+
+    lv_area_t a;
+    lv_obj_get_coords(lv_event_get_target(e), &a);
+    int32_t w = lv_area_get_width(&a);
+    if (w <= 0) return;
+
+    float frac = (float)(p.x - a.x1) / (float)w;
+    if (frac < 0.0f || frac > 1.0f) return;
+
+    /* Long-pressing on or near an existing cursor clears it. */
+    if (s_cursor_active && fabsf(frac - s_cursor_x_frac) * (float)w < 24.0f) {
+        s_cursor_active = false;
+        lv_obj_invalidate(s_spectrum_obj);
+        return;
+    }
+
+    if (xSemaphoreTake(s_data_mutex, pdMS_TO_TICKS(20)) != pdTRUE) return;
+    int bin = bin_at_frac(frac);
+    xSemaphoreGive(s_data_mutex);
+    if (bin < 0) return;
+
+    s_cursor_bin    = bin;
+    s_cursor_x_frac = frac;
+    s_cursor_active = true;
+    lv_obj_invalidate(s_spectrum_obj);
+}
+
+/* Vertical marker plus a readout box, drawn over the spectrum. */
+static void draw_peak_cursor(lv_layer_t *layer, const lv_area_t *oa,
+                             int32_t w, int32_t h)
+{
+    if (!s_cursor_active || s_bin_count == 0 || s_sample_rate == 0) return;
+    if (s_cursor_bin < 1 || s_cursor_bin >= (int)s_bin_count) return;
+
+    float frac = bin_to_frac(s_cursor_bin);
+    if (frac < 0.0f || frac > 1.0f) return;   /* zoomed out of view */
+    s_cursor_x_frac = frac;                   /* keep the clear-zone in step */
+
+    int32_t x = oa->x1 + (int32_t)(frac * (float)w);
+
+    lv_draw_line_dsc_t ldsc;
+    lv_draw_line_dsc_init(&ldsc);
+    ldsc.color = lv_color_hex(s_pal->peak);
+    ldsc.width = 1;
+    ldsc.p1.x = x; ldsc.p1.y = oa->y1;
+    ldsc.p2.x = x; ldsc.p2.y = oa->y1 + h;
+    lv_draw_line(layer, &ldsc);
+
+    float hz  = (float)s_cursor_bin * ((float)s_sample_rate / 2.0f / (float)s_bin_count);
+    float db  = s_mag_db[s_cursor_bin];
+    float iso = nearest_third_octave(hz);
+    char  note[16];
+    nearest_note(hz, note, sizeof(note));
+
+    char l1[40], l2[40];
+    if (hz >= 1000.0f) snprintf(l1, sizeof(l1), "%.2f kHz  %.1f dB", (double)(hz / 1000.0f), (double)db);
+    else               snprintf(l1, sizeof(l1), "%.1f Hz  %.1f dB",  (double)hz, (double)db);
+    if (iso >= 1000.0f) snprintf(l2, sizeof(l2), "band %.1fk  note %s", (double)(iso / 1000.0f), note);
+    else                snprintf(l2, sizeof(l2), "band %.0f Hz  note %s", (double)iso, note);
+
+    /* Flip the box to the other side of the line when it would run off the
+     * right edge, so a peak near 20 kHz is still readable. */
+    const int32_t bw = 190, bh = 40, gap = 6;
+    int32_t bx = (x + gap + bw <= oa->x2) ? x + gap : x - gap - bw;
+    int32_t by = oa->y1 + 8;
+
+    lv_area_t box = { bx, by, bx + bw, by + bh };
+    lv_draw_rect_dsc_t rdsc;
+    lv_draw_rect_dsc_init(&rdsc);
+    rdsc.bg_color   = lv_color_hex(s_pal->status_bar);
+    rdsc.bg_opa     = LV_OPA_90;
+    rdsc.border_color = lv_color_hex(s_pal->peak);
+    rdsc.border_width = 1;
+    rdsc.radius     = 4;
+    lv_draw_rect(layer, &rdsc, &box);
+
+    lv_draw_label_dsc_t tdsc;
+    lv_draw_label_dsc_init(&tdsc);
+    tdsc.color = lv_color_hex(s_pal->text);
+    tdsc.font  = &lv_font_montserrat_14;
+
+    lv_area_t t1 = { bx + 6, by + 3,  bx + bw - 4, by + 20 };
+    tdsc.text = l1;
+    lv_draw_label(layer, &tdsc, &t1);
+
+    lv_area_t t2 = { bx + 6, by + 21, bx + bw - 4, by + 38 };
+    tdsc.font  = &lv_font_montserrat_12;
+    tdsc.color = lv_color_hex(s_pal->info);
+    tdsc.text  = l2;
+    lv_draw_label(layer, &tdsc, &t2);
 }
 
 /* ── transient toast ──────────────────────────────────────────── */
@@ -1280,6 +1480,7 @@ static void spectrum_draw_cb(lv_event_t *e)
         draw_grid_lines(layer, &oa, w, h);
         draw_db_legend(layer, &oa, h);
     }
+    if (band_mode) draw_peak_cursor(layer, &oa, w, h);
 }
 
 /* Vertical frequency gridlines for the waterfall, drawn live ON TOP of
@@ -1535,6 +1736,7 @@ esp_err_t screen_spectrum_create(void)
     lv_obj_clear_flag(s_spectrum_obj, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_spectrum_obj, spectrum_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
     lv_obj_add_event_cb(s_spectrum_obj, spectrum_gesture_cb, LV_EVENT_GESTURE, NULL);
+    lv_obj_add_event_cb(s_spectrum_obj, spectrum_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
 
     /* VU mode big readouts (children of spectrum area, hidden by default).
      * The needle gauge pivot sits at ~72% height; the big SPL number goes
@@ -1705,6 +1907,7 @@ void screen_spectrum_set_mode(int mode)
     s_mode = (display_mode_t)mode;
     reset_view_ranges();
     update_axis_ticks();
+    s_cursor_active = false;   /* the marked peak belongs to the old view */
 
     /* reset per-mode state so stale data doesn't flash */
     for (int i = 0; i < NUM_BARS; i++) {
