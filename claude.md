@@ -48,10 +48,16 @@ pio run -e <env> -t erase                 # full chip erase (after partition cha
   the "manual override" that disables it). All gain writes happen in
   `agc_on_frame`; UI-task setters only publish state via volatile flags
 - `components/display_ui` — LVGL 9 screens: spectrum (8 display modes),
-  settings, save-as/file browsers, splash
+  settings, save-as/file browsers, splash. `screenshot.c` captures the DPI
+  scan-out framebuffer to PNG on SD — see gotcha 21
 - `components/settings_mgr` — persistence: SD `settings.json` + NVS blob
   fallback, named presets, cal files; `settings_sanitize()` clamps ALL
-  persisted input — extend it when adding settings_t fields
+  persisted input — extend it when adding settings_t fields. Also owns every
+  SD path: `settings_mgr_resolve_path()` is the single gate the web file
+  browser goes through, and directories are named by enum so a request cannot
+  express a path outside `/sdcard/spectrum`. `settings_t.active_profile` is a
+  LABEL only — a named preset is written solely by an explicit save, never by
+  the auto-save path
 - `components/net_mgr` — WiFi STA join w/ setup-AP fallback, SSID scan
   dedup, NVS creds, mDNS `spectralab-p4.local`
 - `components/web_server` — httpd: provisioning portal, cal upload,
@@ -219,3 +225,21 @@ M6 OTA (signed), M7 SD recording/CSV export, M8 CI + host-side tests.
 Software AGC (feature_suggestions.md) shipped as `components/agc`.
 See instructions.md (user guide) and README.md before editing docs.
 ```
+
+21. **Screenshots read the panel framebuffer, not LVGL.** LVGL renders through
+    a 50-line partial draw buffer (`direct_mode` and `full_refresh` both off),
+    so it never holds a full-screen image — `esp_lcd_dpi_panel_get_frame_buffer`
+    is the only source. Two traps: (a) it is live scan-out memory, so snapshot
+    it under `display_ui_lock()` and do the encode + SD write on a worker task,
+    because holding the LVGL lock across a FATFS write freezes the whole UI;
+    (b) the panel applies `mirror_x` + `mirror_y` in *hardware*
+    (`sw_rotate = false`), so the buffer is a 180-degree rotation of what is on
+    screen and a raw dump comes out upside down.
+    PNG comes from the **miniz deflate encoder resident in the ESP32-P4 ROM**
+    (`tdefl_init` / `tdefl_compress_buffer`, see
+    `components/esp_rom/esp32p4/ld/esp32p4.rom.ld`) — real compression for zero
+    flash and no third-party source. Allocate `tdefl_compressor` yourself in
+    PSRAM; the one-call `tdefl_write_image_to_png_file_in_memory_ex()` uses
+    `MZ_MALLOC`, which cannot be steered off internal RAM, and wants the whole
+    1.84 MB RGB888 image resident. Output streams to the file as successive
+    IDAT chunks (multiple IDATs are legal PNG).

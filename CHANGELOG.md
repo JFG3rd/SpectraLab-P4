@@ -1,4 +1,7 @@
 ## [Unreleased]
+
+
+## [1.3.0] - 2026-08-08
 ### Added
 - On-device saved Wi-Fi network management, reached from Wi-Fi Setup ->
   "Saved Nets": the stored networks in most-recently-used order, each tagged
@@ -19,6 +22,94 @@
   `net_mgr_ip_in_use()` and STA address getters. The saved-network blob moves
   to v2 with an explicit v1 migration, so existing credentials survive the
   upgrade instead of being silently discarded by the size check.
+
+
+- Screen capture to the SD card as PNG, triggered from a status-bar button, a
+  long press on front-panel key 2, or `POST /api/screenshot`. Files land in
+  `/sdcard/spectrum/screenshots/` as `shot-NNNN.png`, numbered past the highest
+  existing index so deleting from the middle never overwrites.
+  The image comes from the DPI scan-out framebuffer, because LVGL renders
+  through a 50-line partial draw buffer and never holds a full frame. The
+  framebuffer is snapshotted under the LVGL lock and encoded on a worker task —
+  the SD write must not happen under that lock, which has no timeout. The panel
+  applies mirror_x + mirror_y in hardware, so the buffer is a 180-degree
+  rotation of what is on screen; undoing it is folded into the RGB565 -> RGB888
+  conversion and costs nothing.
+  PNG rather than BMP because the ESP32-P4 ROM already contains miniz's
+  streaming deflate encoder, so real compression costs no flash and no
+  third-party source — and unlike BMP, the result renders in GitHub markdown.
+  Output streams to the card as successive IDAT chunks, so the encoded image
+  never has to fit in RAM.
+- Browser-based SD card file browser at `/files.html`: lists screenshots,
+  presets and calibration files with sizes, downloads any of them, and deletes
+  screenshots. Downloads stream with chunked transfer, so a full-screen PNG is
+  never buffered whole.
+  Deletion is confined to screenshots in the firmware, not just the page —
+  presets, calibration files and `settings.json` are work that cannot be
+  regenerated, whereas a capture can be retaken. Directories are named by an
+  enum keyword rather than a path, so a request cannot express a location
+  outside `/sdcard/spectrum` at all.
+- Peak readout cursor: long-press a peak in any FFT-based view to freeze its
+  exact frequency and level, the nearest 1/3-octave band, and the nearest note
+  with cents error. Long press rather than tap so a stray touch or a pinch can
+  never plant one. The position is stored as an FFT bin, so the cursor tracks
+  its peak through a pinch zoom instead of drifting, and the snap-to-peak
+  search window scales with the zoom.
+- A-weighting and microphone sensitivity controls on the Settings screen, in a
+  new SPL CALIBRATION group. Both have been computed and persisted by the DSP
+  engine since Phase 2 M2 but had no control, so the SPL readout could only be
+  calibrated by hand-editing `settings.json`. Sensitivity applies on release
+  rather than on Back, so it can be dialled in against a reference meter.
+- Named settings profiles: load any saved preset directly from the Settings
+  screen, with the active name shown in the PRESETS group.
+  A profile is a label, not a save target — ordinary edits keep auto-saving to
+  the working configuration and never write back to the named file, so a preset
+  stays the snapshot it was taken as. `settings_t.active_profile` records where
+  the live configuration came from.
+- The connected Wi-Fi network is shown in the spectrum status bar, refreshed on
+  its own timer so it keeps updating while the display is frozen.
+- Per-network static IP configuration from the browser as well as the device,
+  with the same ARP address-in-use check. Saved passwords are deliberately not
+  exposed over the portal, which is plain HTTP with no authentication.
+- The device's mDNS entry point is now visible: `http://<host>.local` and the
+  raw address appear on the Wi-Fi screen, `GET /api/status` gains `hostname`
+  and `url` fields, and the landing page renders it as a bookmarkable link.
+- `panel_button` gains a registrable long-press callback. Key 0's long press
+  stays hard-wired to the restart, since that is the last-resort recovery when
+  the camera driver wedges.
+
+### Fixed
+- Status-bar readouts were unreadable in the High Contrast theme. Five labels
+  (SPL, Peak, DSP info, ambient and USB indicators) hardcoded bright colours
+  chosen against a dark bar; on High Contrast's light `0xC8D8E8` status bar the
+  SPL readout sat at roughly 1.2:1 contrast. Root cause was that the colours
+  were written at widget-creation time and the theme switcher only ever
+  repainted the status background and the title, so nothing else could follow a
+  theme change even in principle. Every scheme now names its own status
+  accents, applied from one place.
+- The display-mode label kept the *previous* theme's text colour after a theme
+  switch — the same bug from the other direction: it was built from the palette
+  but never repainted.
+- `screen_spectrum_set_color_scheme()` recoloured "every child of the screen
+  from index 2", silently claiming anything later added to the screen. It now
+  addresses the frequency tick labels directly.
+- `display_ui.h` documented the LVGL lock as non-recursive. It is recursive
+  (`xSemaphoreTakeRecursive`); the rule that matters is never to block while
+  holding it. The old wording steered callers away from a safe pattern.
+- `net_mgr_add_network()` wiped the whole entry when re-saving a network, so
+  changing a password silently discarded that network's static IP.
+
+### Changed
+- `max_uri_handlers` raised from 16 to 24. This release adds six routes, and
+  `esp_http_server` drops anything past the limit without reporting it.
+- README: "Project Background" merged into "Why I Built This Project" and the
+  truncated sentences committed into the file restored. Display Modes now lists
+  all eight modes (Line and Persistence were missing), and the repository
+  structure and changelog references were corrected.
+- `settings_t` gains `active_profile`, so the NVS blob size check fails once and
+  resets to defaults on the first boot after upgrading (expected; see CLAUDE.md
+  gotcha 9). SD `settings.json` keeps existing keys, so a card-equipped board
+  loses nothing.
 
 
 ## [1.2.0] - 2026-08-07

@@ -91,19 +91,21 @@ Features include:
 | [Embedded Web Interface](#-embedded-web-interface) | Browser dashboard, Wi-Fi setup and calibration upload |
 | [Roadmap](#roadmap) | Planned future enhancements |
 | [Release Notes](https://github.com/JFG3rd/SpectraLab-P4/releases) | GitHub releases |
-| [Changelog](CHANGELOG.md) | Version history, once `CHANGELOG.md` is added |
+| [Changelog](CHANGELOG.md) | Version history, release-by-release |
 
 ---
 
 ## Why I Built This Project
 
-The ESP32-P4 is a remarkably capable embedded platform, yet most audio examples stop at demonstrating individual peripherals or basic FFT processing.
+This project began as a personal engineering challenge while I was undergoing treatment for acute myeloid leukemia (AML). During an extended hospital stay I wanted to continue learning, solving problems and building something real — work I could pick up and put down around treatment, and that would still be there when I came back to it.
 
-The goal is to build a complete embedded audio measurement instrument that feels like a real piece of laboratory equipment rather than a technology demonstration.
+Engineering has always been one of the ways I make sense of complex problems, and this project became an opportunity to keep learning while facing a very different kind of challenge.
+
+The ESP32-P4 is a remarkably capable embedded platform, yet most audio examples stop at demonstrating individual peripherals or basic FFT processing. What started as an exploration of the ESP32-P4 and real-time DSP gradually evolved into a much more capable audio measurement instrument. Every new feature was added with the same goal in mind: to make it behave like a real piece of laboratory equipment rather than a technology demonstration.
 
 It combines modern embedded graphics, DSP, USB Audio Class support, persistent configuration, touchscreen interaction and web-based configuration into a single standalone application.
 
-Although it began as a personal engineering project, it is released as open source so that others can learn from it, improve it and build on it.
+I am releasing the project as open source in the hope that other engineers, students, makers, and audio enthusiasts will find it useful, learn from it, and perhaps extend it in directions I never anticipated.
 
 ---
 
@@ -121,6 +123,10 @@ Although it began as a personal engineering project, it is released as open sour
 - Automatic Gain Control (AGC) with manual override
 - Noise-floor capture and subtraction
 - Presets with full runtime persistence
+- Named settings profiles
+- A-weighted SPL and mic sensitivity entry
+- Peak readout cursor — long-press a peak for exact frequency, level, band and note
+- Screenshot capture to SD card (PNG)
 - SD card configuration storage
 - Wi-Fi provisioning
 - Multiple remembered Wi-Fi networks with automatic reconnect
@@ -129,6 +135,8 @@ Although it began as a personal engineering project, it is released as open sour
 - Dark and Light themes
 - Browser-based Wi-Fi configuration
 - Browser-based microphone calibration upload
+- Browser-based SD card file browser, downloads and screenshot capture
+- Browser-based static IP configuration
 - Remote analyzer configuration
 - PlatformIO and ESP-IDF compatible
 
@@ -194,7 +202,12 @@ Every feature is evaluated against one goal:
 | Wi-Fi Provisioning | ✅ |
 | Multiple Saved Wi-Fi Networks | ✅ |
 | Saved Network Management (view / forget) | ✅ |
-| Static IP Configuration | ✅ |
+| Static IP Configuration (device + browser) | ✅ |
+| Named Settings Profiles | ✅ |
+| A-Weighting / Mic Sensitivity | ✅ |
+| Peak Readout Cursor | ✅ |
+| Screenshot Capture (PNG to SD) | ✅ |
+| SD File Browser & Download | ✅ |
 | Camera QR Wi-Fi Setup | ✅ |
 | Front-Panel Keycaps (optional) | ✅ |
 | Distributed Stereo Analyzer | 🚧 Planned for v2.0 |
@@ -242,7 +255,7 @@ Insert the SD card and reboot.
 
 # Typical Applications
 
-SpectraLab-P4 is suitable for loudspeaker development, audio amplifier analysis, AVR setup and testing, USB audio debugging, DSP development, educational demonstrations, embedded audio de[...]
+SpectraLab-P4 is suitable for loudspeaker development, audio amplifier analysis, AVR setup and testing, USB audio debugging, DSP development, educational demonstrations, embedded audio design, room acoustics and noise-floor measurement.
 
 ---
 
@@ -268,12 +281,16 @@ No recompilation required.
 
 # Display Modes
 
-- Spectrum
-- Waterfall
-- Oscilloscope
-- Mirror
-- VU Meter
-- 1/3 Octave
+Eight modes, cycled from the Settings screen or from the optional front-panel keycap:
+
+- Bars — classic bar spectrum
+- Line — filled line/area spectrum
+- 1/3 Octave — 31-band RTA
+- Persistence — phosphor-style ghost trails
+- Waterfall — scrolling spectrogram
+- Oscilloscope — raw waveform
+- VU Meter — large SPL and peak readouts
+- Mirror — bars growing from the vertical centre
 
 Most analyzer views support two-finger pinch zoom for frequency span and display range.
 
@@ -311,21 +328,27 @@ The firmware is intentionally organized into independent components including au
 
 ```text
 components/
-    audio_source/
-    dsp_engine/
-    agc/
-    display_ui/
-    settings_mgr/
-    net_mgr/
-    web_server/
+    audio_source/     ES8311 I2S + USB UAC1 host, hot-swap
+    dsp_engine/       FFT, windows, averaging, SPL, noise floor, calibration
+    agc/              software automatic gain control
+    display_ui/       LVGL 9 screens, screenshot capture
+    settings_mgr/     SD + NVS persistence, presets, file listing
+    net_mgr/          Wi-Fi join, setup AP, static IP, mDNS
+    web_server/       HTTP portal, REST API, file browser
+    qr_scan/          MIPI-CSI capture + QR decode for Wi-Fi provisioning
+    panel_button/     optional Grove-Mech Keycaps
 
 Docu/
     images/
-    UserGuide.md
 
-web/
-include/
+web/                  browser assets (baked into web_server by tools/)
+tools/
 src/
+
+UserGuide.md
+hardware-setup.md
+CHANGELOG.md
+ROADMAP.md
 ```
 
 ---
@@ -354,7 +377,7 @@ src/
 
 Operate two ESP32-P4 analyzers as a synchronized pair.
 
-Planned features include Primary / Secondary operating modes, stereo channel split, low latency PCM streaming, preset synchronization, automatic pairing, shared configuration and synchronized dis[...]
+Planned features include Primary / Secondary operating modes, stereo channel split, low latency PCM streaming, preset synchronization, automatic pairing, shared configuration and synchronized displays.
 
 ## Future Development
 
@@ -369,18 +392,6 @@ If you build the project, I would enjoy hearing about it.
 Bug reports, suggestions and pull requests are welcome.
 
 If the project proves useful, please consider giving it a ⭐ on GitHub to help others discover it.
-
----
-
-## Project Background
-
-This project began as a personal engineering challenge while I was undergoing treatment for acute myeloid leukemia (AML). During an extended hospital stay I wanted to continue learning, solving p[...]
-
-Engineering has always been one of the ways I make sense of complex problems, and this project became an opportunity to keep learning while facing a very different kind of challenge.
-
-What started as an exploration of the ESP32-P4 and real-time DSP gradually evolved into a much more capable audio measurement instrument. Every new feature was added with the same goal in mind: t[...]
-
-I am releasing the project as open source in the hope that other engineers, students, makers, and audio enthusiasts will find it useful, learn from it, and perhaps extend it in directions I never[...]
 
 ---
 

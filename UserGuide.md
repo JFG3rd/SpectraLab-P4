@@ -1,10 +1,11 @@
 # SpectraLab-P4 User Guide
 
-This is the operator-facing guide for SpectraLab-P4 (v1.2.0). It focuses
+This is the operator-facing guide for SpectraLab-P4 (v1.3.0). It focuses
 on how to use the current firmware, with extra detail on the newest user-visible
-functionality: camera QR Wi-Fi provisioning (now working on both board
-revisions), the optional front-panel keycaps, USB mono policy selection, richer
-preset persistence, pinch zoom, the improved Scope mode, and the web workflow.
+functionality: screenshot capture and the SD file browser, the peak readout
+cursor, SPL calibration controls, settings profiles, camera QR Wi-Fi
+provisioning, the optional front-panel keycaps, USB mono policy selection,
+richer preset persistence, pinch zoom, Scope mode, and the web workflow.
 
 ## Related Documents
 
@@ -34,6 +35,13 @@ The most important functional additions are:
 14. A QR scan that finds nothing gives up after 45 seconds instead of holding the camera open indefinitely.
 15. Saved Wi-Fi networks can now be viewed, edited and deleted on-device, including a per-network static IP option with an address-in-use check. See section 13.
 16. Optional front-panel keycaps with RGB status LEDs: one cycles the colour theme (and aborts a QR scan while one is running, or restarts the board on a 2 s hold), the other cycles the spectrum display mode. Each LED shows the colour its key currently selects. See section 12.
+17. The connected Wi-Fi network is now shown in the status bar, and every status-bar readout follows the colour theme — previously several were fixed bright colours that were unreadable in High Contrast.
+18. Screenshots can be captured to the SD card as PNG, from the status bar, a long press on keycap 2, or the browser. See section 14.
+19. A browser-based SD card file browser lists what the analyzer has written, downloads any of it, and deletes screenshots. See section 14.
+20. Long-pressing a peak now freezes an exact frequency / level / band / note readout. See section 15.
+21. A-weighting and microphone sensitivity now have controls on the Settings screen. Both were previously only reachable by editing settings.json. See section 7.
+22. Saved presets can be selected as a settings profile directly from the Settings screen. See section 16.
+23. Static IP can now also be configured from the browser, and the device's `.local` address is shown on the Wi-Fi screen.
 
 If you only remember one thing: the analyzer now preserves more of its real
 runtime state, and the display is much more interactive.
@@ -307,6 +315,36 @@ Both readouts sit at the end of the DSP chain, so several settings move them:
   changes both numbers — usually for the better.
 - **Averaging mode** determines whether you see instantaneous or smoothed
   values, as described above.
+- **Microphone sensitivity** (Settings > SPL CALIBRATION) shifts the `SPL`
+  reading directly and is the single most important number for absolute
+  accuracy. See below.
+- **A-weighting** (same group) changes `SPL` only, and only for content away
+  from 1 kHz.
+
+### SPL Calibration Controls
+
+Both controls live in the **SPL CALIBRATION** group at the bottom of the left
+column on the Settings screen. Scroll down if you do not see it.
+
+**Mic Sensitivity** is the figure from your microphone's datasheet, in dBV/Pa.
+Most MEMS capsules are around −38 dBV/Pa, which is the default; measurement
+microphones and studio condensers are typically in the −40 to −25 range. The
+value applies as soon as you release the slider, so the intended workflow is to
+put a reference sound level meter next to the analyzer and slide until the two
+`SPL` readings agree. Getting this right is what makes the absolute number
+meaningful — without it, `SPL` is a consistent relative measure but not a
+calibrated one.
+
+**Weighting** switches between:
+
+- **Off (Z)** — unweighted, flat. Use this for technical work where you want
+  what the microphone actually heard.
+- **On (A)** — IEC 61672 A-weighting, which rolls off the low and high ends to
+  approximate how human hearing responds at moderate levels. Use this for
+  environmental and noise measurements, and whenever you need to compare
+  against a figure quoted in dB(A).
+
+Weighting affects only the `SPL` number, never the spectrum display or `Peak`.
 
 ### Typical Uses
 
@@ -440,16 +478,19 @@ The built-in web interface still provides the same main workflows, but there are
 two important differences now: error handling is cleaner, and write endpoints
 are intentionally rate-limited.
 
-Once the analyzer joins Wi-Fi, it advertises `http://spectralab-p4.local/`
-via mDNS. If your network does not resolve mDNS, use the DHCP address shown by
-your router instead.
+Once the analyzer joins Wi-Fi, it advertises a per-device mDNS name of the
+form `http://spectralab-p4-xxxx.local/`, where `xxxx` comes from the board's
+MAC address so several units on one network do not collide. The exact address
+is shown on the device's own Wi-Fi screen, along with the current IP — so you
+never have to guess it. If your network does not resolve mDNS, use the IP.
 
 ### Main Pages
 
 - `/` - landing page
-- `/wifi-setup.html` - provisioning UI
+- `/wifi-setup.html` - provisioning UI, plus per-network IP configuration
 - `/cal-upload.html` - calibration upload UI
-- `/api/status` - JSON status
+- `/files.html` - SD card browser, downloads and screenshot capture
+- `/api/status` - JSON status (now includes the device's mDNS hostname and URL)
 
 ### WiFi Provisioning
 
@@ -533,7 +574,7 @@ warning there about powering them from 3V3 rather than 5V.
 | Key | Single click | Hold 2 seconds |
 |-----|--------------|----------------|
 | **1** | During a scan: abort it. Otherwise: next colour theme | Restart the board |
-| **2** | Step to the next spectrum display mode | — |
+| **2** | Step to the next spectrum display mode | Capture a screenshot to the SD card |
 
 Key 1 does double duty. While the camera is live it is the only working
 input, so it aborts the scan. At any other time it steps through the seven
@@ -541,7 +582,12 @@ colour themes.
 
 Key 2 walks through all eight display modes in order and wraps around at the
 end. Both choices are saved, and the matching Settings dropdown updates so
-the two never disagree.
+the two never disagree. Holding key 2 captures a screenshot instead — see
+section 14.
+
+Key 1's hold is reserved for the restart and cannot be reassigned: it is the
+last-resort recovery when the camera driver wedges and nothing on screen
+responds.
 
 Each key needs its own pair of pins. Wiring two switches to the same GPIO
 does no harm but is pointless — the firmware would see one signal and could
@@ -632,13 +678,139 @@ the network. It comes back on the new address a few seconds later.
 If the analyzer is not currently connected there is nothing to probe from. It
 says so and saves anyway rather than blocking you.
 
+### Configuring it from the browser instead
+
+The same per-network addressing is available under **IP Configuration** on
+`/wifi-setup.html`, with the same ARP check before saving and the same restart
+afterwards. The form pre-fills from the current lease, so the subnet is already
+correct.
+
+Saved passwords are deliberately *not* shown in the browser. The portal is
+plain HTTP with no login, so anything on your network could read them. The
+reveal toggle exists only on the device itself, where seeing it requires
+standing in front of the analyzer.
+
 ### Getting back if a static address goes wrong
 
 A wrong static address means the analyzer joins the Wi-Fi but is unreachable.
 It is still fully usable from the touchscreen: go to **Saved Nets**, open the
 network, **IP Settings**, and switch back to **Automatic (DHCP)**.
 
-## 14. Practical Measurement Workflows
+## 14. Screenshots and the SD Card File Browser
+
+### Taking a screenshot
+
+The analyzer can capture exactly what is on screen to the SD card as a PNG.
+There are three ways to trigger it:
+
+- The small image button in the lower-right of the status bar.
+- A long press on front-panel keycap 2, if you have fitted it. A short press
+  still cycles the display mode.
+- The **Take Screenshot** button on the browser's file page, or a
+  `POST /api/screenshot` request.
+
+Captures land in `/sdcard/spectrum/screenshots/` as `shot-0001.png`,
+`shot-0002.png` and so on. The number always continues past the highest one
+already there, so deleting from the middle never causes an overwrite.
+
+A brief message at the bottom of the screen confirms the filename. Note that
+the message appears when the capture *starts*: the image is snapshotted
+instantly, then compressed and written in the background, which takes roughly a
+second. The display keeps running normally throughout — capturing never freezes
+the analyzer.
+
+A screenshot is a full 1024x600 image and typically lands between 100 and
+400 KB depending on how busy the display is.
+
+If there is no SD card, the button says so rather than failing silently.
+
+### Browsing and downloading
+
+Open `http://<your-analyzer>.local/files.html`, or follow **SD Card Files &
+Screenshots** from the browser home page. The page lists three groups:
+
+- **Screenshots** - your captures, with download and delete.
+- **Presets & settings** - `settings.json`, saved presets and their noise-floor
+  sidecars. Download only.
+- **Microphone calibration** - files in `cal/`. Download only.
+
+Downloads keep their original filename and stream directly from the card.
+
+### Deleting
+
+Only screenshots can be deleted. Presets, calibration files and `settings.json`
+represent work you cannot regenerate, so the analyzer refuses to delete them —
+not just in the page, but in the firmware, so no crafted request can reach them
+either. A screenshot you can always retake.
+
+Deleting a single screenshot takes two clicks: the first arms the button and
+changes its label, the second does it. **Delete All Screenshots** asks for
+confirmation.
+
+To remove anything else, take the card out and use a computer.
+
+## 15. The Peak Readout Cursor
+
+Bars tell you the shape of a spectrum; they do not tell you that the hum is at
+99.6 Hz rather than 100 Hz. The cursor is for when you need the number.
+
+**Press and hold on a peak** in any FFT-based view (Bars, Line, 1/3 Octave,
+Persistence or Mirror). A vertical marker appears with a readout box showing:
+
+- the exact frequency and level of that bin
+- the nearest 1/3-octave band centre
+- the nearest musical note, with the error in cents
+
+The press snaps to the strongest bin near where you touched, so you do not have
+to hit a one-pixel peak exactly.
+
+**Press and hold on or near the cursor to remove it.** It also clears when you
+change display mode, because the marked peak belongs to the view it was placed
+in.
+
+A deliberate hold is required rather than a tap so that ordinary touches and
+pinch gestures never leave a cursor behind by accident.
+
+The cursor tracks its peak through a pinch zoom rather than staying at a fixed
+screen position, and hides itself if you zoom past it.
+
+Useful for: identifying mains hum and its harmonics (50/60 Hz and multiples),
+finding room modes, checking a crossover point, and confirming an instrument's
+tuning.
+
+## 16. Settings Profiles
+
+A **profile** is simply a saved preset that the analyzer remembers as the one
+your current settings came from. The **SETTINGS PROFILE** group at the bottom
+of the Settings screen's left column lets you load any saved preset directly,
+without going through the file browser. The active name is also shown next to
+the SD status in the PRESETS group.
+
+**The important detail:** loading a profile does not make it a live save
+target. Everything you change afterwards is still saved automatically and still
+survives a reboot — but it is written to the analyzer's working configuration,
+**not** back to the named preset. `Quiet Room` stays exactly as you saved it
+until you deliberately save over it with **PRESETS > Save**.
+
+This is on purpose. A preset is a snapshot you took because that state was
+worth keeping; it would be unhelpful if nudging the brightness quietly rewrote
+it.
+
+So the workflow is:
+
+1. Set the analyzer up the way you want it.
+2. **PRESETS > Save**, give it a name. That name becomes the active profile.
+3. Work normally. Changes persist, the preset does not move.
+4. To update the preset, save over it again with the same name.
+5. To go back to how it was, select it in **Load Profile**.
+
+Loading a profile also restores its captured noise-floor baseline, exactly as
+loading from the file browser does.
+
+If a preset is deleted or renamed elsewhere, the profile name clears itself the
+next time you open Settings rather than pointing at something that is gone.
+
+## 17. Practical Measurement Workflows
 
 ### Stereo Program Material Through UCA222
 
@@ -663,7 +835,7 @@ network, **IP Settings**, and switch back to **Automatic (DHCP)**.
 3. Save a preset.
 4. The preset now carries both the visible settings and the captured baseline.
 
-## 15. Troubleshooting
+## 18. Troubleshooting
 
 ### The Scope Trace Is Too Small or Seems Missing
 
@@ -702,17 +874,25 @@ Wait briefly and retry. It means the request was too close to the previous write
 - Use short shielded RCA cables.
 - Try a line isolation transformer if needed.
 
-## 16. Files You May See on SD Card
+## 19. Files You May See on SD Card
 
 - `settings.json` - last live settings snapshot
 - `<preset>.json` - named preset config
 - `<preset>.nfbin` - captured noise-floor sidecar for that preset
 - `cal/<file>` - calibration files
+- `screenshots/shot-NNNN.png` - screen captures
 
-## 17. Recommended Habits
+All of these live under `/sdcard/spectrum/`, and all are visible in the
+browser's file page.
+
+## 20. Recommended Habits
 
 - Use `Average L+R` for normal stereo USB program feeds.
 - Save presets after capturing a good static noise floor if repeatability matters.
 - Treat pinch zoom as an investigation tool, not a stored calibration.
 - If Scope looks confusing, reset it by leaving the mode and returning.
 - If the web UI appears to reject rapid writes, slow down rather than retry-spamming.
+- Enter your microphone's sensitivity before trusting any absolute SPL number.
+- Save a preset before a big configuration experiment, so there is a way back.
+- Take a screenshot when a measurement looks interesting; it is cheaper than
+  reproducing the conditions later.

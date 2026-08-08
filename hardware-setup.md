@@ -13,11 +13,16 @@ instead, which makes key 1 the only input that still works.
 | Key | Single click | Hold 2 s |
 |-----|--------------|----------|
 | **1** — abort | Abort the QR scan, return to the network list | Restart the board |
-| **2** — mode  | Step to the next spectrum display mode | — |
+| **2** — mode  | Step to the next spectrum display mode | Capture a screenshot to the SD card |
 
 Key 2 cycles all eight display modes (Bars, Line, 1/3 Octave, Persistence,
 Waterfall, Scope, VU, Mirror) and wraps. The choice is saved, and the
-Settings screen's Display Mode dropdown follows along.
+Settings screen's Display Mode dropdown follows along. Holding key 2 writes a
+PNG of the current screen to `/sdcard/spectrum/screenshots/`.
+
+Key 1's hold is fixed at "restart" and cannot be reassigned — it is the
+last-resort recovery when the camera driver wedges and the touchscreen is
+unresponsive. Key 2's hold is free, which is why the screenshot went there.
 
 ### Parts
 
