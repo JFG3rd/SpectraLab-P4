@@ -29,6 +29,7 @@
 #include "lvgl.h"
 #include "src/indev/lv_indev_private.h"
 #include "dsp_engine.h"
+#include "net_mgr.h"
 #include "screen_spectrum.h"
 #include "screen_settings.h"
 
@@ -51,6 +52,12 @@ static const char *TAG = "scr_spectrum";
 #define FREQ_ZOOM_MAX 20000.0f
 #define DB_ZOOM_MAX        0.0f
 
+/* Status row 2 free band: the DSP info line ends near x310 and the USB-mic
+ * indicator's text starts near x600. The SSID lives between them. */
+#define STATUS_WIFI_X    320
+#define STATUS_WIFI_W    270
+#define STATUS_WIFI_MS  1000   /* SSID poll period */
+
 /* ── oscilloscope view ────────────────────────────────────────────
  * WAVE_N: waveform ring buffer length (PSRAM, alloc'd in create()).
  * At 48 kHz the buffer holds ~341 ms; the visible window is
@@ -61,26 +68,44 @@ static const char *TAG = "scr_spectrum";
 #define SCOPE_GAIN_MIN   0.25f
 #define SCOPE_GAIN_MAX 512.0f
 
-/* ── colour palettes ──────────────────────────────────────────── */
+/* ── colour palettes ──────────────────────────────────────────────
+ * The status-line accents (spl/peak/info/alert/net) exist because the
+ * status labels used to hardcode bright colours that were picked against
+ * a dark bar. HIGH CONTRAST is the one light scheme, and on its 0xC8D8E8
+ * bar the old 0x00FF88 SPL readout sat at roughly 1.2:1 contrast — legible
+ * nowhere. Every scheme now names its own accents; keep new ones readable
+ * against that scheme's own status_bar, not against black. */
 typedef struct {
     uint32_t bg, grid, status_bar, text, bar_lo, bar_mid, bar_hi, max_hold;
+    uint32_t spl;      /* SPL readout (row 1)                       */
+    uint32_t peak;     /* Peak readout (row 1)                      */
+    uint32_t info;     /* DSP config + FPS line (row 2)             */
+    uint32_t alert;    /* ambient-NF / USB-mic indicators (row 2)   */
+    uint32_t net;      /* Wi-Fi SSID (row 2)                        */
 } color_palette_t;
 
 static const color_palette_t s_palettes[] = {
     /* DARK (default) */
-    { 0x080C18, 0x1E2D3D, 0x111928, 0xBBCCDD, 0x00CC55, 0xFFAA00, 0xFF3333, 0xFFFFFF },
+    { 0x080C18, 0x1E2D3D, 0x111928, 0xBBCCDD, 0x00CC55, 0xFFAA00, 0xFF3333, 0xFFFFFF,
+      0x00FF88, 0xFFAA00, 0x7799BB, 0x00DDFF, 0x88BBEE },
     /* CLASSIC — green phosphor */
-    { 0x000000, 0x1A2A1A, 0x0A0F0A, 0x44FF44, 0x00BB00, 0x00EE44, 0x00FF00, 0xFFFFFF },
-    /* HIGH CONTRAST — light background: max-hold must be dark, not white */
-    { 0xE8EEF4, 0xA0B8CC, 0xC8D8E8, 0x102030, 0x0066CC, 0xDD6600, 0xCC0000, 0x000000 },
+    { 0x000000, 0x1A2A1A, 0x0A0F0A, 0x44FF44, 0x00BB00, 0x00EE44, 0x00FF00, 0xFFFFFF,
+      0x66FF66, 0xCCFF66, 0x339933, 0x99FF99, 0x66DD66 },
+    /* HIGH CONTRAST — light background: accents must be dark, not bright */
+    { 0xE8EEF4, 0xA0B8CC, 0xC8D8E8, 0x102030, 0x0066CC, 0xDD6600, 0xCC0000, 0x000000,
+      0x006644, 0xAA4400, 0x334455, 0x004466, 0x113366 },
     /* AMBER — warm amber phosphor CRT */
-    { 0x100800, 0x2A1800, 0x180C00, 0xFFCC44, 0xCC6600, 0xFF9900, 0xFFCC00, 0xFFFFFF },
+    { 0x100800, 0x2A1800, 0x180C00, 0xFFCC44, 0xCC6600, 0xFF9900, 0xFFCC00, 0xFFFFFF,
+      0xFFDD66, 0xFF9933, 0xAA7722, 0xFFBB55, 0xDDAA44 },
     /* BLUE NEON — electric blue on near-black */
-    { 0x00080F, 0x001830, 0x000C1E, 0x66CCFF, 0x0055BB, 0x0099EE, 0x00CCFF, 0xFFFFFF },
+    { 0x00080F, 0x001830, 0x000C1E, 0x66CCFF, 0x0055BB, 0x0099EE, 0x00CCFF, 0xFFFFFF,
+      0x33FFDD, 0x66CCFF, 0x4477AA, 0x00DDFF, 0x88CCFF },
     /* MATRIX — deep green on black */
-    { 0x000800, 0x001800, 0x000C00, 0x33FF33, 0x006600, 0x009900, 0x00FF00, 0xFFFFFF },
+    { 0x000800, 0x001800, 0x000C00, 0x33FF33, 0x006600, 0x009900, 0x00FF00, 0xFFFFFF,
+      0x66FF33, 0xCCFF33, 0x228822, 0x99FF66, 0x55DD33 },
     /* RED NEON — hot red on near-black */
-    { 0x0F0004, 0x30000A, 0x1E0006, 0xFF6688, 0x990022, 0xDD1133, 0xFF3355, 0xFFFFFF },
+    { 0x0F0004, 0x30000A, 0x1E0006, 0xFF6688, 0x990022, 0xDD1133, 0xFF3355, 0xFFFFFF,
+      0xFF88AA, 0xFFAA66, 0xAA4455, 0xFF99BB, 0xEE7799 },
 };
 static const color_palette_t *s_pal = &s_palettes[0];  /* active palette */
 
@@ -138,6 +163,8 @@ static lv_obj_t *s_lbl_dsp_info;
 static lv_obj_t *s_lbl_mode;            /* display-mode title, top-right under the gear */
 static lv_obj_t *s_lbl_ambient_status;
 static lv_obj_t *s_lbl_source_status;   /* "USB MIC" when the UAC1 mic is live */
+static lv_obj_t *s_lbl_wifi;            /* active SSID / AP name, row 2 centre  */
+static lv_obj_t *s_lbl_title;           /* "SPECTRALAB-P4", row 1 left          */
 
 /* Display-mode names, indexed by display_mode_t — matches the settings
  * dropdown labels (screen_settings.c disp_mode_opts). */
@@ -262,6 +289,48 @@ static void update_mode_label(void)
     int m = (int)s_mode;
     if (m < 0 || m >= (int)(sizeof(g_mode_names) / sizeof(g_mode_names[0]))) m = 0;
     lv_label_set_text(s_lbl_mode, g_mode_names[m]);
+}
+
+/* Repaint every themed label in the status bar.
+ *
+ * Called from screen_spectrum_create() and from
+ * screen_spectrum_set_color_scheme(); it is the only place status-line text
+ * colours are set. Before this existed the accents were hardcoded at create
+ * time, so switching to HIGH CONTRAST left bright-on-light text, and
+ * s_lbl_mode kept whichever theme's colour happened to be active when the
+ * screen was built. */
+static void apply_status_colors(void)
+{
+    if (s_lbl_title)          lv_obj_set_style_text_color(s_lbl_title,          lv_color_hex(s_pal->text),  0);
+    if (s_lbl_mode)           lv_obj_set_style_text_color(s_lbl_mode,           lv_color_hex(s_pal->text),  0);
+    if (s_lbl_spl)            lv_obj_set_style_text_color(s_lbl_spl,            lv_color_hex(s_pal->spl),   0);
+    if (s_lbl_peak)           lv_obj_set_style_text_color(s_lbl_peak,           lv_color_hex(s_pal->peak),  0);
+    if (s_lbl_dsp_info)       lv_obj_set_style_text_color(s_lbl_dsp_info,       lv_color_hex(s_pal->info),  0);
+    if (s_lbl_ambient_status) lv_obj_set_style_text_color(s_lbl_ambient_status, lv_color_hex(s_pal->alert), 0);
+    if (s_lbl_source_status)  lv_obj_set_style_text_color(s_lbl_source_status,  lv_color_hex(s_pal->alert), 0);
+    if (s_lbl_wifi)           lv_obj_set_style_text_color(s_lbl_wifi,           lv_color_hex(s_pal->net),   0);
+}
+
+/* Refresh the SSID label. Runs on its own lv_timer rather than out of
+ * screen_spectrum_update(), which early-returns while the display is frozen
+ * or when no DSP frame is pending — the network state changes regardless. */
+static void wifi_label_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_lbl_wifi == NULL) return;
+
+    char txt[NET_SSID_MAX + 16];
+    char ssid[NET_SSID_MAX];
+
+    switch (net_mgr_get_link_state(ssid, sizeof(ssid))) {
+    case NET_LINK_STA_UP:   snprintf(txt, sizeof(txt), LV_SYMBOL_WIFI " %s", ssid);        break;
+    case NET_LINK_JOINING:  snprintf(txt, sizeof(txt), LV_SYMBOL_WIFI " joining %s...", ssid); break;
+    case NET_LINK_AP_UP:    snprintf(txt, sizeof(txt), LV_SYMBOL_WIFI " AP %s", ssid);     break;
+    default:                txt[0] = '\0';                                                 break;
+    }
+
+    if (strcmp(txt, lv_label_get_text(s_lbl_wifi)) != 0)
+        lv_label_set_text(s_lbl_wifi, txt);
 }
 
 static void apply_zoom_axis(zoom_axis_t axis, float scale, lv_point_t center)
@@ -1267,21 +1336,18 @@ esp_err_t screen_spectrum_create(void)
     /* Status bar row 1 (y≈7-33): title / SPL / peak on left+center,
      * four buttons (RST MX PK ⚙) top-right-aligned so they stay in the
      * upper half of the 70 px bar and never bleed into the DSP info row. */
-    lv_obj_t *title = lv_label_create(status);
-    lv_label_set_text(title, "SPECTRALAB-P4");
-    lv_obj_set_style_text_color(title, lv_color_hex(s_pal->text), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 4, 9);
+    s_lbl_title = lv_label_create(status);
+    lv_label_set_text(s_lbl_title, "SPECTRALAB-P4");
+    lv_obj_set_style_text_font(s_lbl_title, &lv_font_montserrat_16, 0);
+    lv_obj_align(s_lbl_title, LV_ALIGN_TOP_LEFT, 4, 9);
 
     s_lbl_spl = lv_label_create(status);
     lv_label_set_text(s_lbl_spl, "SPL: --- dB");
-    lv_obj_set_style_text_color(s_lbl_spl, lv_color_hex(0x00FF88), 0);
     lv_obj_set_style_text_font(s_lbl_spl, &lv_font_montserrat_16, 0);
     lv_obj_align(s_lbl_spl, LV_ALIGN_TOP_LEFT, 230, 9);
 
     s_lbl_peak = lv_label_create(status);
     lv_label_set_text(s_lbl_peak, "Peak: --- dBFS");
-    lv_obj_set_style_text_color(s_lbl_peak, lv_color_hex(0xFFAA00), 0);
     lv_obj_set_style_text_font(s_lbl_peak, &lv_font_montserrat_16, 0);
     lv_obj_align(s_lbl_peak, LV_ALIGN_TOP_LEFT, 410, 9);
 
@@ -1361,7 +1427,6 @@ esp_err_t screen_spectrum_create(void)
     /* Display-mode title — second line of the status bar, right-aligned
      * under the gear (right edge tracks the gear's -2 inset) */
     s_lbl_mode = lv_label_create(status);
-    lv_obj_set_style_text_color(s_lbl_mode, lv_color_hex(s_pal->text), 0);
     lv_obj_set_style_text_font(s_lbl_mode, &lv_font_montserrat_14, 0);
     lv_obj_align(s_lbl_mode, LV_ALIGN_BOTTOM_RIGHT, -4, -2);
     update_mode_label();
@@ -1369,14 +1434,22 @@ esp_err_t screen_spectrum_create(void)
     /* DSP info row — second line of status bar showing active config */
     s_lbl_dsp_info = lv_label_create(status);
     lv_label_set_text(s_lbl_dsp_info, "FFT:4096 | Hann | Exp | 50% OVL | 6dB");
-    lv_obj_set_style_text_color(s_lbl_dsp_info, lv_color_hex(0x7799BB), 0);
     lv_obj_set_style_text_font(s_lbl_dsp_info, &lv_font_montserrat_12, 0);
     lv_obj_align(s_lbl_dsp_info, LV_ALIGN_BOTTOM_LEFT, 4, -2);
+
+    /* Wi-Fi SSID — row 2, in the gap between the DSP info line (ends ≈ x310)
+     * and the USB-mic indicator (starts ≈ x600). Width-capped with an
+     * ellipsis so a 32-char SSID cannot run into either neighbour. */
+    s_lbl_wifi = lv_label_create(status);
+    lv_label_set_text(s_lbl_wifi, "");
+    lv_obj_set_style_text_font(s_lbl_wifi, &lv_font_montserrat_12, 0);
+    lv_obj_set_width(s_lbl_wifi, STATUS_WIFI_W);
+    lv_label_set_long_mode(s_lbl_wifi, LV_LABEL_LONG_DOT);
+    lv_obj_align(s_lbl_wifi, LV_ALIGN_BOTTOM_LEFT, STATUS_WIFI_X, -2);
 
     /* Live ambient noise indicator — shown right-aligned in the DSP info row */
     s_lbl_ambient_status = lv_label_create(status);
     lv_label_set_text(s_lbl_ambient_status, "");  /* hidden until active */
-    lv_obj_set_style_text_color(s_lbl_ambient_status, lv_color_hex(0x00DDFF), 0);
     lv_obj_set_style_text_font(s_lbl_ambient_status, &lv_font_montserrat_12, 0);
     lv_obj_align(s_lbl_ambient_status, LV_ALIGN_BOTTOM_RIGHT, -200, -2);
 
@@ -1384,9 +1457,10 @@ esp_err_t screen_spectrum_create(void)
      * USB microphone takes over from the onboard I2S codec */
     s_lbl_source_status = lv_label_create(status);
     lv_label_set_text(s_lbl_source_status, "");
-    lv_obj_set_style_text_color(s_lbl_source_status, lv_color_hex(0xFFAA00), 0);
     lv_obj_set_style_text_font(s_lbl_source_status, &lv_font_montserrat_12, 0);
     lv_obj_align(s_lbl_source_status, LV_ALIGN_BOTTOM_RIGHT, -340, -2);
+
+    apply_status_colors();   /* single source of truth for every label colour */
 
     /* ── spectrum area (custom draw) ── */
     s_spectrum_obj = lv_obj_create(s_screen);
@@ -1453,6 +1527,10 @@ esp_err_t screen_spectrum_create(void)
         s_freq_ticks[i] = lbl;
     }
     update_axis_ticks();
+
+    /* Own timer so the SSID keeps updating while the display is frozen. */
+    lv_timer_create(wifi_label_timer_cb, STATUS_WIFI_MS, NULL);
+    wifi_label_timer_cb(NULL);
 
     ESP_LOGI(TAG, "spectrum screen created");
     return ESP_OK;
@@ -1651,11 +1729,7 @@ void screen_spectrum_set_color_scheme(color_scheme_t scheme)
     lv_obj_t *status = lv_obj_get_child(s_screen, 0);
     if (status) lv_obj_set_style_bg_color(status, lv_color_hex(s_pal->status_bar), 0);
 
-    /* Title label (first child of status bar) */
-    if (status) {
-        lv_obj_t *title = lv_obj_get_child(status, 0);
-        if (title) lv_obj_set_style_text_color(title, lv_color_hex(s_pal->text), 0);
-    }
+    apply_status_colors();
 
     /* Frequency axis labels — direct children of s_screen at index 2+
      * (0 = status bar, 1 = spectrum_obj, 2..N = freq tick labels) */

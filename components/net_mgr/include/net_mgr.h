@@ -28,6 +28,23 @@ extern "C" {
 esp_err_t net_mgr_init(void);            /* non-fatal if the C6/hosted link is absent */
 bool      net_mgr_is_sta_connected(void);
 
+/* Machine-readable link state, for callers that need to render their own
+ * string (the spectrum status bar) rather than the one-liner below.
+ * `ssid_out` receives the station SSID when joining or joined, the setup-AP
+ * SSID in AP mode, and "" when off; it may be NULL. */
+typedef enum {
+    NET_LINK_OFF = 0,
+    NET_LINK_JOINING,
+    NET_LINK_STA_UP,
+    NET_LINK_AP_UP,
+} net_link_state_t;
+net_link_state_t net_mgr_get_link_state(char *ssid_out, size_t ssid_len);
+
+/* Per-device mDNS hostname without the ".local" suffix, e.g.
+ * "spectralab-p4-1a2b". Always valid after net_mgr_init(); the name is
+ * derived from the eFuse MAC, so it does not depend on being connected. */
+const char *net_mgr_get_mdns_host(void);
+
 /* Human-readable one-liner for the settings screen, e.g.
  * "AP SpectraLab-P4-1A2B pw SA-89ABCDEF 192.168.4.1"
  * "WiFi: MyNetwork 192.168.1.57  (2 saved)"  /  "WiFi: off" */

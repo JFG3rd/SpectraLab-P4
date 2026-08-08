@@ -857,6 +857,29 @@ bool net_mgr_is_sta_connected(void)
     return s_state == NET_STA_UP;
 }
 
+net_link_state_t net_mgr_get_link_state(char *ssid_out, size_t ssid_len)
+{
+    if (ssid_out && ssid_len) {
+        /* AP mode reports the setup-AP name: that is the network the user is
+         * actually attached to at that moment, and the one printed on screen. */
+        const char *s = (s_state == NET_AP_UP) ? s_ap_ssid
+                      : (s_state == NET_OFF)   ? ""
+                                               : s_sta_ssid;
+        strlcpy(ssid_out, s, ssid_len);
+    }
+    switch (s_state) {
+    case NET_JOINING: return NET_LINK_JOINING;
+    case NET_STA_UP:  return NET_LINK_STA_UP;
+    case NET_AP_UP:   return NET_LINK_AP_UP;
+    default:          return NET_LINK_OFF;
+    }
+}
+
+const char *net_mgr_get_mdns_host(void)
+{
+    return s_mdns_host;
+}
+
 void net_mgr_get_status(char *buf, size_t len)
 {
     if (!buf || len == 0) return;
