@@ -380,6 +380,93 @@ void display_ui_panel_refresh_leds(void)
     panel_led_show_mode();
 }
 
+/* ── global screenshot button + toast (LVGL top layer) ────────────
+ *
+ * Both live on lv_layer_top(), which is drawn above whatever screen is loaded
+ * and survives lv_screen_load(). That is what makes the button available on
+ * every screen from one object, rather than one copy per screen that each
+ * needs its own placement and wiring.
+ *
+ * The layer itself is made non-clickable and transparent so it only consumes
+ * touches that actually land on the button; LVGL still hit-tests children of a
+ * non-clickable parent, so the button works while the rest of the screen
+ * underneath stays fully interactive. */
+
+static lv_obj_t   *s_toast;
+static lv_timer_t *s_toast_timer;
+
+#define TOAST_MS 2500
+
+static void toast_hide_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_toast) lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+    s_toast_timer = NULL;   /* a one-shot lv_timer deletes itself after firing */
+}
+
+void display_ui_toast(const char *msg, bool ok)
+{
+    if (!s_toast || !msg) return;
+
+    lv_label_set_text(lv_obj_get_child(s_toast, 0), msg);
+    lv_obj_set_style_bg_color(s_toast, lv_color_hex(ok ? 0x14361F : 0x3C1418), 0);
+    lv_obj_set_style_text_color(lv_obj_get_child(s_toast, 0),
+                                lv_color_hex(ok ? 0x8CE8A8 : 0xFF9A9A), 0);
+    lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+
+    /* Restart rather than stack: back-to-back captures should not queue up a
+     * pile of timers that each hide the (still current) message. */
+    if (s_toast_timer) lv_timer_delete(s_toast_timer);
+    s_toast_timer = lv_timer_create(toast_hide_cb, TOAST_MS, NULL);
+    lv_timer_set_repeat_count(s_toast_timer, 1);
+}
+
+static void global_shot_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    /* LVGL context. screenshot_capture() only snapshots the framebuffer here —
+     * the encode and SD write run on its own task — so this never blocks. */
+    esp_err_t err = screenshot_capture(NULL, 0);
+    if (err == ESP_ERR_NOT_FOUND)          display_ui_toast("No SD card", false);
+    else if (err == ESP_ERR_INVALID_STATE) display_ui_toast("Capture already running", false);
+    else if (err != ESP_OK)                display_ui_toast("Screenshot failed", false);
+    else                                   display_ui_toast("Saving screenshot...", true);
+}
+
+static void create_global_overlay(void)
+{
+    lv_obj_t *top = lv_layer_top();
+    lv_obj_remove_flag(top, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_opa(top, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(top, 0, 0);
+    lv_obj_set_style_border_width(top, 0, 0);
+
+    /* Top-right corner of the top line. The spectrum screen's own button strip
+     * was shifted left by 44 px to clear this spot; every other screen has its
+     * title on the left and nothing this high on the right. */
+    lv_obj_t *btn = lv_button_create(top);
+    lv_obj_set_size(btn, 40, 28);
+    lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -2, 4);
+    lv_obj_add_event_cb(btn, global_shot_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, LV_SYMBOL_IMAGE);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(lbl);
+
+    s_toast = lv_obj_create(top);
+    lv_obj_set_size(s_toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(s_toast, 10, 0);
+    lv_obj_set_style_border_width(s_toast, 0, 0);
+    lv_obj_set_style_radius(s_toast, 6, 0);
+    lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -30);
+    lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *tl = lv_label_create(s_toast);
+    lv_label_set_text(tl, "");
+    lv_obj_set_style_text_font(tl, &lv_font_montserrat_14, 0);
+}
+
 void display_ui_panel_screenshot(void)
 {
     /* Flag only, same reasoning as the mode key below: this is reached from the
@@ -480,7 +567,7 @@ static void spectrum_timer_cb(lv_timer_t *timer)
     }
     if (s_shot_toast_pending) {
         s_shot_toast_pending = false;
-        screen_spectrum_show_toast(s_shot_toast, s_shot_toast_ok);
+        display_ui_toast(s_shot_toast, s_shot_toast_ok);
     }
 
     if (!s_data_pending) return;
@@ -536,6 +623,10 @@ esp_err_t display_ui_init(void)
                         TAG, "settings screen create failed");
     screen_splash_show();   /* fades into the spectrum screen after ~2.5 s */
     screen_spectrum_set_dsp_info(&s_last_dsp_cfg, s_last_gain_db);
+
+    /* Screenshot button + toast on the top layer, so they are present on every
+     * screen rather than only the spectrum view. */
+    create_global_overlay();
 
     /* 33 ms timer → ~30 fps UI updates */
     lv_timer_create(spectrum_timer_cb, 33, NULL);

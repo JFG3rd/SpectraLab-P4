@@ -32,7 +32,6 @@
 #include "net_mgr.h"
 #include "screen_spectrum.h"
 #include "screen_settings.h"
-#include "screenshot.h"
 
 static const char *TAG = "scr_spectrum";
 
@@ -166,8 +165,6 @@ static lv_obj_t *s_lbl_ambient_status;
 static lv_obj_t *s_lbl_source_status;   /* "USB MIC" when the UAC1 mic is live */
 static lv_obj_t *s_lbl_wifi;            /* active SSID / AP name, row 2 centre  */
 static lv_obj_t *s_lbl_title;           /* "SPECTRALAB-P4", row 1 left          */
-static lv_obj_t *s_toast;               /* transient message overlay            */
-static lv_timer_t *s_toast_timer;
 
 /* Display-mode names, indexed by display_mode_t — matches the settings
  * dropdown labels (screen_settings.c disp_mode_opts). */
@@ -536,34 +533,6 @@ static void draw_peak_cursor(lv_layer_t *layer, const lv_area_t *oa,
     lv_draw_label(layer, &tdsc, &t2);
 }
 
-/* ── transient toast ──────────────────────────────────────────── */
-
-#define TOAST_MS 2500
-
-static void toast_hide_cb(lv_timer_t *t)
-{
-    (void)t;
-    if (s_toast) lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
-    s_toast_timer = NULL;   /* lv_timer_t is auto-deleted after a one-shot run */
-}
-
-void screen_spectrum_show_toast(const char *msg, bool ok)
-{
-    if (!s_toast || !msg) return;
-
-    lv_label_set_text(lv_obj_get_child(s_toast, 0), msg);
-    lv_obj_set_style_bg_color(s_toast, lv_color_hex(ok ? 0x14361F : 0x3C1418), 0);
-    lv_obj_set_style_text_color(lv_obj_get_child(s_toast, 0),
-                                lv_color_hex(ok ? 0x8CE8A8 : 0xFF9A9A), 0);
-    lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
-
-    /* Restart rather than stack: back-to-back captures should not queue up a
-     * pile of timers that each hide the (still current) message. */
-    if (s_toast_timer) lv_timer_delete(s_toast_timer);
-    s_toast_timer = lv_timer_create(toast_hide_cb, TOAST_MS, NULL);
-    lv_timer_set_repeat_count(s_toast_timer, 1);
-}
-
 static void apply_zoom_axis(zoom_axis_t axis, float scale, lv_point_t center)
 {
     if (scale <= 0.0f) return;
@@ -851,23 +820,6 @@ static void stop_btn_cb(lv_event_t *e)
     s_frozen = !s_frozen;
     if (s_btn_stop_lbl)
         lv_label_set_text(s_btn_stop_lbl, s_frozen ? LV_SYMBOL_PLAY : LV_SYMBOL_PAUSE);
-}
-
-static void shot_btn_cb(lv_event_t *e)
-{
-    (void)e;
-    /* Runs in LVGL context. screenshot_capture() only snapshots the
-     * framebuffer here — the encode and SD write happen on its worker task —
-     * so this does not block the UI. */
-    esp_err_t err = screenshot_capture(NULL, 0);
-    if (err == ESP_ERR_NOT_FOUND)
-        screen_spectrum_show_toast("No SD card", false);
-    else if (err == ESP_ERR_INVALID_STATE)
-        screen_spectrum_show_toast("Capture already running", false);
-    else if (err != ESP_OK)
-        screen_spectrum_show_toast("Screenshot failed", false);
-    else
-        screen_spectrum_show_toast("Saving screenshot...", true);
 }
 
 static void agc_btn_cb(lv_event_t *e)
@@ -1598,12 +1550,12 @@ esp_err_t screen_spectrum_create(void)
     s_lbl_peak = lv_label_create(status);
     lv_label_set_text(s_lbl_peak, "Peak: --- dBFS");
     lv_obj_set_style_text_font(s_lbl_peak, &lv_font_montserrat_16, 0);
-    lv_obj_align(s_lbl_peak, LV_ALIGN_TOP_LEFT, 410, 9);
+    lv_obj_align(s_lbl_peak, LV_ALIGN_TOP_LEFT, 380, 9);
 
     /* GRD — toggles grid + dB legend */
     lv_obj_t *btn_grid = lv_button_create(status);
     lv_obj_set_size(btn_grid, 56, 30);
-    lv_obj_align(btn_grid, LV_ALIGN_TOP_RIGHT, -312, 3);
+    lv_obj_align(btn_grid, LV_ALIGN_TOP_RIGHT, -356, 3);
     lv_obj_add_event_cb(btn_grid, grid_btn_cb, LV_EVENT_CLICKED, NULL);
     s_btn_grid_lbl = lv_label_create(btn_grid);
     lv_label_set_text(s_btn_grid_lbl, s_grid_enabled ? "GRD " LV_SYMBOL_OK : "GRD");
@@ -1613,7 +1565,7 @@ esp_err_t screen_spectrum_create(void)
     /* AGC — software auto-gain toggle (left of GRD) */
     lv_obj_t *btn_agc = lv_button_create(status);
     lv_obj_set_size(btn_agc, 56, 30);
-    lv_obj_align(btn_agc, LV_ALIGN_TOP_RIGHT, -374, 3);
+    lv_obj_align(btn_agc, LV_ALIGN_TOP_RIGHT, -418, 3);
     lv_obj_add_event_cb(btn_agc, agc_btn_cb, LV_EVENT_CLICKED, NULL);
     s_btn_agc_lbl = lv_label_create(btn_agc);
     lv_label_set_text(s_btn_agc_lbl, s_agc_enabled ? "AGC " LV_SYMBOL_OK : "AGC");
@@ -1623,7 +1575,7 @@ esp_err_t screen_spectrum_create(void)
     /* STOP/PLAY — freezes the display on the current frame */
     lv_obj_t *btn_stop = lv_button_create(status);
     lv_obj_set_size(btn_stop, 56, 30);
-    lv_obj_align(btn_stop, LV_ALIGN_TOP_RIGHT, -250, 3);
+    lv_obj_align(btn_stop, LV_ALIGN_TOP_RIGHT, -294, 3);
     lv_obj_add_event_cb(btn_stop, stop_btn_cb, LV_EVENT_CLICKED, NULL);
     s_btn_stop_lbl = lv_label_create(btn_stop);
     lv_label_set_text(s_btn_stop_lbl, LV_SYMBOL_PAUSE);
@@ -1631,11 +1583,14 @@ esp_err_t screen_spectrum_create(void)
     lv_obj_center(s_btn_stop_lbl);
 
     /* RST — resets MAX hold (disabled until MX is active).
-     * Layout from right: ⚙@-2  MX@-64  PK@-126  RST@-188  ⏸@-250  GRD@-312;
-     * all 56×30 at y=3. */
+     * Layout from right: ⚙@-46  MX@-108  PK@-170  RST@-232  ⏸@-294  GRD@-356
+     * AGC@-418; all 56×30 at y=3. The strip starts at -46 rather than -2 to
+     * leave the far-right corner for the global screenshot button, which lives
+     * on the LVGL top layer so it appears on every screen (see display_ui.c).
+     * Peak moved 410 -> 380 to stay clear of AGC's new left edge. */
     s_btn_rst = lv_button_create(status);
     lv_obj_set_size(s_btn_rst, 56, 30);
-    lv_obj_align(s_btn_rst, LV_ALIGN_TOP_RIGHT, -188, 3);
+    lv_obj_align(s_btn_rst, LV_ALIGN_TOP_RIGHT, -232, 3);
     lv_obj_add_event_cb(s_btn_rst, rst_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_state(s_btn_rst, LV_STATE_DISABLED);
     lv_obj_t *btn_rst_lbl = lv_label_create(s_btn_rst);
@@ -1646,7 +1601,7 @@ esp_err_t screen_spectrum_create(void)
     /* PK — peak hold with configurable decay */
     lv_obj_t *btn_pk = lv_button_create(status);
     lv_obj_set_size(btn_pk, 56, 30);
-    lv_obj_align(btn_pk, LV_ALIGN_TOP_RIGHT, -126, 3);
+    lv_obj_align(btn_pk, LV_ALIGN_TOP_RIGHT, -170, 3);
     lv_obj_add_event_cb(btn_pk, peak_hold_btn_cb, LV_EVENT_CLICKED, NULL);
     s_btn_pk_lbl = lv_label_create(btn_pk);
     lv_label_set_text(s_btn_pk_lbl, "PK");
@@ -1656,7 +1611,7 @@ esp_err_t screen_spectrum_create(void)
     /* MX — max hold (only grows) */
     lv_obj_t *btn_mx = lv_button_create(status);
     lv_obj_set_size(btn_mx, 56, 30);
-    lv_obj_align(btn_mx, LV_ALIGN_TOP_RIGHT, -64, 3);
+    lv_obj_align(btn_mx, LV_ALIGN_TOP_RIGHT, -108, 3);
     lv_obj_add_event_cb(btn_mx, max_hold_btn_cb, LV_EVENT_CLICKED, NULL);
     s_btn_mx_lbl = lv_label_create(btn_mx);
     lv_label_set_text(s_btn_mx_lbl, "MX");
@@ -1666,7 +1621,7 @@ esp_err_t screen_spectrum_create(void)
     /* Settings gear */
     lv_obj_t *btn_settings = lv_button_create(status);
     lv_obj_set_size(btn_settings, 56, 30);
-    lv_obj_align(btn_settings, LV_ALIGN_TOP_RIGHT, -2, 3);
+    lv_obj_align(btn_settings, LV_ALIGN_TOP_RIGHT, -46, 3);
     lv_obj_add_event_cb(btn_settings, settings_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *btn_settings_lbl = lv_label_create(btn_settings);
     lv_label_set_text(btn_settings_lbl, LV_SYMBOL_SETTINGS);
@@ -1708,18 +1663,6 @@ esp_err_t screen_spectrum_create(void)
     lv_label_set_text(s_lbl_source_status, "");
     lv_obj_set_style_text_font(s_lbl_source_status, &lv_font_montserrat_12, 0);
     lv_obj_align(s_lbl_source_status, LV_ALIGN_BOTTOM_RIGHT, -340, -2);
-
-    /* Screenshot key — row 2, right of the mode label. Row 1's button strip is
-     * full (GRD..gear span x590-1018), so this is the only free space in the
-     * status bar that does not force a relayout. */
-    lv_obj_t *btn_shot = lv_button_create(status);
-    lv_obj_set_size(btn_shot, 40, 22);
-    lv_obj_align(btn_shot, LV_ALIGN_BOTTOM_RIGHT, -110, -1);
-    lv_obj_add_event_cb(btn_shot, shot_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *btn_shot_lbl = lv_label_create(btn_shot);
-    lv_label_set_text(btn_shot_lbl, LV_SYMBOL_IMAGE);
-    lv_obj_set_style_text_font(btn_shot_lbl, &lv_font_montserrat_12, 0);
-    lv_obj_center(btn_shot_lbl);
 
     apply_status_colors();   /* single source of truth for every label colour */
 
@@ -1789,21 +1732,6 @@ esp_err_t screen_spectrum_create(void)
         s_freq_ticks[i] = lbl;
     }
     update_axis_ticks();
-
-    /* Toast overlay — hidden until something posts a message. Parented to the
-     * screen rather than the spectrum object so it survives mode switches that
-     * rebuild the canvas. */
-    s_toast = lv_obj_create(s_screen);
-    lv_obj_set_size(s_toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_pad_all(s_toast, 10, 0);
-    lv_obj_set_style_border_width(s_toast, 0, 0);
-    lv_obj_set_style_radius(s_toast, 6, 0);
-    lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -INFO_H - 12);
-    lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_t *toast_lbl = lv_label_create(s_toast);
-    lv_label_set_text(toast_lbl, "");
-    lv_obj_set_style_text_font(toast_lbl, &lv_font_montserrat_14, 0);
 
     /* Own timer so the SSID keeps updating while the display is frozen. */
     lv_timer_create(wifi_label_timer_cb, STATUS_WIFI_MS, NULL);

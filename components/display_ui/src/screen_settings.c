@@ -804,6 +804,20 @@ esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
     s_dd_profile = make_labeled_dropdown(s_screen, "Load Profile:", "(none)", 776);
     lv_obj_add_event_cb(s_dd_profile, profile_dd_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
+    /* Save As, right next to the selector. Saving already existed under
+     * PRESETS > Save, but a group offering only "Load Profile" reads as though
+     * profiles cannot be created from here — and this is where you are when
+     * you decide the current setup is worth keeping. Same handler, so there is
+     * only one save path. */
+    lv_obj_t *btn_prof_save = lv_button_create(s_screen);
+    lv_obj_set_size(btn_prof_save, 130, 36);
+    lv_obj_set_pos(btn_prof_save, 390, 770);
+    lv_obj_add_event_cb(btn_prof_save, sd_save_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *btn_prof_save_lbl = lv_label_create(btn_prof_save);
+    lv_label_set_text(btn_prof_save_lbl, LV_SYMBOL_SAVE "  Save As...");
+    lv_obj_set_style_text_font(btn_prof_save_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(btn_prof_save_lbl);
+
     s_lbl_profile_hint = lv_label_create(s_screen);
     lv_obj_set_width(s_lbl_profile_hint, 480);
     lv_label_set_long_mode(s_lbl_profile_hint, LV_LABEL_LONG_WRAP);

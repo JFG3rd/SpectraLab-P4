@@ -34,6 +34,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>   /* strcasecmp */
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -236,16 +237,28 @@ typedef struct {
 static volatile bool s_busy;   /* one capture at a time: each holds ~1.5 MB */
 
 /* Next free shot-NNNN.png. Scans rather than counting so a deleted file in the
- * middle never causes an overwrite. */
+ * middle never causes an overwrite.
+ *
+ * Parsed by hand rather than with sscanf: this runs on the LVGL task, and with
+ * CONFIG_NEWLIB_NANO_FORMAT off the full scanf pulls a large stack frame into
+ * an already deep event-callback chain. */
 static int next_index(void)
 {
     DIR *d = opendir(SETTINGS_SHOT_DIR);
     if (!d) return 1;
+
     int  hi = 0;
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
-        int n = 0;
-        if (sscanf(e->d_name, "shot-%d.png", &n) == 1 && n > hi) hi = n;
+        const char *p = e->d_name;
+        if (strncmp(p, "shot-", 5) != 0) continue;
+        p += 5;
+
+        int n = 0, digits = 0;
+        while (*p >= '0' && *p <= '9' && digits < 7) { n = n * 10 + (*p++ - '0'); digits++; }
+        if (digits == 0 || strcasecmp(p, ".png") != 0) continue;
+
+        if (n > hi) hi = n;
     }
     closedir(d);
     return hi + 1;
@@ -312,8 +325,14 @@ esp_err_t screenshot_capture(char *path_out, size_t path_len)
     if (path_out && path_len) strlcpy(path_out, job->path, path_len);
 
     /* Priority 3: below the LVGL port task (4) so a capture can never starve
-     * the UI, and well below the audio (20) and DSP (22) tasks. */
-    if (xTaskCreate(shot_task, "screenshot", 5120, job, 3, NULL) != pdPASS) {
+     * the UI, and well below the audio (20) and DSP (22) tasks.
+     *
+     * 12 KB of stack, not the 5 KB first tried: this task writes through
+     * FATFS with long-filename support and logs with the full (non-nano)
+     * newlib printf, and the two together overflow a small stack — which
+     * panics and reboots the board rather than failing the capture. The LVGL
+     * task was raised to 16 KB for the same reason. */
+    if (xTaskCreate(shot_task, "screenshot", 12288, job, 3, NULL) != pdPASS) {
         s_busy = false;
         free(job->fb);
         free(job);

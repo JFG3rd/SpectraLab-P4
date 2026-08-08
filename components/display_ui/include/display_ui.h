@@ -141,6 +141,10 @@ esp_err_t display_ui_take_screenshot(char *path_out, size_t path_len);
  * `path` is NULL on failure. Not for general use. */
 void      display_ui_notify_screenshot(const char *path, bool ok);
 
+/* Brief message overlay, shown above whatever screen is loaded. Must be called
+ * in LVGL context. `ok` picks the accent colour. */
+void      display_ui_toast(const char *msg, bool ok);
+
 /* Record which named preset the live configuration came from, "" for none.
  *
  * This is a LABEL, not a save target. Ordinary edits keep auto-saving to the
