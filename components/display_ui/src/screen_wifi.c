@@ -45,6 +45,7 @@ static const char *TAG = "scr_wifi";
 
 static lv_obj_t   *s_screen;
 static lv_obj_t   *s_status;
+static lv_obj_t   *s_lbl_entry;   /* "http://<host>.local" + raw IP hint */
 static lv_obj_t   *s_list;
 static lv_timer_t *s_poll_timer;
 static char        s_sel_ssid[NET_SSID_MAX];
@@ -392,6 +393,16 @@ static void list_create(void)
     MAKE_WIFI_BTN(LV_SYMBOL_SAVE "  Saved Nets", saved_cb,   312);
     MAKE_WIFI_BTN(LV_SYMBOL_POWER "  Restart",   restart_cb, 372);
     MAKE_WIFI_BTN(LV_SYMBOL_LEFT "  Back",       back_cb,    432);
+
+    /* Browser entry point, in the gap under the button column. Both forms are
+     * shown on purpose: the mDNS name survives a DHCP lease change, and the
+     * raw address still works on networks where mDNS resolution does not. */
+    s_lbl_entry = lv_label_create(s_screen);
+    lv_obj_set_width(s_lbl_entry, 300);
+    lv_label_set_long_mode(s_lbl_entry, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(s_lbl_entry, lv_color_hex(0x88AACC), 0);
+    lv_obj_set_style_text_font(s_lbl_entry, &lv_font_montserrat_12, 0);
+    lv_obj_set_pos(s_lbl_entry, 690, 496);
 
 #undef MAKE_WIFI_BTN
 
@@ -1498,6 +1509,21 @@ void screen_wifi_show(void)
     char status[96];
     net_mgr_get_status(status, sizeof(status));
     lv_label_set_text(s_status, status);
+
+    if (s_lbl_entry) {
+        uint32_t ip = net_mgr_get_sta_ip();
+        if (net_mgr_is_sta_connected() && ip) {
+            lv_label_set_text_fmt(s_lbl_entry,
+                                  "Open in a browser:\nhttp://%s.local\nhttp://%u.%u.%u.%u",
+                                  net_mgr_get_mdns_host(),
+                                  (unsigned)((ip >> 24) & 0xFF), (unsigned)((ip >> 16) & 0xFF),
+                                  (unsigned)((ip >> 8) & 0xFF),  (unsigned)(ip & 0xFF));
+        } else {
+            /* The setup AP always serves the portal at a fixed address; mDNS
+             * is not running until the station joins. */
+            lv_label_set_text(s_lbl_entry, "Open in a browser:\nhttp://192.168.4.1");
+        }
+    }
 
     /* Pause the auto-join loop so the STA is idle and scannable (otherwise
      * a scan started mid-connect fails with ESP_ERR_WIFI_STATE). */

@@ -885,6 +885,10 @@ void net_mgr_get_status(char *buf, size_t len)
     if (!buf || len == 0) return;
     switch (s_state) {
     case NET_STA_UP:
+        /* Deliberately does NOT include the mDNS URL: three consumers share
+         * this one-liner and none has the width for it. The browser entry
+         * point is shown separately — see screen_wifi's hostname panel and
+         * the hostname/url fields in GET /api/status. */
         snprintf(buf, len, "WiFi: %s  %s  (%d saved)", s_sta_ssid, s_ip_str, s_known_count);
         break;
     case NET_JOINING:

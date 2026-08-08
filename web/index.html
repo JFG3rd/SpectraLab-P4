@@ -31,6 +31,17 @@
                     document.getElementById("status").textContent =
                         "v" + s.version + " · " + s.network + " · " + s.source +
                         (s.cal_loaded ? " · mic cal active" : "");
+                    // Bookmarkable entry point: the mDNS name survives a
+                    // DHCP lease change, unlike whatever address you typed.
+                    var e = document.getElementById("entry");
+                    if (e && s.url) {
+                        e.innerHTML = "";
+                        var a = document.createElement("a");
+                        a.href = s.url;
+                        a.textContent = s.url;
+                        e.appendChild(document.createTextNode("Always reachable at "));
+                        e.appendChild(a);
+                    }
                 })
                 .catch(() => {});
         }
@@ -49,6 +60,7 @@
            style="display:block; margin: 10px 0;">🎤 Upload Mic Calibration</a>
 
         <div class="flash-stats" id="status" style="margin-top: 16px;"></div>
+        <div class="flash-stats" id="entry" style="margin-top: 8px;"></div>
 
         <footer>
             <p class="disclaimer">SpectraLab-P4 — made by JFG3rd</p>

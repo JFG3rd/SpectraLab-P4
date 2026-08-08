@@ -268,9 +268,14 @@ static esp_err_t status_get(httpd_req_t *req)
     char net[96];
     net_mgr_get_status(net, sizeof(net));
 
+    char url[64];
+    snprintf(url, sizeof(url), "http://%s.local", net_mgr_get_mdns_host());
+
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "version", esp_app_get_description()->version);
     cJSON_AddStringToObject(root, "network", net);
+    cJSON_AddStringToObject(root, "hostname", net_mgr_get_mdns_host());
+    cJSON_AddStringToObject(root, "url", url);
     cJSON_AddStringToObject(root, "source",
         audio_source_get_active() == AUDIO_SOURCE_USB ? "USB mic" : "I2S mic");
     cJSON_AddBoolToObject(root, "cal_loaded", dsp_engine_cal_loaded());
