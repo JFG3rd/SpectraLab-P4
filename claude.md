@@ -17,6 +17,23 @@ pio run -e esp32-p4x-evboard -t upload    # P4X EV-Board v1.6 (chip rev v3.x)
 pio run -e <env> -t erase                 # full chip erase (after partition changes)
 ```
 
+Plain ESP-IDF also works, but needs three things supplied by hand — a
+per-board build dir, the board's sdkconfig as *defaults*, and a build-local
+sdkconfig so the tracked file is not rewritten:
+
+```bash
+. ~/.platformio/packages/framework-espidf/export.sh
+idf.py -B build.p4x -D SDKCONFIG_DEFAULTS=sdkconfig.esp32-p4x-evboard \
+                    -D SDKCONFIG=build.p4x/sdkconfig build
+```
+
+Never run `idf.py set-target` here — the target and the silicon-revision keys
+already live in each `sdkconfig.<env>` and it would overwrite them. The raw
+IDF path also skips `tools/check_chip_rev.py`, so nothing stops you flashing a
+rev-1 image onto rev-3 silicon. `src/` is on `EXTRA_COMPONENT_DIRS` in the root
+CMakeLists precisely so this path can find the app: PlatformIO treats `src/`
+as the main component automatically, ESP-IDF looks for `main/`.
+
 - Each env has its own `sdkconfig.<env>`; silicon-revision keys
   (`ESP32P4_SELECTS_REV_LESS_V3`, `ESP32P4_REV_MIN_*`) live ONLY there,
   never in `sdkconfig.defaults`. Chip rev ≥3.0 needs ESP-IDF ≥5.5.3

@@ -218,7 +218,9 @@ Every feature is evaluated against one goal:
 
 ## Hardware Required
 
-- ESP32-P4 Function EV Board
+- An ESP32-P4 Function EV Board — **either** revision:
+  - **ESP32-P4-Function-EV-Board v1.5.2** — P4 silicon rev 1.x
+  - **ESP32-P4X-Function-EV-Board v1.6** — P4 silicon rev 3.x
 - USB-C cable
 - microSD card
 - Optional USB UAC1 interface, such as the Behringer UCA222
@@ -233,23 +235,142 @@ Every feature is evaluated against one goal:
 
 ```bash
 git clone https://github.com/JFG3rd/SpectraLab-P4.git
+cd SpectraLab-P4
 ```
+
+## Which board do I have?
+
+The two boards are peripheral-identical — same LCD, ES8311 codec, ESP32-C6,
+SD slot — and differ only in P4 silicon revision. Revision 3.x is a *breaking*
+major revision, so **one binary cannot run on both**. Each board therefore has
+its own build environment and its own `sdkconfig`:
+
+| Board | Silicon | PlatformIO env | sdkconfig |
+|-------|---------|----------------|-----------|
+| ESP32-P4-Function-EV-Board **v1.5.2** | rev 1.x | `esp32-p4-evboard` | `sdkconfig.esp32-p4-evboard` |
+| ESP32-P4X-Function-EV-Board **v1.6** | rev 3.x | `esp32-p4x-evboard` | `sdkconfig.esp32-p4x-evboard` |
+
+If you are not sure which you have, plug it in and ask it:
+
+```bash
+esptool.py chip_id          # or:  python -m esptool chip_id
+```
+
+Look for `Chip is ESP32-P4 (revision v1.x)` or `(revision v3.x)`.
+
+Flashing the wrong image leaves the board unbootable until it is reflashed
+correctly. The PlatformIO upload path guards against this automatically
+(`tools/check_chip_rev.py` probes the connected chip before every upload and
+aborts on a mismatch); the raw ESP-IDF path does not.
 
 ## Build with PlatformIO
 
+This is the supported path — it applies the correct `sdkconfig`, the OTA
+partition table, the camera ISP tuning generation and the chip-revision guard
+for you.
+
 ```bash
+# Build both board images at once (no board needs to be connected)
 pio run
-pio run -t upload
+
+# Build and flash ONE board — pick the env that matches your hardware
+pio run -e esp32-p4-evboard  -t upload    # v1.5.2 board (silicon rev 1.x)
+pio run -e esp32-p4x-evboard -t upload    # P4X v1.6 board (silicon rev 3.x)
+
+# Serial monitor (115200 baud)
+pio run -e esp32-p4-evboard  -t monitor
+pio run -e esp32-p4x-evboard -t monitor
+```
+
+Do **not** run a bare `pio run -t upload`: with two environments defined it
+tries to flash both images to the same board, and the chip-revision guard will
+abort one of them. Always pass `-e`.
+
+If the upload cannot find the board, name the port explicitly:
+
+```bash
+pio run -e esp32-p4x-evboard -t upload --upload-port /dev/cu.usbmodem1101
+```
+
+After changing the partition table, erase the chip first:
+
+```bash
+pio run -e esp32-p4x-evboard -t erase
 ```
 
 ## Build with ESP-IDF
 
+Also supported, but you have to supply by hand what PlatformIO otherwise
+infers. Three things are mandatory and the build silently does the wrong thing
+without them: the **target**, the **per-board sdkconfig**, and a **separate
+build directory per board** (the two boards cannot share one, and a stale
+`build/` from an earlier attempt will fail with confusing toolchain errors).
+
+Set up the toolchain once — the ESP-IDF that PlatformIO already downloaded
+works fine:
+
 ```bash
-idf.py build
-idf.py flash
+~/.platformio/packages/framework-espidf/install.sh esp32p4      # once, ever
+. ~/.platformio/packages/framework-espidf/export.sh             # each new shell
 ```
 
-Insert the SD card and reboot.
+Or use your own ESP-IDF **v5.5.3 or newer** — rev-3 silicon needs it.
+
+For the **v1.5.2 board (silicon rev 1.x)**:
+
+```bash
+idf.py -B build.p4 \
+       -D SDKCONFIG_DEFAULTS=sdkconfig.esp32-p4-evboard \
+       -D SDKCONFIG=build.p4/sdkconfig \
+       build
+
+idf.py -B build.p4 \
+       -D SDKCONFIG_DEFAULTS=sdkconfig.esp32-p4-evboard \
+       -D SDKCONFIG=build.p4/sdkconfig \
+       -p /dev/cu.usbmodem1101 flash monitor
+```
+
+For the **P4X v1.6 board (silicon rev 3.x)** — same commands, `p4x` everywhere:
+
+```bash
+idf.py -B build.p4x \
+       -D SDKCONFIG_DEFAULTS=sdkconfig.esp32-p4x-evboard \
+       -D SDKCONFIG=build.p4x/sdkconfig \
+       build
+
+idf.py -B build.p4x \
+       -D SDKCONFIG_DEFAULTS=sdkconfig.esp32-p4x-evboard \
+       -D SDKCONFIG=build.p4x/sdkconfig \
+       -p /dev/cu.usbmodem1101 flash monitor
+```
+
+Notes on this path:
+
+- Both `SDKCONFIG_DEFAULTS` **and** `SDKCONFIG` are needed. The first supplies
+  the board's configuration; the second keeps the generated copy inside the
+  build directory. Passing only `SDKCONFIG=sdkconfig.esp32-p4x-evboard` also
+  builds correctly, but ESP-IDF rewrites that tracked file on every build
+  (it strips PlatformIO's `# default:` comments), leaving the working tree
+  dirty for no reason.
+- `idf.py set-target` is **not** needed and should not be run — the target and
+  the silicon-revision keys already live in each `sdkconfig.*`, and it would
+  overwrite them.
+- A separate `-B` build directory per board is required, not just tidy: the two
+  configurations cannot share one, and a stale `build/` from an earlier attempt
+  fails with confusing "compiler not found" errors about the wrong architecture.
+- Nothing here checks that the image matches the connected silicon. Confirm the
+  revision yourself before flashing, or use the PlatformIO path, which does.
+- Flash over USB-Serial/JTAG, which is the default. Do **not** flash the P4X
+  board via OpenOCD — on rev-3 silicon it writes without overlap checks and
+  produces "Checksum failure" boot loops.
+- The serial port differs by machine: `/dev/cu.usbmodem*` on macOS,
+  `/dev/ttyACM*` on Linux, `COM*` on Windows. Omit `-p` to let idf.py guess.
+
+## First boot
+
+Insert the SD card and reboot. The analyzer starts in the spectrum view; the
+web interface address is shown on the on-device Wi-Fi screen once it joins a
+network.
 
 ---
 
