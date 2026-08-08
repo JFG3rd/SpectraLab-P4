@@ -193,6 +193,8 @@ Every feature is evaluated against one goal:
 | Automatic Gain Control | ✅ |
 | Wi-Fi Provisioning | ✅ |
 | Multiple Saved Wi-Fi Networks | ✅ |
+| Saved Network Management (view / forget) | ✅ |
+| Static IP Configuration | ✅ |
 | Camera QR Wi-Fi Setup | ✅ |
 | Front-Panel Keycaps (optional) | ✅ |
 | Distributed Stereo Analyzer | 🚧 Planned for v2.0 |

@@ -32,7 +32,8 @@ The most important functional additions are:
 12. Touch and audio now survive a QR scan. Previously the camera left the shared I2C pins detached on teardown and both stayed dead until the next reboot.
 13. The QR live preview is now 640x420 and keeps the camera's aspect ratio.
 14. A QR scan that finds nothing gives up after 45 seconds instead of holding the camera open indefinitely.
-15. Optional front-panel keycaps with RGB status LEDs: one cycles the colour theme (and aborts a QR scan while one is running, or restarts the board on a 2 s hold), the other cycles the spectrum display mode. Each LED shows the colour its key currently selects. See section 12.
+15. Saved Wi-Fi networks can now be viewed, edited and deleted on-device, including a per-network static IP option with an address-in-use check. See section 13.
+16. Optional front-panel keycaps with RGB status LEDs: one cycles the colour theme (and aborts a QR scan while one is running, or restarts the board on a 2 s hold), the other cycles the spectrum display mode. Each LED shows the colour its key currently selects. See section 12.
 
 If you only remember one thing: the analyzer now preserves more of its real
 runtime state, and the display is much more interactive.
@@ -566,7 +567,78 @@ only key 1's 2-second hold will recover it.
 - Use **Manual** to type the SSID and password instead; QR scanning is a
   convenience, never a requirement.
 
-## 13. Practical Measurement Workflows
+## 13. Managing Saved Networks and IP Settings
+
+The analyzer remembers up to eight Wi-Fi networks and rejoins whichever is in
+range. **Settings -> Wi-Fi Setup -> Saved Nets** shows what it has stored and
+lets you change or remove it.
+
+### The saved list
+
+Each row shows the network name and how it gets its address:
+
+| Tag | Meaning |
+|---|---|
+| `[DHCP]` | The router assigns the address. This is the default |
+| `[static]` | A fixed address you configured |
+
+Networks are listed most-recently-used first — the one at the top is what the
+analyzer reaches for at boot. Tap any row to open it.
+
+### Viewing a saved password
+
+The password is shown as bullets. Tick **Show password** to reveal it, for
+example when setting up another device on the same network.
+
+It re-masks whenever you leave and reopen the screen, so a revealed password
+does not stay on display. Worth remembering that anyone standing at the panel
+can tick that box — there is no lock screen.
+
+### Forgetting a network
+
+**Forget Network** needs two taps: the first re-labels the button to
+"Tap again to confirm", the second removes it. That deliberate friction exists
+because deleting the network you are currently on drops the analyzer off the
+LAN, and getting it back means walking over to the unit.
+
+Forgetting removes the stored password as well.
+
+### Static IP configuration
+
+**IP Settings** switches a network between an automatic and a fixed address.
+The setting is stored **per network**, so a fixed address at one site and DHCP
+everywhere else both work, and moving the unit between locations does the right
+thing without reconfiguring.
+
+1. Choose **Static** in the Addressing dropdown.
+2. Fill in **IP address**, **Subnet mask** and **Gateway**. When you switch a
+   DHCP network to static these are pre-filled from the address the router
+   currently gave you, so you normally only change the last number of the IP.
+3. **DNS** is optional — leave it blank and the gateway is used.
+4. Tap **Check & Save**.
+
+Before saving, the analyzer asks the network whether that address is already
+answering (an ARP probe, the same check a computer makes when it joins). If
+something replies, it refuses and tells you to pick a different address, which
+avoids the sort of address clash that is awkward to diagnose later.
+
+The check cannot be perfect: a device that is switched off still owns its
+address but will not answer. If you know an address is spoken for, avoid it
+even if the check passes.
+
+Saving **restarts the analyzer**, because addressing is applied when it joins
+the network. It comes back on the new address a few seconds later.
+
+If the analyzer is not currently connected there is nothing to probe from. It
+says so and saves anyway rather than blocking you.
+
+### Getting back if a static address goes wrong
+
+A wrong static address means the analyzer joins the Wi-Fi but is unreachable.
+It is still fully usable from the touchscreen: go to **Saved Nets**, open the
+network, **IP Settings**, and switch back to **Automatic (DHCP)**.
+
+## 14. Practical Measurement Workflows
 
 ### Stereo Program Material Through UCA222
 
@@ -591,7 +663,7 @@ only key 1's 2-second hold will recover it.
 3. Save a preset.
 4. The preset now carries both the visible settings and the captured baseline.
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 ### The Scope Trace Is Too Small or Seems Missing
 
@@ -630,14 +702,14 @@ Wait briefly and retry. It means the request was too close to the previous write
 - Use short shielded RCA cables.
 - Try a line isolation transformer if needed.
 
-## 15. Files You May See on SD Card
+## 16. Files You May See on SD Card
 
 - `settings.json` - last live settings snapshot
 - `<preset>.json` - named preset config
 - `<preset>.nfbin` - captured noise-floor sidecar for that preset
 - `cal/<file>` - calibration files
 
-## 16. Recommended Habits
+## 17. Recommended Habits
 
 - Use `Average L+R` for normal stereo USB program feeds.
 - Save presets after capturing a good static noise floor if repeatability matters.

@@ -63,6 +63,8 @@ The 1.x series focuses on polishing the current standalone instrument before add
 - [x] Camera QR-code Wi-Fi provisioning — point the on-board MIPI-CSI camera at a router's Wi-Fi QR code to auto-fill the SSID and password (`esp_video` capture + `quirc` decode of the standard `WIFI:S:...;P:...;` payload)
 - [x] QR provisioning stability — the scanner now reports the real camera error instead of a bare "Scanner stopped", hands the shared GPIO 7/8 pads back to the touch controller and audio codec on teardown (they used to stay dead until reboot), never blocks the LVGL task while stopping, and auto-stops after 45 s
 - [x] Optional front-panel Grove-Mech Keycaps (up to two) — on the GPIO matrix rather than the contended I2C bus, so they still work while touch is suspended for a camera scan. Key 1 cycles the colour theme (aborting a running scan instead, and restarting the board on a 2 s hold); key 2 cycles the spectrum display mode. Each RGB LED glows the colour of what its key currently selects
+- [x] Saved Wi-Fi network management on-device — view stored networks, reveal a saved password behind a toggle, and forget a network with a two-step confirm
+- [x] Per-network static IP configuration with an ARP address-in-use check before saving, and DHCP as the default. Stored per network so a fixed address at one site and DHCP elsewhere both work
 - [x] Camera QR provisioning working on ESP32-P4 rev 3.x ("P4X") — required esp_video 2.3.0 (2.2.0 fixed an uninitialised ISP AWB subwindow that only rev >=3.0 validates) plus a build fix so the generated ISP tuning table wins the link over a dummy one shipped in esp_ipa's prebuilt library. Released as **v1.2.0**
 
 ### Known Limitations
@@ -88,13 +90,9 @@ in `settings_t` / `dsp_config_t` already.
 - [ ] **Mic sensitivity entry.** `dsp_config_t.mic_sensitivity_dbv` is plumbed
       through and persisted; entering the value from the mic's datasheet is what
       makes the SPL readout match a calibrated meter. No UI for it yet.
-- [ ] **Saved Wi-Fi network management** — list stored SSIDs and delete
-      individually. `net_mgr_list_networks()` and `net_mgr_forget_network()`
-      already exist and work; only the screen is missing.
 
 ### Candidate Improvements
 
-- [ ] Manual/static IP configuration, with a conflict check before applying
 - [ ] Named settings profiles (`settings_music.json`, `settings_voice.json`, …)
       with a profile selector, so different rooms don't mean re-tuning by hand
 - [ ] Show the active hostname and DHCP address on the Wi-Fi/status screen, so

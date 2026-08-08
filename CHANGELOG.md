@@ -1,4 +1,25 @@
 ## [Unreleased]
+### Added
+- On-device saved Wi-Fi network management, reached from Wi-Fi Setup ->
+  "Saved Nets": the stored networks in most-recently-used order, each tagged
+  `[DHCP]` or `[static]`; a detail screen showing the saved password masked
+  behind a "Show password" toggle (re-masked whenever the screen is reopened);
+  and Forget, which takes two taps because deleting the network in use drops
+  the unit off the LAN.
+- Per-network static IP configuration (IP / netmask / gateway / optional DNS),
+  stored against each saved network rather than globally, so a fixed address at
+  one site and DHCP elsewhere both work when the unit moves. Fields pre-fill
+  from the live DHCP lease when converting a network to static.
+- Address-in-use checking: "Check & Save" ARP-probes the candidate address
+  (RFC 5227 style, as a DHCP client does) and refuses to save if anything
+  answers. Chosen over ICMP because hosts commonly firewall ping, which would
+  report a live address as free. Documented honestly in the UI and the User
+  Guide: a silent host still owns its address.
+- `net_mgr` gains `net_mgr_get_network()`, `net_mgr_set_network_ip()`,
+  `net_mgr_ip_in_use()` and STA address getters. The saved-network blob moves
+  to v2 with an explicit v1 migration, so existing credentials survive the
+  upgrade instead of being silently discarded by the size check.
+
 
 ## [1.2.0] - 2026-08-07
 ### Added
