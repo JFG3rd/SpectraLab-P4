@@ -59,6 +59,9 @@ static esp_err_t index_get(httpd_req_t *req)
 { return send_asset(req, "text/html", index_html, index_html_len); }
 static esp_err_t wifi_setup_get(httpd_req_t *req)
 { return send_asset(req, "text/html", wifi_setup_html, wifi_setup_html_len); }
+static esp_err_t files_page_get(httpd_req_t *req)
+{ return send_asset(req, "text/html", files_html, files_html_len); }
+
 static esp_err_t cal_upload_get(httpd_req_t *req)
 { return send_asset(req, "text/html", cal_upload_html, cal_upload_html_len); }
 static esp_err_t style_get(httpd_req_t *req)
@@ -387,6 +390,169 @@ static void reboot_timer_cb(void *arg)
     esp_restart();
 }
 
+/* ── SD file browser ──────────────────────────────────────────────
+ *
+ * Read-only apart from deleting screenshots. The directory is chosen by a
+ * short keyword mapped onto a settings_dir_t, never by a caller-supplied
+ * path, and filenames go through settings_mgr_resolve_path() which rejects
+ * separators and traversal — so there is no path for a request to escape
+ * SETTINGS_ROOT_DIR even if this file is careless.
+ *
+ * Names travel in the X-Filename header rather than a query string: the
+ * default esp_http_server URI matcher 404s anything with a '?', which is why
+ * the calibration upload already works this way.
+ */
+
+#define FILES_MAX_ENTRIES 64
+#define DOWNLOAD_CHUNK    4096
+
+static bool dir_from_keyword(const char *kw, settings_dir_t *out)
+{
+    if (!kw || kw[0] == '\0' || strcmp(kw, "root") == 0) { *out = SETTINGS_DIR_ROOT;  return true; }
+    if (strcmp(kw, "cal") == 0)                          { *out = SETTINGS_DIR_CAL;   return true; }
+    if (strcmp(kw, "screenshots") == 0)                  { *out = SETTINGS_DIR_SHOTS; return true; }
+    return false;
+}
+
+static void add_dir_json(cJSON *parent, const char *key, settings_dir_t dir,
+                         settings_file_t *scratch)
+{
+    cJSON *arr = cJSON_AddArrayToObject(parent, key);
+    if (!arr) return;
+
+    int n = settings_mgr_list_dir(dir, scratch, FILES_MAX_ENTRIES);
+    for (int i = 0; i < n; i++) {
+        cJSON *e = cJSON_CreateObject();
+        if (!e) break;
+        cJSON_AddStringToObject(e, "name", scratch[i].name);
+        cJSON_AddNumberToObject(e, "size", (double)scratch[i].size);
+        cJSON_AddItemToArray(arr, e);
+    }
+}
+
+static esp_err_t files_list_get(httpd_req_t *req)
+{
+    if (!settings_mgr_sd_available()) {
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, "{\"sd\":false,\"root\":[],\"cal\":[],\"screenshots\":[]}");
+    }
+
+    /* One scratch array reused per directory; 64 * 40 bytes is too much for
+     * the httpd task stack to spare comfortably. */
+    settings_file_t *scratch = calloc(FILES_MAX_ENTRIES, sizeof(*scratch));
+    if (!scratch) return httpd_resp_send_500(req);
+
+    cJSON *root = cJSON_CreateObject();
+    if (!root) { free(scratch); return httpd_resp_send_500(req); }
+
+    cJSON_AddBoolToObject(root, "sd", true);
+    add_dir_json(root, "root",        SETTINGS_DIR_ROOT,  scratch);
+    add_dir_json(root, "cal",         SETTINGS_DIR_CAL,   scratch);
+    add_dir_json(root, "screenshots", SETTINGS_DIR_SHOTS, scratch);
+    free(scratch);
+
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!out) return httpd_resp_send_500(req);
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t r = httpd_resp_sendstr(req, out);
+    free(out);
+    return r;
+}
+
+/* Content type by extension — only what this tree can contain. */
+static const char *mime_for(const char *name)
+{
+    size_t len = strlen(name);
+    if (len > 5 && strcasecmp(name + len - 5, ".json") == 0) return "application/json";
+    if (len > 4 && strcasecmp(name + len - 4, ".png")  == 0) return "image/png";
+    if (len > 4 && (strcasecmp(name + len - 4, ".txt") == 0 ||
+                    strcasecmp(name + len - 4, ".csv") == 0 ||
+                    strcasecmp(name + len - 4, ".cal") == 0)) return "text/plain";
+    return "application/octet-stream";
+}
+
+static bool req_file_target(httpd_req_t *req, settings_dir_t *dir, char *name, size_t name_len)
+{
+    char kw[24] = "";
+    if (httpd_req_get_hdr_value_str(req, "X-Dir", kw, sizeof(kw)) != ESP_OK) kw[0] = '\0';
+    if (!dir_from_keyword(kw, dir)) return false;
+    if (httpd_req_get_hdr_value_str(req, "X-Filename", name, name_len) != ESP_OK) return false;
+    url_decode(name);
+    return name[0] != '\0';
+}
+
+static esp_err_t download_get(httpd_req_t *req)
+{
+    if (!settings_mgr_sd_available())
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No SD card");
+
+    settings_dir_t dir;
+    char name[SETTINGS_NAME_MAX] = "";
+    if (!req_file_target(req, &dir, name, sizeof(name)))
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "Missing or invalid X-Dir / X-Filename");
+
+    char path[SETTINGS_PATH_MAX];
+    if (settings_mgr_resolve_path(dir, name, path, sizeof(path)) != ESP_OK)
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No such file");
+
+    char *buf = malloc(DOWNLOAD_CHUNK);
+    if (!buf) { fclose(f); return httpd_resp_send_500(req); }
+
+    httpd_resp_set_type(req, mime_for(name));
+    char disp[SETTINGS_NAME_MAX + 40];
+    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", name);
+    httpd_resp_set_hdr(req, "Content-Disposition", disp);
+
+    esp_err_t r = ESP_OK;
+    size_t n;
+    while ((n = fread(buf, 1, DOWNLOAD_CHUNK, f)) > 0) {
+        if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) {
+            r = ESP_FAIL;    /* client went away mid-transfer */
+            break;
+        }
+    }
+    free(buf);
+    fclose(f);
+
+    /* Terminating zero-length chunk closes the response; skipping it on error
+     * is deliberate, since the connection is already being torn down. */
+    if (r == ESP_OK) r = httpd_resp_send_chunk(req, NULL, 0);
+    else             httpd_resp_send_chunk(req, NULL, 0);
+    return r;
+}
+
+static esp_err_t delete_post(httpd_req_t *req)
+{
+    if (!settings_mgr_sd_available())
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No SD card");
+
+    settings_dir_t dir;
+    char name[SETTINGS_NAME_MAX] = "";
+    if (!req_file_target(req, &dir, name, sizeof(name)))
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "Missing or invalid X-Dir / X-Filename");
+
+    /* Screenshots only. Presets, calibration files and settings.json are work
+     * that cannot be regenerated; a capture can simply be retaken. */
+    if (dir != SETTINGS_DIR_SHOTS)
+        return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
+                                   "Only screenshots can be deleted");
+
+    esp_err_t err = settings_mgr_delete_screenshot(name);
+    if (err == ESP_ERR_INVALID_ARG)
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
+    if (err != ESP_OK)
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No such file");
+
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_sendstr(req, "Deleted");
+}
+
 /* ── screenshot ───────────────────────────────────────────────── */
 
 static int64_t s_last_shot_us;
@@ -475,6 +641,10 @@ esp_err_t web_server_start(void)
         { .uri = "/api/status",      .method = HTTP_GET,  .handler = status_get },
         { .uri = "/api/config",      .method = HTTP_GET,  .handler = config_get },
         { .uri = "/api/config",      .method = HTTP_PUT,  .handler = config_put },
+        { .uri = "/files.html",      .method = HTTP_GET,  .handler = files_page_get },
+        { .uri = "/api/files",       .method = HTTP_GET,  .handler = files_list_get },
+        { .uri = "/api/download",    .method = HTTP_GET,  .handler = download_get },
+        { .uri = "/api/delete",      .method = HTTP_POST, .handler = delete_post },
         { .uri = "/api/screenshot",  .method = HTTP_POST, .handler = screenshot_post },
         { .uri = "/reboot",          .method = HTTP_POST, .handler = reboot_post },
     };

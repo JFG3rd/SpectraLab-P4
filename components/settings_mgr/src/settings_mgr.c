@@ -746,6 +746,92 @@ int settings_mgr_list_cal_files(char names[][SETTINGS_NAME_MAX], int max_count)
     return count;
 }
 
+/* ── generic browsing (web file browser) ───────────────────────── */
+
+static const char *dir_path(settings_dir_t dir)
+{
+    switch (dir) {
+    case SETTINGS_DIR_ROOT:  return SD_DIR;
+    case SETTINGS_DIR_CAL:   return SETTINGS_CAL_DIR;
+    case SETTINGS_DIR_SHOTS: return SETTINGS_SHOT_DIR;
+    default:                 return NULL;
+    }
+}
+
+/* A plain filename: no separators, no traversal, no hidden files, and short
+ * enough to fit the fixed buffers everywhere downstream. */
+static bool name_is_plain(const char *name)
+{
+    if (!name || name[0] == '\0' || name[0] == '.') return false;
+    if (strlen(name) >= SETTINGS_NAME_MAX)          return false;
+    if (strstr(name, ".."))                         return false;
+    for (const char *p = name; *p; p++) {
+        if (*p == '/' || *p == '\\') return false;
+    }
+    return true;
+}
+
+esp_err_t settings_mgr_resolve_path(settings_dir_t dir, const char *name,
+                                    char *out, size_t out_len)
+{
+    const char *base = dir_path(dir);
+    if (!base || !out || out_len == 0)  return ESP_ERR_INVALID_ARG;
+    if (!name_is_plain(name))           return ESP_ERR_INVALID_ARG;
+
+    int n = snprintf(out, out_len, "%s/%s", base, name);
+    if (n < 0 || (size_t)n >= out_len)  return ESP_ERR_INVALID_ARG;
+    return ESP_OK;
+}
+
+int settings_mgr_list_dir(settings_dir_t dir, settings_file_t *out, int max_count)
+{
+    const char *base = dir_path(dir);
+    if (!out || max_count <= 0 || !base) return -1;
+    if (!s_sd_mounted)                   return 0;
+
+    DIR *d = opendir(base);
+    if (!d) return 0;
+
+    int count = 0;
+    struct dirent *ent;
+    while (count < max_count && (ent = readdir(d)) != NULL) {
+        if (!name_is_plain(ent->d_name)) continue;   /* also skips "." and ".." */
+
+        char path[SETTINGS_PATH_MAX];
+        if (snprintf(path, sizeof(path), "%s/%s", base, ent->d_name) >= (int)sizeof(path))
+            continue;
+
+        struct stat st;
+        if (stat(path, &st) != 0)   continue;
+        if (!S_ISREG(st.st_mode))   continue;        /* directories are not listed */
+
+        strlcpy(out[count].name, ent->d_name, sizeof(out[count].name));
+        out[count].size = (long)st.st_size;
+        count++;
+    }
+    closedir(d);
+    return count;
+}
+
+esp_err_t settings_mgr_delete_screenshot(const char *name)
+{
+    if (!s_sd_mounted) return ESP_ERR_NOT_FOUND;
+
+    /* Extension check on top of the fixed directory: two independent gates,
+     * so neither alone has to be perfect. */
+    size_t len = name ? strlen(name) : 0;
+    if (len < 5 || strcasecmp(name + len - 4, ".png") != 0)
+        return ESP_ERR_INVALID_ARG;
+
+    char path[SETTINGS_PATH_MAX];
+    esp_err_t err = settings_mgr_resolve_path(SETTINGS_DIR_SHOTS, name, path, sizeof(path));
+    if (err != ESP_OK) return err;
+
+    if (remove(path) != 0) return ESP_ERR_NOT_FOUND;
+    ESP_LOGI(TAG, "deleted screenshot %s", name);
+    return ESP_OK;
+}
+
 /* ── SD card management ────────────────────────────────────────── */
 
 esp_err_t settings_mgr_retry_sd(void)

@@ -8,5 +8,7 @@ extern const char wifi_setup_html[];
 extern const size_t wifi_setup_html_len;
 extern const char cal_upload_html[];
 extern const size_t cal_upload_html_len;
+extern const char files_html[];
+extern const size_t files_html_len;
 extern const char style_css[];
 extern const size_t style_css_len;

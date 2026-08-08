@@ -161,6 +161,58 @@ int settings_mgr_list_named(char names[][SETTINGS_NAME_MAX], int max_count);
  */
 int settings_mgr_list_cal_files(char names[][SETTINGS_NAME_MAX], int max_count);
 
+/* ── generic browsing, for the web file browser ────────────────────
+ *
+ * The browser is confined to SETTINGS_ROOT_DIR and its two subdirectories.
+ * Naming a directory by enum rather than by string is the point: a caller
+ * cannot express a path outside the tree, so there is no traversal to
+ * validate away later. Filenames are always plain basenames.
+ */
+typedef enum {
+    SETTINGS_DIR_ROOT = 0,   /* settings.json, <preset>.json, <preset>.nfbin */
+    SETTINGS_DIR_CAL,        /* microphone calibration files                 */
+    SETTINGS_DIR_SHOTS,      /* screen captures                              */
+    SETTINGS_DIR_COUNT,
+} settings_dir_t;
+
+typedef struct {
+    char name[SETTINGS_NAME_MAX];
+    long size;                      /* bytes, -1 if stat() failed */
+} settings_file_t;
+
+/**
+ * @brief List regular files in one of the managed directories, newest-first
+ *        ordering NOT guaranteed (readdir order).
+ * @return count filled, 0 if empty/no SD, -1 on bad arguments.
+ */
+int settings_mgr_list_dir(settings_dir_t dir, settings_file_t *out, int max_count);
+
+/**
+ * @brief Build an absolute path for `name` inside `dir`, rejecting anything
+ *        that is not a plain filename.
+ *
+ * Rejects an empty name, any '/' or '\\', any "..", a leading '.', and names
+ * that do not fit. This is the single gate every file-serving path goes
+ * through, so traversal cannot be reintroduced by a careless caller.
+ *
+ * @return ESP_OK, or ESP_ERR_INVALID_ARG if the name is not acceptable.
+ */
+esp_err_t settings_mgr_resolve_path(settings_dir_t dir, const char *name,
+                                    char *out, size_t out_len);
+
+/**
+ * @brief Delete a screen capture by filename.
+ *
+ * Screenshots only, and deliberately so: presets, calibration files and
+ * settings.json represent work that cannot be regenerated, whereas a capture
+ * can simply be retaken. Enforces both the directory and a ".png" extension,
+ * so a hand-crafted request cannot reach anything else.
+ *
+ * @return ESP_OK, ESP_ERR_INVALID_ARG for a bad name, ESP_ERR_NOT_FOUND if
+ *         absent or no SD card.
+ */
+esp_err_t settings_mgr_delete_screenshot(const char *name);
+
 /**
  * @brief Re-attempt SD card mount (e.g. after inserting a card post-boot).
  *        Unmounts first if already mounted, then re-mounts.

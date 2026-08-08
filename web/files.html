@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SD Card Files</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/style.css">
+    <script>
+        function applyTheme(dark) {
+            document.body.classList.toggle("dark-mode", dark);
+            document.documentElement.style.colorScheme = dark ? "dark" : "light";
+            var b = document.getElementById("themeToggle");
+            if (b) b.textContent = dark ? "☀️ Light Mode" : "🌙 Dark Mode";
+        }
+        function toggleTheme() {
+            var dark = !document.body.classList.contains("dark-mode");
+            try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch (e) {}
+            applyTheme(dark);
+        }
+        (function () {
+            var saved = null;
+            try { saved = localStorage.getItem("theme"); } catch (e) {}
+            var dark = saved ? (saved === "dark")
+                : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+            document.addEventListener("DOMContentLoaded", function () { applyTheme(dark); });
+        })();
+
+        function setStatus(message, isError) {
+            var el = document.getElementById("filesStatusMsg");
+            el.textContent = message || "";
+            el.style.color = isError ? "#ff4b4b" : "";
+        }
+
+        function humanSize(n) {
+            if (n < 0) return "?";
+            if (n < 1024) return n + " B";
+            if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+            return (n / (1024 * 1024)).toFixed(2) + " MB";
+        }
+
+        // A plain <a href> cannot set X-Filename, and the device's URI matcher
+        // rejects query strings — so fetch the bytes and hand the browser a blob.
+        function download(dir, name) {
+            setStatus("Downloading " + name + "...");
+            fetch("/api/download", { headers: { "X-Dir": dir, "X-Filename": encodeURIComponent(name) } })
+                .then(function (r) {
+                    if (!r.ok) throw new Error("HTTP " + r.status);
+                    return r.blob();
+                })
+                .then(function (blob) {
+                    var url = URL.createObjectURL(blob);
+                    var a = document.createElement("a");
+                    a.href = url;
+                    a.download = name;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+                    setStatus("Downloaded " + name);
+                })
+                .catch(function (e) { setStatus("Download failed: " + e.message, true); });
+        }
+
+        // Two-step confirm, same as Forget on the device's Wi-Fi screen: the
+        // first click only arms the button.
+        var armed = null;
+        function delClick(btn, name) {
+            if (armed && armed !== btn) resetArmed();
+            if (armed !== btn) {
+                armed = btn;
+                btn.dataset.label = btn.textContent;
+                btn.textContent = "Click again to delete";
+                return;
+            }
+            resetArmed();
+            setStatus("Deleting " + name + "...");
+            fetch("/api/delete", {
+                method: "POST",
+                headers: { "X-Dir": "screenshots", "X-Filename": encodeURIComponent(name) }
+            })
+                .then(function (r) {
+                    if (!r.ok) throw new Error("HTTP " + r.status);
+                    setStatus("Deleted " + name);
+                    refresh();
+                })
+                .catch(function (e) { setStatus("Delete failed: " + e.message, true); });
+        }
+        function resetArmed() {
+            if (armed && armed.dataset.label) armed.textContent = armed.dataset.label;
+            armed = null;
+        }
+
+        function deleteAllShots(names) {
+            if (!names.length) return;
+            if (!confirm("Delete all " + names.length + " screenshot(s)? This cannot be undone.")) return;
+            setStatus("Deleting " + names.length + " screenshot(s)...");
+            var chain = Promise.resolve();
+            names.forEach(function (n) {
+                chain = chain.then(function () {
+                    return fetch("/api/delete", {
+                        method: "POST",
+                        headers: { "X-Dir": "screenshots", "X-Filename": encodeURIComponent(n) }
+                    });
+                });
+            });
+            chain.then(function () { setStatus("Deleted " + names.length + " screenshot(s)"); refresh(); })
+                 .catch(function (e) { setStatus("Delete failed: " + e.message, true); });
+        }
+
+        function renderSection(container, title, dir, entries, deletable) {
+            var card = document.createElement("div");
+            card.className = "card";
+
+            var h = document.createElement("div");
+            h.className = "card-title";
+            h.textContent = title + " (" + entries.length + ")";
+            card.appendChild(h);
+
+            if (!entries.length) {
+                var none = document.createElement("p");
+                none.textContent = "Nothing here yet.";
+                card.appendChild(none);
+                container.appendChild(card);
+                return;
+            }
+
+            entries.sort(function (a, b) { return a.name.localeCompare(b.name); });
+            entries.forEach(function (f) {
+                var row = document.createElement("div");
+                row.className = "button-row";
+
+                var label = document.createElement("span");
+                label.textContent = f.name + "  —  " + humanSize(f.size);
+                row.appendChild(label);
+
+                var dl = document.createElement("button");
+                dl.className = "button btn-info";
+                dl.textContent = "⬇ Download";
+                dl.onclick = function () { download(dir, f.name); };
+                row.appendChild(dl);
+
+                if (deletable) {
+                    var del = document.createElement("button");
+                    del.className = "button btn-test";
+                    del.textContent = "🗑 Delete";
+                    del.onclick = function () { delClick(del, f.name); };
+                    row.appendChild(del);
+                }
+                card.appendChild(row);
+            });
+            container.appendChild(card);
+        }
+
+        function refresh() {
+            resetArmed();
+            var out = document.getElementById("fileList");
+            out.textContent = "Loading...";
+            fetch("/api/files")
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    out.textContent = "";
+                    if (!d.sd) {
+                        setStatus("No SD card is mounted.", true);
+                        return;
+                    }
+                    renderSection(out, "📸 Screenshots", "screenshots", d.screenshots || [], true);
+                    renderSection(out, "🎚 Presets & settings", "root", d.root || [], false);
+                    renderSection(out, "🎤 Microphone calibration", "cal", d.cal || [], false);
+
+                    var shots = (d.screenshots || []).map(function (f) { return f.name; });
+                    document.getElementById("delAllBtn").style.display = shots.length ? "" : "none";
+                    document.getElementById("delAllBtn").onclick = function () { deleteAllShots(shots); };
+                })
+                .catch(function (e) { out.textContent = ""; setStatus("Could not list files: " + e.message, true); });
+        }
+
+        function capture() {
+            setStatus("Capturing...");
+            fetch("/api/screenshot", { method: "POST" })
+                .then(function (r) {
+                    if (!r.ok) return r.text().then(function (t) { throw new Error(t || ("HTTP " + r.status)); });
+                    return r.json();
+                })
+                .then(function (d) {
+                    // The device answers as soon as the framebuffer is snapshotted;
+                    // the PNG is still being encoded and written for a moment after.
+                    setStatus("Captured " + d.file + " — writing to card...");
+                    setTimeout(refresh, 2500);
+                })
+                .catch(function (e) { setStatus("Capture failed: " + e.message, true); });
+        }
+
+        document.addEventListener("DOMContentLoaded", refresh);
+    </script>
+</head>
+<body>
+    <button class="button theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark / light mode">🌙 Dark Mode</button>
+    <div class="wifi-setup-container">
+        <h1>💾 SD Card Files</h1>
+        <p>Browse and download files SpectraLab-P4 has written to the SD card. Screenshots can also be deleted here; presets and calibration files are read-only.</p>
+
+        <button class="button btn-save" onclick="capture()" title="Take a screenshot of the analyzer display now">📸 Take Screenshot</button>
+        <button class="button btn-info" onclick="refresh()" title="Reload the file list">🔄 Refresh</button>
+        <button class="button btn-test" id="delAllBtn" style="display:none" title="Delete every screenshot on the card">🗑 Delete All Screenshots</button>
+        <a class="button btn-nav" href="/" title="Back to the main page">🏠 Home</a>
+
+        <div class="flash-stats" id="filesStatusMsg"></div>
+        <div id="fileList"></div>
+
+        <footer>
+            <p class="disclaimer">SpectraLab-P4 — made by JFG3rd</p>
+        </footer>
+    </div>
+</body>
+</html>
