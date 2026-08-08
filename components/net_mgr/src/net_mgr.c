@@ -895,12 +895,24 @@ esp_err_t net_mgr_init(void)
          * mismatch makes RPC calls slow, so an all-channel pre-association
          * scan noticeably delayed the join. Fast scan associates with the
          * first matching AP found — quicker, which is what matters here. */
+        /* Apply this network's addressing BEFORE the link comes up.
+         *
+         * This path duplicates connect_current_known() (it cannot call it —
+         * esp_wifi_start() has not run yet, so the esp_wifi_connect() at the
+         * end would fail; the connect is fired from the STA_START handler
+         * instead), and the copy was missing this call. The effect was that a
+         * network saved with a static IP came up on DHCP on the first join
+         * after every boot, and only got its static address if the link later
+         * dropped and reconnected through connect_current_known(). */
+        apply_ip_config(&s_known[0].ip);
+
         esp_wifi_set_mode(WIFI_MODE_STA);
         esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
         set_state(NET_JOINING, "boot join");
         s_retry = 0;
-        ESP_LOGI(TAG, "joining '%s' (1/%d), pw %d chars...",
-                 s_sta_ssid, s_known_count, (int)strlen(s_known[0].pass));
+        ESP_LOGI(TAG, "joining '%s' (1/%d), pw %d chars, %s...",
+                 s_sta_ssid, s_known_count, (int)strlen(s_known[0].pass),
+                 s_known[0].ip.use_static ? "static IP" : "DHCP");
     } else {
         start_setup_ap();
     }
