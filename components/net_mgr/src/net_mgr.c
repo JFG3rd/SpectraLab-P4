@@ -42,6 +42,10 @@ static const char *TAG = "net_mgr";
 #define RECONNECT_MAX_MS   8000
 #define SCAN_MAX           20
 #define SCAN_TIMEOUT_US    (8 * 1000 * 1000)   /* clear 'scanning' if SCAN_DONE never fires */
+/* Give up on an association that never yields an address. Generous enough for
+ * a slow DHCP server (a lease normally lands in 1-3 s) while still leaving the
+ * board recoverable in well under a minute. */
+#define IP_TIMEOUT_MS      20000
 
 /* Set to 1 to also surface the underlying esp_wifi / esp-hosted transport
  * logs (very noisy over the C6 RPC link) when debugging join failures. */
@@ -84,6 +88,7 @@ static int                s_retry;          /* attempts against the current know
 static bool               s_established;    /* got an IP at least once this boot        */
 static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_scan_timeout_timer;
+static esp_timer_handle_t s_ip_timeout_timer;
 static char               s_sta_ssid[NET_SSID_MAX];
 static char               s_ip_str[16] = "";
 static esp_netif_t       *s_sta_netif;      /* kept for static-IP and ARP probing */
@@ -362,6 +367,43 @@ static void schedule_reconnect(uint32_t delay_ms)
     esp_timer_start_once(s_reconnect_timer, (uint64_t)delay_ms * 1000);
 }
 
+/* Associated but no address.
+ *
+ * The state machine otherwise only advances on STA_DISCONNECTED, so an AP that
+ * accepts the association and then never hands out a lease parks the analyzer
+ * in JOINING permanently: no fallback to the setup AP, and nothing on screen
+ * saying why. That state is unrecoverable without a serial cable, which is the
+ * opposite of what the setup-AP fallback exists for.
+ *
+ * Treat it as a failed join instead: disconnect and move on, so the usual
+ * per-network retry and eventual setup-AP fallback do their job. */
+static void ip_timeout_cb(void *arg)
+{
+    (void)arg;
+    if (s_provisioning || s_state != NET_JOINING) return;
+
+    ESP_LOGW(TAG, "no IP within %d s of associating with '%s' "
+                  "(DHCP server not responding?) — treating as a failed join",
+             IP_TIMEOUT_MS / 1000, s_sta_ssid);
+
+    /* Produces STA_DISCONNECTED, which the existing handler turns into a
+     * retry and, once the retries are spent, the next known network or the
+     * setup AP. */
+    esp_wifi_disconnect();
+}
+
+static void arm_ip_timeout(void)
+{
+    if (!s_ip_timeout_timer) return;
+    esp_timer_stop(s_ip_timeout_timer);
+    esp_timer_start_once(s_ip_timeout_timer, (uint64_t)IP_TIMEOUT_MS * 1000);
+}
+
+static void cancel_ip_timeout(void)
+{
+    if (s_ip_timeout_timer) esp_timer_stop(s_ip_timeout_timer);
+}
+
 static void scan_timeout_cb(void *arg)
 {
     (void)arg;
@@ -428,9 +470,10 @@ static void connect_current_known(void)
     esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
     set_state(NET_JOINING, "connect known");
     s_retry = 0;
-    ESP_LOGI(TAG, "joining '%s' (%d/%d), pw %d chars...",
+    ESP_LOGI(TAG, "joining '%s' (%d/%d), pw %d chars, %s...",
              s_sta_ssid, s_join_idx + 1, s_known_count,
-             (int)strlen(s_known[s_join_idx].pass));
+             (int)strlen(s_known[s_join_idx].pass),
+             s_known[s_join_idx].ip.use_static ? "static IP" : "DHCP");
     esp_wifi_connect();
 }
 
@@ -462,11 +505,19 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             break;
         case WIFI_EVENT_STA_CONNECTED: {
             wifi_event_sta_connected_t *c = (wifi_event_sta_connected_t *)data;
-            ESP_LOGI(TAG, "event: STA_CONNECTED to '%s' ch %u authmode %d — waiting for IP (DHCP)",
-                     s_sta_ssid, c ? (unsigned)c->channel : 0u, c ? (int)c->authmode : -1);
+            bool statically = (s_join_idx >= 0 && s_join_idx < s_known_count)
+                              ? s_known[s_join_idx].ip.use_static : false;
+            /* Say which addressing is actually in use — this used to read
+             * "waiting for IP (DHCP)" even for a static network, which sends
+             * anyone reading the log after a failure down the wrong path. */
+            ESP_LOGI(TAG, "event: STA_CONNECTED to '%s' ch %u authmode %d — waiting for IP (%s)",
+                     s_sta_ssid, c ? (unsigned)c->channel : 0u, c ? (int)c->authmode : -1,
+                     statically ? "static" : "DHCP");
+            arm_ip_timeout();
             break;
         }
         case WIFI_EVENT_STA_DISCONNECTED: {
+            cancel_ip_timeout();
             /* Paused for provisioning (deliberate disconnect to allow a
              * scan) — don't fight it with a reconnect. */
             if (s_provisioning) break;
@@ -523,6 +574,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         s_sta_ip      = ev->ip_info.ip;
         s_sta_netmask = ev->ip_info.netmask;
         s_sta_gw      = ev->ip_info.gw;
+        cancel_ip_timeout();
         set_state(NET_STA_UP, "got IP");
         s_retry = 0;
         s_pass_fail = 0;
@@ -781,6 +833,11 @@ esp_err_t net_mgr_init(void)
         .callback = reconnect_timer_cb, .name = "wifi_reconnect",
     };
     esp_timer_create(&rc_args, &s_reconnect_timer);   /* non-fatal: falls back to immediate reconnect */
+
+    const esp_timer_create_args_t ip_args = {
+        .callback = ip_timeout_cb, .name = "net_ip_to",
+    };
+    esp_timer_create(&ip_args, &s_ip_timeout_timer);   /* non-fatal: no fallback if it fails */
 
     const esp_timer_create_args_t st_args = {
         .callback = scan_timeout_cb, .name = "wifi_scan_to",
