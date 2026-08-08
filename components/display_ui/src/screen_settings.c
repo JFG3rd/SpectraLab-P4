@@ -5,6 +5,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 #include "esp_log.h"
 #include "esp_check.h"
 #include "lvgl.h"
@@ -49,6 +50,7 @@ static const char *gain_opts      = "0 dB\n6 dB\n12 dB\n18 dB\n24 dB\n30 dB\n36 
 static const char *agc_enable_opts = "Off\nOn";
 static const char *agc_target_opts = "-6 dBFS\n-9 dBFS\n-12 dBFS\n-18 dBFS\n-24 dBFS";
 static const char *agc_speed_opts  = "Slow\nMedium\nFast";
+static const char *a_weight_opts   = "Off (Z)\nOn (A)";
 
 static lv_obj_t *s_dd_color_scheme;
 static lv_obj_t *s_dd_bar_decay;
@@ -75,6 +77,9 @@ static lv_obj_t *s_btn_nf_capture;
 static lv_obj_t *s_sw_ambient;       /* toggle switch for live ambient noise subtraction */
 static lv_obj_t *s_slider_brightness;
 static lv_obj_t *s_lbl_brightness_val;
+static lv_obj_t *s_dd_a_weight;
+static lv_obj_t *s_slider_mic_sens;
+static lv_obj_t *s_lbl_mic_sens_val;
 static lv_obj_t *s_lbl_sd_status;
 static bool      s_format_armed = false;
 
@@ -193,6 +198,44 @@ static void brightness_slider_cb(lv_event_t *e)
     }
 }
 
+/* Mic sensitivity slider <-> dBV/Pa.
+ *
+ * lv_slider is integer-only, so the slider counts half-decibels: -120..0
+ * maps to -60.0..0.0 dBV/Pa in 0.5 dB steps. The range covers every MEMS and
+ * measurement capsule worth entering (typical MEMS is around -38, studio
+ * condensers reach the mid -20s); settings_sanitize() clamps to -120..20, so
+ * the slider is the narrower constraint and values outside it can still
+ * arrive over PUT /api/config. */
+static inline int   mic_sens_db_to_slider(float dbv) { return (int)lroundf(dbv * 2.0f); }
+static inline float mic_sens_slider_to_db(int v)     { return (float)v * 0.5f; }
+
+static void update_mic_sens_label(int slider_val)
+{
+    if (!s_lbl_mic_sens_val) return;
+    char b[16];
+    snprintf(b, sizeof(b), "%.1f dBV", (double)mic_sens_slider_to_db(slider_val));
+    lv_label_set_text(s_lbl_mic_sens_val, b);
+}
+
+static void mic_sens_slider_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    int v = (int)lv_slider_get_value(lv_event_get_target(e));
+
+    if (code == LV_EVENT_VALUE_CHANGED) {
+        update_mic_sens_label(v);   /* live readout while dragging */
+    } else if (code == LV_EVENT_RELEASED) {
+        /* Apply immediately rather than on Back: this shifts the SPL readout,
+         * and the whole point is watching it line up with a reference meter
+         * while you dial the datasheet figure in. */
+        s_cur_cfg.mic_sensitivity_dbv = mic_sens_slider_to_db(v);
+        dsp_engine_set_config(&s_cur_cfg);
+        settings_t s;
+        screen_settings_collect(&s);
+        settings_mgr_save(&s);
+    }
+}
+
 static float peak_decay_index_to_rate(uint16_t idx)
 {
     static const float rates[] = {0.05f, 0.15f, 0.25f, 0.5f, 1.0f};
@@ -248,6 +291,9 @@ static void read_dsp_widgets(dsp_config_t *cfg, int *gain_db)
     cfg->averaging   = (averaging_mode_t)lv_dropdown_get_selected(s_dd_avg);
     cfg->overlap_pct = overlap_index_to_pct(lv_dropdown_get_selected(s_dd_overlap));
     cfg->noise_floor_enabled = (lv_dropdown_get_selected(s_dd_nf_enable) == 1);
+    cfg->a_weighting = (lv_dropdown_get_selected(s_dd_a_weight) == 1);
+    cfg->mic_sensitivity_dbv =
+        mic_sens_slider_to_db((int)lv_slider_get_value(s_slider_mic_sens));
     *gain_db = gain_index_to_db(lv_dropdown_get_selected(s_dd_gain));
 }
 
@@ -600,6 +646,42 @@ esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
     lv_obj_set_style_text_font(s_lbl_brightness_val, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(s_lbl_brightness_val, 875, 334);
 
+    /* ── SPL CALIBRATION (left column, below the 600 px fold) ──
+     * The engine has computed A-weighted SPL and honoured mic sensitivity
+     * since Phase 2 M2; both were persisted and REST-settable but had no
+     * control here, so the SPL readout could only be trimmed by hand-editing
+     * settings.json. This group is that missing UI. */
+    make_group_header(s_screen, "SPL CALIBRATION", 20, 605);
+
+    s_dd_a_weight = make_labeled_dropdown(s_screen, "Weighting:", a_weight_opts, 631);
+
+    lv_obj_t *ms_lbl = lv_label_create(s_screen);
+    lv_label_set_text(ms_lbl, "Mic Sensitivity:");
+    lv_obj_set_style_text_color(ms_lbl, lv_color_hex(0xCCDDEE), 0);
+    lv_obj_set_style_text_font(ms_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_pos(ms_lbl, 20, 676);
+
+    s_slider_mic_sens = lv_slider_create(s_screen);
+    lv_slider_set_range(s_slider_mic_sens, mic_sens_db_to_slider(-60.0f),
+                                           mic_sens_db_to_slider(0.0f));
+    lv_slider_set_value(s_slider_mic_sens, mic_sens_db_to_slider(-38.0f), LV_ANIM_OFF);
+    lv_obj_set_size(s_slider_mic_sens, 160, 12);
+    lv_obj_set_pos(s_slider_mic_sens, 160, 680);
+    lv_obj_add_event_cb(s_slider_mic_sens, mic_sens_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(s_slider_mic_sens, mic_sens_slider_cb, LV_EVENT_RELEASED, NULL);
+
+    s_lbl_mic_sens_val = lv_label_create(s_screen);
+    lv_obj_set_style_text_color(s_lbl_mic_sens_val, lv_color_hex(0xCCDDEE), 0);
+    lv_obj_set_style_text_font(s_lbl_mic_sens_val, &lv_font_montserrat_14, 0);
+    lv_obj_set_pos(s_lbl_mic_sens_val, 335, 676);
+    update_mic_sens_label(mic_sens_db_to_slider(-38.0f));
+
+    lv_obj_t *ms_hint = lv_label_create(s_screen);
+    lv_label_set_text(ms_hint, "From the microphone datasheet (typ. -38 dBV/Pa)");
+    lv_obj_set_style_text_color(ms_hint, lv_color_hex(0x88AACC), 0);
+    lv_obj_set_style_text_font(ms_hint, &lv_font_montserrat_12, 0);
+    lv_obj_set_pos(ms_hint, 20, 706);
+
     /* Set initial selection to match default config */
     lv_dropdown_set_selected(s_dd_color_scheme, COLOR_SCHEME_DARK);
     lv_dropdown_set_selected(s_dd_bar_decay,    0);  /* Instant = no decay (default) */
@@ -745,6 +827,17 @@ void screen_settings_sync_from(const settings_t *cfg)
     lv_dropdown_set_selected(s_dd_overlap,      overlap_pct_to_index(cfg->dsp.overlap_pct));
     lv_dropdown_set_selected(s_dd_gain,         gain_db_to_index(cfg->mic_gain_db));
     lv_dropdown_set_selected(s_dd_nf_enable,    cfg->dsp.noise_floor_enabled ? 1 : 0);
+    lv_dropdown_set_selected(s_dd_a_weight,     cfg->dsp.a_weighting ? 1 : 0);
+    {   /* settings_sanitize() allows -120..20 dBV, wider than the slider —
+         * clamp so a REST-set value outside the range still lands somewhere
+         * sane instead of pinning the slider silently at an unrelated spot. */
+        int sv = mic_sens_db_to_slider(cfg->dsp.mic_sensitivity_dbv);
+        int lo = mic_sens_db_to_slider(-60.0f), hi = mic_sens_db_to_slider(0.0f);
+        if (sv < lo) sv = lo;
+        if (sv > hi) sv = hi;
+        lv_slider_set_value(s_slider_mic_sens, sv, LV_ANIM_OFF);
+        update_mic_sens_label(sv);
+    }
     lv_dropdown_set_selected(s_dd_color_scheme, (uint16_t)cfg->color_scheme);
     lv_dropdown_set_selected(s_dd_bar_decay,    bar_decay_rate_to_index(cfg->bar_decay_db_per_frame));
     lv_dropdown_set_selected(s_dd_peak_decay,   peak_decay_rate_to_index(cfg->peak_decay_db_per_frame));
