@@ -44,6 +44,10 @@ void      screen_settings_sync_display_mode(int mode);
 /* Same, for the colour-theme dropdown when the panel abort key cycles it. */
 void      screen_settings_sync_color_scheme(int scheme);
 
+/* Reflect the active settings profile: refreshes the dropdown from the card,
+ * the explanatory hint and the PRESETS status line. Pass "" for none. */
+void      screen_settings_sync_profile(const char *name);
+
 /* Gray out the mic-gain dropdown while a USB mic is the active source. */
 void      screen_settings_set_usb_active(bool usb_active);
 

@@ -11,6 +11,7 @@
 #include "lvgl.h"
 #include "settings_mgr.h"
 #include "dsp_engine.h"
+#include "display_ui.h"
 #include "screen_settings.h"
 #include "screen_file_dialog.h"
 
@@ -57,6 +58,9 @@ static void saveas_commit(void)
         if (r == ESP_OK) {
             /* Persist the current captured noise-floor baseline with preset. */
             settings_mgr_save_named_noise_floor(name);
+            /* An explicit save is what makes a preset the active profile —
+             * nothing else ever writes to it. */
+            display_ui_set_active_profile(name);
             snprintf(msg, sizeof(msg), "Saved '%s' " LV_SYMBOL_OK, name);
         }
         else             snprintf(msg, sizeof(msg), "Save failed (%s)", esp_err_to_name(r));
@@ -235,6 +239,8 @@ static void files_load_btn_cb(lv_event_t *e)
         snprintf(msg, sizeof(msg), "Loaded cfg, NF load failed (%s)", esp_err_to_name(nf));
         lv_label_set_text(s_files_status, msg);
     }
+
+    display_ui_set_active_profile(s_selected);
 
     char msg[64];
     snprintf(msg, sizeof(msg), "Loaded '%s' " LV_SYMBOL_OK, s_selected);

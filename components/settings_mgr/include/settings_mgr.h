@@ -43,6 +43,8 @@ typedef enum {
     AGC_SPEED_COUNT,
 } settings_agc_speed_t;
 
+#define SETTINGS_NAME_MAX 32   /* max preset name length incl. NUL */
+
 /* Complete application settings — everything that the user can adjust at
  * runtime and that should survive a power cycle.
  *
@@ -68,6 +70,12 @@ typedef struct {
     bool           agc_enabled;         /* automatic gain control (software AGC)       */
     int            agc_target_dbfs;     /* AGC target display level: -6/-9/-12/-18/-24 */
     int            agc_speed;           /* settings_agc_speed_t: slow/medium/fast      */
+    /* Name of the preset this configuration was last loaded from or saved to,
+     * "" for none. A LABEL ONLY: live edits always auto-save to the working
+     * configuration (settings.json + NVS), never back to the named file. A
+     * profile changes only when the user explicitly saves it, so a preset stays
+     * the snapshot it was taken as. */
+    char           active_profile[SETTINGS_NAME_MAX];
 } settings_t;
 
 /* Everything this project writes lives under one root, so the web file
@@ -127,9 +135,9 @@ void settings_mgr_sanitize(settings_t *s);
 
 /* ── Named presets on SD card (/sdcard/spectrum/<name>.json) ──────
  * Separate from the auto-save flow: settings_mgr_save()/load() still use
- * the default settings.json + NVS. Named files are explicit user presets. */
-
-#define SETTINGS_NAME_MAX 32   /* max preset name length incl. NUL */
+ * the default settings.json + NVS. Named files are explicit user presets:
+ * a preset is only ever written by an explicit save, so ordinary tweaking
+ * cannot silently rewrite one. See settings_t.active_profile. */
 
 /** @brief Save settings as a named preset. Name is sanitized (no path chars). */
 esp_err_t settings_mgr_save_named(const settings_t *cfg, const char *name);

@@ -55,6 +55,7 @@ static float        s_last_amb_margin = 1.5f;
 static int          s_last_usb_policy = SETTINGS_USB_STEREO_POLICY_SUM;
 static bool         s_last_cal_enabled = false;
 static char         s_last_cal_file[32] = "";
+static char         s_last_profile[SETTINGS_NAME_MAX] = "";
 static bool         s_last_agc_enabled = false;
 static int          s_last_agc_target  = -12;
 static int          s_last_agc_speed   = AGC_SPEED_SLOW;
@@ -135,6 +136,7 @@ static void save_current_settings(void)
                      .agc_target_dbfs         = s_last_agc_target,
                      .agc_speed               = s_last_agc_speed };
     strlcpy(s.cal_file, s_last_cal_file, sizeof(s.cal_file));
+    strlcpy(s.active_profile, s_last_profile, sizeof(s.active_profile));
     settings_mgr_save(&s);
 }
 
@@ -222,7 +224,20 @@ void display_ui_sync_settings(const settings_t *cfg)
     s_last_agc_enabled = cfg->agc_enabled;
     s_last_agc_target  = cfg->agc_target_dbfs;
     s_last_agc_speed   = cfg->agc_speed;
+    strlcpy(s_last_profile, cfg->active_profile, sizeof(s_last_profile));
     screen_settings_sync_from(cfg);
+}
+
+void display_ui_set_active_profile(const char *name)
+{
+    strlcpy(s_last_profile, name ? name : "", sizeof(s_last_profile));
+    save_current_settings();
+    screen_settings_sync_profile(s_last_profile);
+}
+
+const char *display_ui_get_active_profile(void)
+{
+    return s_last_profile;
 }
 
 /* AGC on-screen button (spectrum status bar) toggled by the user. */

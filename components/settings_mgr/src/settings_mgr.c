@@ -158,6 +158,7 @@ static char *_settings_to_json(const settings_t *cfg)
     cJSON_AddBoolToObject  (root, "agc_enabled",                cfg->agc_enabled);
     cJSON_AddNumberToObject(root, "agc_target_dbfs",            cfg->agc_target_dbfs);
     cJSON_AddNumberToObject(root, "agc_speed",                  cfg->agc_speed);
+    cJSON_AddStringToObject(root, "active_profile",             cfg->active_profile);
 
     char *str = cJSON_Print(root);
     cJSON_Delete(root);
@@ -205,6 +206,9 @@ static bool _json_to_settings(const char *json_str, settings_t *out)
     GET_BOOL("agc_enabled",              agc_enabled);
     GET_INT ("agc_target_dbfs",          agc_target_dbfs);
     GET_INT ("agc_speed",                agc_speed);
+    if ((item = cJSON_GetObjectItem(root, "active_profile")) && cJSON_IsString(item) &&
+        item->valuestring != NULL)
+        strlcpy(out->active_profile, item->valuestring, sizeof(out->active_profile));
 
 #undef GET_INT
 #undef GET_FLT
@@ -379,6 +383,12 @@ void settings_mgr_sanitize(settings_t *s)
     if (strchr(s->cal_file, '/') || strchr(s->cal_file, '\\'))
         s->cal_file[0] = '\0';
 
+    /* active_profile: same treatment. It is only a label, but it is echoed
+     * into the UI and used to look up a preset, so it must not carry a path. */
+    s->active_profile[sizeof(s->active_profile) - 1] = '\0';
+    if (strchr(s->active_profile, '/') || strchr(s->active_profile, '\\'))
+        s->active_profile[0] = '\0';
+
     /* AGC: target is a display headroom (below 0 dBFS); speed is an enum */
     s->agc_target_dbfs = _clampi(s->agc_target_dbfs, -30, -3, -12);
     if ((unsigned)s->agc_speed >= AGC_SPEED_COUNT) s->agc_speed = AGC_SPEED_SLOW;
@@ -401,6 +411,7 @@ static void _set_defaults(settings_t *out)
     out->ambient_margin           = 1.5f;
     out->cal_enabled              = false;
     out->cal_file[0]              = '\0';
+    out->active_profile[0]        = '\0';
     out->agc_enabled              = false;   /* opt-in */
     out->agc_target_dbfs          = -12;     /* mid-range display headroom */
     out->agc_speed                = AGC_SPEED_SLOW;

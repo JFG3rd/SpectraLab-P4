@@ -141,6 +141,16 @@ esp_err_t display_ui_take_screenshot(char *path_out, size_t path_len);
  * `path` is NULL on failure. Not for general use. */
 void      display_ui_notify_screenshot(const char *path, bool ok);
 
+/* Record which named preset the live configuration came from, "" for none.
+ *
+ * This is a LABEL, not a save target. Ordinary edits keep auto-saving to the
+ * working configuration (settings.json + NVS) and never write back to the
+ * named file — a preset changes only when the user explicitly saves it, so it
+ * stays the snapshot it was taken as. Call after an explicit preset save or
+ * load. Must be called in LVGL context. */
+void        display_ui_set_active_profile(const char *name);
+const char *display_ui_get_active_profile(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -78,6 +78,14 @@ static lv_obj_t *s_sw_ambient;       /* toggle switch for live ambient noise sub
 static lv_obj_t *s_slider_brightness;
 static lv_obj_t *s_lbl_brightness_val;
 static lv_obj_t *s_dd_a_weight;
+static lv_obj_t *s_dd_profile;
+static lv_obj_t *s_lbl_profile_hint;
+static char      s_active_profile[SETTINGS_NAME_MAX] = "";
+/* Names backing s_dd_profile, index 0 = "(none)". Kept so a selection can be
+ * mapped back to a filename without re-reading the card. */
+#define PROFILE_MAX 24
+static char      s_profile_names[PROFILE_MAX][SETTINGS_NAME_MAX];
+static int       s_profile_count;
 static lv_obj_t *s_slider_mic_sens;
 static lv_obj_t *s_lbl_mic_sens_val;
 static lv_obj_t *s_lbl_sd_status;
@@ -234,6 +242,112 @@ static void mic_sens_slider_cb(lv_event_t *e)
         screen_settings_collect(&s);
         settings_mgr_save(&s);
     }
+}
+
+/* ── settings profiles ────────────────────────────────────────────
+ *
+ * A "profile" is just a named preset that the live configuration was last
+ * loaded from or saved to. Selecting one LOADS it; nothing here ever writes
+ * back to the file. Ordinary edits keep auto-saving to the working
+ * configuration, so a preset stays the snapshot it was taken as and only
+ * changes when the user explicitly saves over it.
+ */
+
+/* Echo the active profile alongside the SD state, so the PRESETS group shows
+ * which named preset the live configuration came from. */
+static void update_sd_status_label(void)
+{
+    if (!s_lbl_sd_status) return;
+    const char *sd = settings_mgr_sd_available() ? "SD: Ready" : "SD: Not found (NVS backup)";
+    if (s_active_profile[0] != '\0')
+        lv_label_set_text_fmt(s_lbl_sd_status, "%s  |  Profile: %s", sd, s_active_profile);
+    else
+        lv_label_set_text(s_lbl_sd_status, sd);
+}
+
+static void update_profile_hint(void)
+{
+    if (!s_lbl_profile_hint) return;
+    if (s_active_profile[0] == '\0') {
+        lv_label_set_text(s_lbl_profile_hint,
+                          "Settings are saved automatically. Use PRESETS > Save to store them "
+                          "under a name.");
+    } else {
+        lv_label_set_text_fmt(s_lbl_profile_hint,
+                              "Loaded from '%s'. Later changes are NOT written back to it — "
+                              "use PRESETS > Save.", s_active_profile);
+    }
+}
+
+/* Rebuild the dropdown from the card. Index 0 is always "(none)". */
+static void profile_refresh_list(void)
+{
+    if (!s_dd_profile) return;
+
+    s_profile_count = settings_mgr_list_named(s_profile_names, PROFILE_MAX);
+    if (s_profile_count < 0) s_profile_count = 0;
+
+    char opts[PROFILE_MAX * SETTINGS_NAME_MAX + 16];
+    size_t used = strlcpy(opts, "(none)", sizeof(opts));
+    for (int i = 0; i < s_profile_count && used < sizeof(opts) - 1; i++) {
+        used += snprintf(opts + used, sizeof(opts) - used, "\n%s", s_profile_names[i]);
+    }
+    lv_dropdown_set_options(s_dd_profile, opts);
+
+    /* Re-select the active one by name; it may have moved or been deleted. */
+    uint16_t sel = 0;
+    for (int i = 0; i < s_profile_count; i++) {
+        if (strcmp(s_profile_names[i], s_active_profile) == 0) { sel = (uint16_t)(i + 1); break; }
+    }
+    /* Deleted or renamed out from under us — drop the stale label rather than
+     * naming a preset that no longer exists. Only when the card is actually
+     * readable, so a missing SD does not erase the name. */
+    if (sel == 0 && s_active_profile[0] != '\0' && settings_mgr_sd_available()) {
+        s_active_profile[0] = '\0';
+        update_profile_hint();
+    }
+    lv_dropdown_set_selected(s_dd_profile, sel);
+}
+
+static void profile_dd_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+
+    uint16_t sel = lv_dropdown_get_selected(s_dd_profile);
+    if (sel == 0) {                       /* "(none)" — just detach the label */
+        display_ui_set_active_profile("");
+        return;
+    }
+    int idx = (int)sel - 1;
+    if (idx < 0 || idx >= s_profile_count) return;
+
+    settings_t cfg;
+    esp_err_t r = settings_mgr_load_named(&cfg, s_profile_names[idx]);
+    if (r != ESP_OK) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Load failed (%s)", esp_err_to_name(r));
+        screen_settings_set_status(msg);
+        profile_refresh_list();           /* put the selection back */
+        return;
+    }
+
+    screen_settings_apply_loaded(&cfg);
+    /* The preset's captured noise floor travels with it, exactly as it does
+     * from the file browser's Load button. Absent sidecar clears the baseline. */
+    settings_mgr_load_named_noise_floor(s_profile_names[idx]);
+    display_ui_set_active_profile(s_profile_names[idx]);
+
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Loaded '%s' " LV_SYMBOL_OK, s_profile_names[idx]);
+    screen_settings_set_status(msg);
+}
+
+void screen_settings_sync_profile(const char *name)
+{
+    strlcpy(s_active_profile, name ? name : "", sizeof(s_active_profile));
+    update_profile_hint();
+    profile_refresh_list();
+    update_sd_status_label();
 }
 
 static float peak_decay_index_to_rate(uint16_t idx)
@@ -682,6 +796,22 @@ esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
     lv_obj_set_style_text_font(ms_hint, &lv_font_montserrat_12, 0);
     lv_obj_set_pos(ms_hint, 20, 706);
 
+    /* ── SETTINGS PROFILE (left column, below SPL CALIBRATION) ──
+     * Selecting a profile LOADS it. The PRESETS group in the right column is
+     * where saving lives, and there is no room next to it — but its status
+     * label echoes the active profile name, so the two stay connected. */
+    make_group_header(s_screen, "SETTINGS PROFILE", 20, 750);
+    s_dd_profile = make_labeled_dropdown(s_screen, "Load Profile:", "(none)", 776);
+    lv_obj_add_event_cb(s_dd_profile, profile_dd_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    s_lbl_profile_hint = lv_label_create(s_screen);
+    lv_obj_set_width(s_lbl_profile_hint, 480);
+    lv_label_set_long_mode(s_lbl_profile_hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(s_lbl_profile_hint, lv_color_hex(0x88AACC), 0);
+    lv_obj_set_style_text_font(s_lbl_profile_hint, &lv_font_montserrat_12, 0);
+    lv_obj_set_pos(s_lbl_profile_hint, 20, 806);
+    update_profile_hint();
+
     /* Set initial selection to match default config */
     lv_dropdown_set_selected(s_dd_color_scheme, COLOR_SCHEME_DARK);
     lv_dropdown_set_selected(s_dd_bar_decay,    0);  /* Instant = no decay (default) */
@@ -807,6 +937,7 @@ void screen_settings_collect(settings_t *out)
     out->ambient_margin          = amb_strength_index_to_margin(lv_dropdown_get_selected(s_dd_amb_strength));
     out->cal_enabled             = (lv_dropdown_get_selected(s_dd_cal_enable) == 1);
     strlcpy(out->cal_file, s_cal_file_name, sizeof(out->cal_file));
+    strlcpy(out->active_profile, s_active_profile, sizeof(out->active_profile));
     out->agc_enabled             = (lv_dropdown_get_selected(s_dd_agc_enable) == 1);
     out->agc_target_dbfs         = agc_target_index_to_dbfs(lv_dropdown_get_selected(s_dd_agc_target));
     out->agc_speed               = (int)lv_dropdown_get_selected(s_dd_agc_speed);
@@ -853,6 +984,7 @@ void screen_settings_sync_from(const settings_t *cfg)
     lv_dropdown_set_selected(s_dd_cal_enable,   cfg->cal_enabled ? 1 : 0);
     strlcpy(s_cal_file_name, cfg->cal_file, sizeof(s_cal_file_name));
     update_cal_status_label();
+    screen_settings_sync_profile(cfg->active_profile);
     screen_settings_sync_agc(cfg->agc_enabled, cfg->agc_target_dbfs, cfg->agc_speed);
 
     if (cfg->ambient_noise_enabled) lv_obj_add_state(s_sw_ambient, LV_STATE_CHECKED);
@@ -968,10 +1100,10 @@ void screen_settings_load(void)
         else
             lv_obj_remove_state(s_sw_ambient, LV_STATE_CHECKED);
     }
-    if (s_lbl_sd_status) {
-        lv_label_set_text(s_lbl_sd_status,
-                          settings_mgr_sd_available() ? "SD: Ready" : "SD: Not found (NVS backup)");
-    }
+    /* Re-read the preset list on every entry: it may have gained or lost
+     * entries in the file browser since the screen was last shown. */
+    profile_refresh_list();
+    update_sd_status_label();
     update_cal_status_label();
     if (s_lbl_wifi_status) {
         char net[96];
