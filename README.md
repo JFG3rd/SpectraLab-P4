@@ -10,9 +10,9 @@
 ![PlatformIO](https://img.shields.io/badge/PlatformIO-supported-orange)
 ![ESP-IDF](https://img.shields.io/badge/ESP--IDF-supported-green)
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue)
-![Version](https://img.shields.io/badge/Release-v1.2.0-success)
+![Version](https://img.shields.io/badge/Release-v1.3.0-success)
 
-> **Status:** Stable Public Release – **v1.2.0**
+> **Status:** Stable Public Release – **v1.3.0**
 
 ---
 
