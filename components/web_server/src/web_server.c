@@ -52,6 +52,13 @@ static esp_err_t send_asset(httpd_req_t *req, const char *type,
                             const char *data, size_t len)
 {
     httpd_resp_set_type(req, type);
+    /* These pages are baked into the firmware, so they change on every update
+     * — and without this a browser that has seen a page before keeps serving
+     * its cached copy after a flash, making the update invisible. That is not
+     * hypothetical: it silently hid a fixed download button behind a stale
+     * page. We have no ETag/Last-Modified to revalidate against, so ask for
+     * no storage at all; the assets are small and served over the LAN. */
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, must-revalidate");
     return httpd_resp_send(req, data, len);
 }
 
@@ -598,6 +605,9 @@ static void add_dir_json(cJSON *parent, const char *key, settings_dir_t dir,
         if (!e) break;
         cJSON_AddStringToObject(e, "name", scratch[i].name);
         cJSON_AddNumberToObject(e, "size", (double)scratch[i].size);
+        /* Unix seconds, or 0 when the filesystem has no usable timestamp —
+         * this board has no RTC, so FAT records whatever the clock said. */
+        cJSON_AddNumberToObject(e, "mtime", (double)scratch[i].mtime);
         cJSON_AddItemToArray(arr, e);
     }
 }
@@ -654,16 +664,46 @@ static bool req_file_target(httpd_req_t *req, settings_dir_t *dir, char *name, s
     return name[0] != '\0';
 }
 
+/* GET /api/download/<dir>/<name>
+ *
+ * The filename is in the PATH, not a header, so an ordinary
+ * <a href download> works. The header form this replaced forced the page to
+ * fetch into a Blob and synthesise a click, which Safari refuses once the
+ * user gesture has ended — the fetch is asynchronous, so it always has.
+ * Going through the URL also gives real download progress and lets the file
+ * be opened straight from the address bar.
+ *
+ * Requires httpd_uri_match_wildcard (set in web_server_start); for templates
+ * without a '*' that matcher behaves exactly like the default one, so the
+ * other routes are unaffected. */
 static esp_err_t download_get(httpd_req_t *req)
 {
     if (!settings_mgr_sd_available())
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No SD card");
 
+    static const char PREFIX[] = "/api/download/";
+    if (strncmp(req->uri, PREFIX, sizeof(PREFIX) - 1) != 0)
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad request");
+
+    char rest[SETTINGS_NAME_MAX + 32];
+    strlcpy(rest, req->uri + sizeof(PREFIX) - 1, sizeof(rest));
+
+    /* Ignore any query string rather than folding it into the filename. */
+    char *q = strchr(rest, '?');
+    if (q) *q = '\0';
+
+    char *slash = strchr(rest, '/');
+    if (!slash) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                           "Expected /api/download/<dir>/<file>");
+    *slash = '\0';
+
     settings_dir_t dir;
+    if (!dir_from_keyword(rest, &dir))
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Unknown directory");
+
     char name[SETTINGS_NAME_MAX] = "";
-    if (!req_file_target(req, &dir, name, sizeof(name)))
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                                   "Missing or invalid X-Dir / X-Filename");
+    strlcpy(name, slash + 1, sizeof(name));
+    url_decode(name);
 
     char path[SETTINGS_PATH_MAX];
     if (settings_mgr_resolve_path(dir, name, path, sizeof(path)) != ESP_OK)
@@ -797,6 +837,11 @@ esp_err_t web_server_start(void)
      * runs that work on the server task, so it needs the same headroom. */
     cfg.stack_size        = 16384;
     cfg.lru_purge_enable  = true;
+    /* Lets /api/download/* carry the filename in the path. Templates without a
+     * '*' match exactly as before, and this matcher additionally ignores query
+     * strings — so it only relaxes the long-standing "any ?query 404s"
+     * behaviour, never tightens anything. */
+    cfg.uri_match_fn      = httpd_uri_match_wildcard;
 
     ESP_RETURN_ON_ERROR(httpd_start(&s_server, &cfg), TAG, "httpd_start failed");
 
@@ -817,7 +862,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/network/ip",  .method = HTTP_POST, .handler = network_ip_post },
         { .uri = "/files.html",      .method = HTTP_GET,  .handler = files_page_get },
         { .uri = "/api/files",       .method = HTTP_GET,  .handler = files_list_get },
-        { .uri = "/api/download",    .method = HTTP_GET,  .handler = download_get },
+        { .uri = "/api/download/*",  .method = HTTP_GET,  .handler = download_get },
         { .uri = "/api/delete",      .method = HTTP_POST, .handler = delete_post },
         { .uri = "/api/screenshot",  .method = HTTP_POST, .handler = screenshot_post },
         { .uri = "/reboot",          .method = HTTP_POST, .handler = reboot_post },

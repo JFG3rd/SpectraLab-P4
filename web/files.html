@@ -5,6 +5,22 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="/style.css">
+    <style>
+        /* Wide content scrolls inside its own box so the page never does. */
+        .table-wrap { overflow-x: auto; margin-bottom: 18px; }
+        .file-table { width: 100%; border-collapse: collapse; font-size: 0.95em; }
+        .file-table th, .file-table td {
+            padding: 6px 8px; text-align: left; white-space: nowrap;
+            border-bottom: 1px solid rgba(128,128,128,0.35);
+        }
+        .file-table th { font-weight: 600; opacity: 0.75; }
+        .file-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        .file-table td.actions { text-align: right; white-space: nowrap; }
+        .file-table .row-btn {
+            display: inline-block; width: auto; margin: 0 0 0 6px;
+            padding: 3px 10px; font-size: 0.95em; line-height: 1.4;
+        }
+    </style>
     <script>
         function applyTheme(dark) {
             document.body.classList.toggle("dark-mode", dark);
@@ -38,38 +54,37 @@
             return (n / (1024 * 1024)).toFixed(2) + " MB";
         }
 
-        // A plain <a href> cannot set X-Filename, and the device's URI matcher
-        // rejects query strings — so fetch the bytes and hand the browser a blob.
-        function download(dir, name) {
-            setStatus("Downloading " + name + "...");
-            fetch("/api/download", { headers: { "X-Dir": dir, "X-Filename": encodeURIComponent(name) } })
-                .then(function (r) {
-                    if (!r.ok) throw new Error("HTTP " + r.status);
-                    return r.blob();
-                })
-                .then(function (blob) {
-                    var url = URL.createObjectURL(blob);
-                    var a = document.createElement("a");
-                    a.href = url;
-                    a.download = name;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
-                    setStatus("Downloaded " + name);
-                })
-                .catch(function (e) { setStatus("Download failed: " + e.message, true); });
+        // The board has no RTC, so a file written before the clock was set
+        // carries no usable timestamp. Say so rather than invent a date.
+        function humanDate(sec) {
+            if (!sec) return "—";
+            var d = new Date(sec * 1000);
+            var p = function (n) { return (n < 10 ? "0" : "") + n; };
+            return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) +
+                   " " + p(d.getHours()) + ":" + p(d.getMinutes());
+        }
+
+        // Downloads are plain links: the filename is in the URL, so the browser
+        // handles the transfer natively. The previous fetch-into-a-Blob approach
+        // needed a synthesised click, which Safari blocks once the user gesture
+        // has ended — and with an async fetch it always has.
+        function downloadUrl(dir, name) {
+            return "/api/download/" + encodeURIComponent(dir) + "/" + encodeURIComponent(name);
         }
 
         // Two-step confirm, same as Forget on the device's Wi-Fi screen: the
         // first click only arms the button.
         var armed = null;
+        function resetArmed() {
+            if (armed && armed.dataset.label) armed.textContent = armed.dataset.label;
+            armed = null;
+        }
         function delClick(btn, name) {
             if (armed && armed !== btn) resetArmed();
             if (armed !== btn) {
                 armed = btn;
                 btn.dataset.label = btn.textContent;
-                btn.textContent = "Click again to delete";
+                btn.textContent = "Sure?";
                 return;
             }
             resetArmed();
@@ -84,10 +99,6 @@
                     refresh();
                 })
                 .catch(function (e) { setStatus("Delete failed: " + e.message, true); });
-        }
-        function resetArmed() {
-            if (armed && armed.dataset.label) armed.textContent = armed.dataset.label;
-            armed = null;
         }
 
         function deleteAllShots(names) {
@@ -107,48 +118,81 @@
                  .catch(function (e) { setStatus("Delete failed: " + e.message, true); });
         }
 
-        function renderSection(container, title, dir, entries, deletable) {
-            var card = document.createElement("div");
-            card.className = "card";
+        function cell(row, text, cls) {
+            var td = document.createElement("td");
+            td.textContent = text;
+            if (cls) td.className = cls;
+            row.appendChild(td);
+            return td;
+        }
 
-            var h = document.createElement("div");
-            h.className = "card-title";
+        function renderSection(container, title, dir, entries, deletable) {
+            var h = document.createElement("h2");
             h.textContent = title + " (" + entries.length + ")";
-            card.appendChild(h);
+            container.appendChild(h);
 
             if (!entries.length) {
                 var none = document.createElement("p");
+                none.className = "disclaimer";
                 none.textContent = "Nothing here yet.";
-                card.appendChild(none);
-                container.appendChild(card);
+                container.appendChild(none);
                 return;
             }
 
-            entries.sort(function (a, b) { return a.name.localeCompare(b.name); });
+            // Newest first where a timestamp exists, otherwise by name — the
+            // most recent capture is what you almost always came for.
+            entries.sort(function (a, b) {
+                if (a.mtime && b.mtime && a.mtime !== b.mtime) return b.mtime - a.mtime;
+                return b.name.localeCompare(a.name);
+            });
+
+            var wrap = document.createElement("div");
+            wrap.className = "table-wrap";
+            var t = document.createElement("table");
+            t.className = "file-table";
+
+            var thead = document.createElement("thead");
+            var hr = document.createElement("tr");
+            ["Name", "Size", "Recorded", ""].forEach(function (label) {
+                var th = document.createElement("th");
+                th.textContent = label;
+                hr.appendChild(th);
+            });
+            thead.appendChild(hr);
+            t.appendChild(thead);
+
+            var tb = document.createElement("tbody");
             entries.forEach(function (f) {
-                var row = document.createElement("div");
-                row.className = "button-row";
+                var row = document.createElement("tr");
+                cell(row, f.name);
+                cell(row, humanSize(f.size), "num");
+                cell(row, humanDate(f.mtime), "num");
 
-                var label = document.createElement("span");
-                label.textContent = f.name + "  —  " + humanSize(f.size);
-                row.appendChild(label);
+                var act = document.createElement("td");
+                act.className = "actions";
 
-                var dl = document.createElement("button");
-                dl.className = "button btn-info";
-                dl.textContent = "⬇ Download";
-                dl.onclick = function () { download(dir, f.name); };
-                row.appendChild(dl);
+                var dl = document.createElement("a");
+                dl.className = "button btn-info row-btn";
+                dl.href = downloadUrl(dir, f.name);
+                dl.setAttribute("download", f.name);
+                dl.textContent = "⬇";
+                dl.title = "Download " + f.name;
+                act.appendChild(dl);
 
                 if (deletable) {
                     var del = document.createElement("button");
-                    del.className = "button btn-test";
-                    del.textContent = "🗑 Delete";
+                    del.className = "button btn-test row-btn";
+                    del.textContent = "🗑";
+                    del.title = "Delete " + f.name;
                     del.onclick = function () { delClick(del, f.name); };
-                    row.appendChild(del);
+                    act.appendChild(del);
                 }
-                card.appendChild(row);
+                row.appendChild(act);
+                tb.appendChild(row);
             });
-            container.appendChild(card);
+            t.appendChild(tb);
+            wrap.appendChild(t);
+            container.appendChild(wrap);
         }
 
         function refresh() {
@@ -168,8 +212,9 @@
                     renderSection(out, "🎤 Microphone calibration", "cal", d.cal || [], false);
 
                     var shots = (d.screenshots || []).map(function (f) { return f.name; });
-                    document.getElementById("delAllBtn").style.display = shots.length ? "" : "none";
-                    document.getElementById("delAllBtn").onclick = function () { deleteAllShots(shots); };
+                    var b = document.getElementById("delAllBtn");
+                    b.style.display = shots.length ? "" : "none";
+                    b.onclick = function () { deleteAllShots(shots); };
                 })
                 .catch(function (e) { out.textContent = ""; setStatus("Could not list files: " + e.message, true); });
         }
@@ -195,7 +240,7 @@
 </head>
 <body>
     <button class="button theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark / light mode">🌙 Dark Mode</button>
-    <div class="wifi-setup-container">
+    <div class="wifi-setup-container" style="max-width: 760px;">
         <h1>💾 SD Card Files</h1>
         <p>Browse and download files SpectraLab-P4 has written to the SD card. Screenshots can also be deleted here; presets and calibration files are read-only.</p>
 

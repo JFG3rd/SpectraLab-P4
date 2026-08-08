@@ -818,6 +818,10 @@ int settings_mgr_list_dir(settings_dir_t dir, settings_file_t *out, int max_coun
 
         strlcpy(out[count].name, ent->d_name, sizeof(out[count].name));
         out[count].size = (long)st.st_size;
+        /* FAT epoch starts at 1980; anything at or below that is the "clock was
+         * never set" sentinel rather than a real date, so report it as unknown
+         * instead of showing the user a fictitious 1980 timestamp. */
+        out[count].mtime = (st.st_mtime > 315532800) ? (int64_t)st.st_mtime : 0;
         count++;
     }
     closedir(d);

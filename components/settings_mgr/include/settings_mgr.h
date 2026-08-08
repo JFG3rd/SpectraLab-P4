@@ -184,8 +184,12 @@ typedef enum {
 } settings_dir_t;
 
 typedef struct {
-    char name[SETTINGS_NAME_MAX];
-    long size;                      /* bytes, -1 if stat() failed */
+    char     name[SETTINGS_NAME_MAX];
+    long     size;                  /* bytes, -1 if stat() failed              */
+    int64_t  mtime;                 /* Unix seconds, 0 if the FS has no usable
+                                     * timestamp — this board has no RTC, so a
+                                     * file written before the clock is set
+                                     * carries whatever FAT recorded          */
 } settings_file_t;
 
 /**
