@@ -390,6 +390,178 @@ static void reboot_timer_cb(void *arg)
     esp_restart();
 }
 
+/* ── per-network IP configuration ─────────────────────────────────
+ *
+ * Mirrors the on-device IP settings screen, minus the saved passwords: this
+ * portal is plain HTTP with no authentication, so anything on the LAN can
+ * reach it and stored Wi-Fi keys must not travel over it.
+ */
+
+#define NETWORK_MAX_BODY        512
+#define NETWORK_MIN_INTERVAL_US (500 * 1000)
+#define ARP_PROBE_MS            2000
+
+static int64_t s_last_network_us;
+
+static void add_ip(cJSON *o, const char *key, uint32_t ip)
+{
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
+             (unsigned)((ip >> 24) & 0xFF), (unsigned)((ip >> 16) & 0xFF),
+             (unsigned)((ip >> 8) & 0xFF),  (unsigned)(ip & 0xFF));
+    cJSON_AddStringToObject(o, key, ip ? buf : "");
+}
+
+static bool parse_ip(const char *s, uint32_t *out)
+{
+    unsigned a, b, c, d;
+    char tail;
+    if (!s || sscanf(s, "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) != 4) return false;
+    if (a > 255 || b > 255 || c > 255 || d > 255) return false;
+    *out = ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)c << 8) | (uint32_t)d;
+    return true;
+}
+
+static esp_err_t network_get(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return httpd_resp_send_500(req);
+
+    char ssid[NET_SSID_MAX] = "";
+    net_link_state_t st = net_mgr_get_link_state(ssid, sizeof(ssid));
+
+    cJSON_AddBoolToObject(root, "connected", st == NET_LINK_STA_UP);
+    cJSON_AddStringToObject(root, "ssid", ssid);
+    cJSON_AddStringToObject(root, "hostname", net_mgr_get_mdns_host());
+    add_ip(root, "ip",      net_mgr_get_sta_ip());
+    add_ip(root, "netmask", net_mgr_get_sta_netmask());
+    add_ip(root, "gateway", net_mgr_get_sta_gateway());
+
+    cJSON *arr = cJSON_AddArrayToObject(root, "saved");
+    for (int i = 0; arr && i < NET_MAX_KNOWN; i++) {
+        char         s[NET_SSID_MAX];
+        net_ip_cfg_t ipc;
+        /* Password intentionally not requested — see the note above. */
+        if (net_mgr_get_network(i, s, sizeof(s), NULL, 0, &ipc) != ESP_OK) break;
+
+        cJSON *e = cJSON_CreateObject();
+        if (!e) break;
+        cJSON_AddStringToObject(e, "ssid", s);
+        cJSON_AddBoolToObject(e, "static", ipc.use_static);
+        add_ip(e, "ip",      ipc.ip);
+        add_ip(e, "netmask", ipc.netmask);
+        add_ip(e, "gateway", ipc.gateway);
+        add_ip(e, "dns",     ipc.dns);
+        cJSON_AddItemToArray(arr, e);
+    }
+
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!out) return httpd_resp_send_500(req);
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t r = httpd_resp_sendstr(req, out);
+    free(out);
+    return r;
+}
+
+/* esp_http_server's httpd_err_code_t has no 409, and "address already taken"
+ * is exactly what 409 is for — the page keys off it to distinguish a clash
+ * from a malformed field. */
+static esp_err_t send_conflict(httpd_req_t *req, const char *msg)
+{
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_sendstr(req, msg);
+}
+
+static esp_err_t network_ip_post(httpd_req_t *req)
+{
+    int64_t now = esp_timer_get_time();
+    if (now - s_last_network_us < NETWORK_MIN_INTERVAL_US)
+        return send_too_many_requests(req, "Slow down");
+    s_last_network_us = now;
+
+    if (req->content_len <= 0 || req->content_len > NETWORK_MAX_BODY)
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large");
+
+    char body[NETWORK_MAX_BODY + 1];
+    int received = httpd_req_recv(req, body, req->content_len);
+    if (received <= 0) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Read failed");
+    body[received] = '\0';
+
+    cJSON *root = cJSON_Parse(body);
+    if (!root) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+
+    /* Everything needed after the JSON is freed, copied out up front. */
+    char         ssid[NET_SSID_MAX] = "";
+    net_ip_cfg_t cfg   = { 0 };
+    bool         ok    = false;
+    bool         clash = false;
+    const char  *fail  = NULL;
+
+    const cJSON *j_ssid = cJSON_GetObjectItem(root, "ssid");
+    if (!cJSON_IsString(j_ssid) || j_ssid->valuestring[0] == '\0') {
+        fail = "Missing ssid";
+    } else {
+        strlcpy(ssid, j_ssid->valuestring, sizeof(ssid));
+        cfg.use_static = cJSON_IsTrue(cJSON_GetObjectItem(root, "static"));
+
+        if (cfg.use_static) {
+            static const char *keys[4] = { "ip", "netmask", "gateway", "dns" };
+            uint32_t          *dst[4]  = { &cfg.ip, &cfg.netmask, &cfg.gateway, &cfg.dns };
+            ok = true;
+            for (int i = 0; i < 4 && ok; i++) {
+                const cJSON *v = cJSON_GetObjectItem(root, keys[i]);
+                const char  *s = cJSON_IsString(v) ? v->valuestring : "";
+                /* DNS is the only optional field; blank means "use the gateway". */
+                if (i == 3 && s[0] == '\0') { *dst[i] = 0; continue; }
+                if (!parse_ip(s, dst[i])) {
+                    fail = "Invalid address (expected a.b.c.d)";
+                    ok   = false;
+                }
+            }
+        } else {
+            ok = true;   /* DHCP: no addresses to validate */
+        }
+    }
+    cJSON_Delete(root);
+
+    if (!ok) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, fail);
+
+    /* Same check the on-device form does, and with the same caveat: a
+     * powered-off device still owns its address but will not answer, so a pass
+     * is not proof the address is free. Blocking the httpd task for the probe
+     * is fine — unlike LVGL, this is the request's own thread. */
+    if (cfg.use_static && net_mgr_is_sta_connected() &&
+        net_mgr_ip_in_use(cfg.ip, ARP_PROBE_MS)) {
+        clash = true;
+    }
+    if (clash)
+        return send_conflict(req, "That address is already answering on this network");
+
+    if (net_mgr_set_network_ip(ssid, &cfg) != ESP_OK)
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND,
+                                   "No saved network with that name");
+
+    char msg[160];
+    snprintf(msg, sizeof(msg), "Saved for '%s'. Restarting to apply the change...", ssid);
+
+    httpd_resp_set_type(req, "text/plain");
+    esp_err_t r = httpd_resp_sendstr(req, msg);
+
+    /* Addressing only takes effect on the next join, so reboot — after the
+     * response has flushed, exactly like /saveWiFi does. */
+    if (!s_reboot_timer) {
+        const esp_timer_create_args_t targs = {
+            .callback = reboot_timer_cb, .name = "web_reboot",
+        };
+        esp_timer_create(&targs, &s_reboot_timer);
+    }
+    if (s_reboot_timer) esp_timer_start_once(s_reboot_timer, 1200 * 1000);
+    else                esp_restart();
+    return r;
+}
+
 /* ── SD file browser ──────────────────────────────────────────────
  *
  * Read-only apart from deleting screenshots. The directory is chosen by a
@@ -641,6 +813,8 @@ esp_err_t web_server_start(void)
         { .uri = "/api/status",      .method = HTTP_GET,  .handler = status_get },
         { .uri = "/api/config",      .method = HTTP_GET,  .handler = config_get },
         { .uri = "/api/config",      .method = HTTP_PUT,  .handler = config_put },
+        { .uri = "/api/network",     .method = HTTP_GET,  .handler = network_get },
+        { .uri = "/api/network/ip",  .method = HTTP_POST, .handler = network_ip_post },
         { .uri = "/files.html",      .method = HTTP_GET,  .handler = files_page_get },
         { .uri = "/api/files",       .method = HTTP_GET,  .handler = files_list_get },
         { .uri = "/api/download",    .method = HTTP_GET,  .handler = download_get },
