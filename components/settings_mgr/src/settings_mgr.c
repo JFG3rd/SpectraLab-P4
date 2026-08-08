@@ -20,7 +20,7 @@
 
 static const char *TAG = "settings_mgr";
 
-#define SD_DIR          "/sdcard/spectrum"
+#define SD_DIR          SETTINGS_ROOT_DIR
 #define SD_SETTINGS     SD_DIR "/settings.json"
 #define PRESET_NF_MAGIC 0x4E465032U  /* "NFP2" */
 
@@ -102,6 +102,7 @@ esp_err_t settings_mgr_init(void)
         /* Ensure the app directories exist */
         mkdir(SD_DIR, 0777);
         mkdir(SETTINGS_CAL_DIR, 0777);
+        mkdir(SETTINGS_SHOT_DIR, 0777);
         ESP_LOGI(TAG, "SD card mounted at /sdcard (SDMMC slot 0)");
     } else {
         s_sd_mounted = false;

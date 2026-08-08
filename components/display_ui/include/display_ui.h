@@ -15,8 +15,14 @@ esp_err_t display_ui_push_spectrum(const dsp_result_t *result);
 
 /* Take/release the LVGL rendering lock. Must wrap any display_ui_set_* /
  * display_ui_sync_settings calls made from OUTSIDE the LVGL task (e.g. the
- * boot-time restore in main.c). Do NOT use from LVGL event callbacks — the
- * lock is not recursive. */
+ * boot-time restore in main.c).
+ *
+ * The underlying mutex IS recursive (xSemaphoreTakeRecursive), so taking it
+ * from LVGL-context code is safe. What is NOT safe is blocking while holding
+ * it: it has no timeout, so anything slow underneath — SD I/O, waiting on
+ * another task — stalls every other would-be locker indefinitely. The cheap
+ * alternative used by the QR screen and the panel button is to post a flag and
+ * let an lv_timer act on it. */
 void      display_ui_lock(void);
 void      display_ui_unlock(void);
 void      display_ui_deinit(void);
@@ -116,6 +122,24 @@ void      display_ui_panel_cycle_color_scheme(void);
 /* Paint both panel LEDs from the restored theme/display mode. Call once after
  * panel_button_init(), which comes up after the settings restore. */
 void      display_ui_panel_refresh_leds(void);
+
+/* Request a screen capture to the SD card. Same post-a-flag contract as the
+ * other panel entry points, so it is safe from the button task and from httpd;
+ * the capture itself is kicked off from LVGL context on the next timer tick.
+ *
+ * Deliberately fire-and-forget: the caller learns nothing about the outcome
+ * because the encode and SD write happen on a worker task afterwards. The
+ * result surfaces on screen (a brief toast) and in the log. */
+void      display_ui_panel_screenshot(void);
+
+/* Capture directly and report the path. Blocks only for the framebuffer
+ * snapshot, never for the SD write. For callers that need to know the filename
+ * and can tolerate LVGL-lock acquisition (the web handler). */
+esp_err_t display_ui_take_screenshot(char *path_out, size_t path_len);
+
+/* Called by the screenshot worker when a capture finishes; shows a toast.
+ * `path` is NULL on failure. Not for general use. */
+void      display_ui_notify_screenshot(const char *path, bool ok);
 
 #ifdef __cplusplus
 }

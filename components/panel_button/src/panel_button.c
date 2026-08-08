@@ -40,6 +40,8 @@ typedef struct {
     led_strip_handle_t      led;
     panel_button_click_cb_t click_cb;
     void                   *click_ctx;
+    panel_button_click_cb_t long_cb;
+    void                   *long_ctx;
 } panel_key_t;
 
 static panel_key_t s_keys[PANEL_KEY_COUNT];
@@ -80,6 +82,19 @@ static void on_long_press(void *arg, void *usr_data)
     ESP_LOGW(TAG, "panel key 0: long press — restarting");
     panel_led_write(PANEL_KEY_ABORT, PANEL_LED_LEVEL, 0, 0);
     esp_restart();
+}
+
+/* Long press on any key other than 0, which is reserved for the restart. */
+static void on_long_press_cb(void *arg, void *usr_data)
+{
+    unsigned key = (unsigned)(uintptr_t)usr_data;
+
+    (void)arg;
+    if (key >= PANEL_KEY_COUNT) return;
+    ESP_LOGI(TAG, "panel key %u: long press", key);
+    if (s_keys[key].long_cb) {
+        s_keys[key].long_cb(s_keys[key].long_ctx);
+    }
 }
 
 static void panel_led_init(unsigned key)
@@ -145,8 +160,12 @@ static esp_err_t panel_key_init(unsigned key)
     iot_button_register_cb(s_keys[key].btn, BUTTON_SINGLE_CLICK,
                            on_single_click, (void *)(uintptr_t)key);
     if (key == PANEL_KEY_ABORT) {
+        /* Not overridable: this is the last-resort recovery. */
         iot_button_register_cb(s_keys[key].btn, BUTTON_LONG_PRESS_START,
                                on_long_press, NULL);
+    } else {
+        iot_button_register_cb(s_keys[key].btn, BUTTON_LONG_PRESS_START,
+                               on_long_press_cb, (void *)(uintptr_t)key);
     }
 
     panel_led_init(key);
@@ -184,6 +203,14 @@ void panel_button_set_click_cb(unsigned key, panel_button_click_cb_t cb, void *c
     if (key >= PANEL_KEY_COUNT) return;
     s_keys[key].click_ctx = ctx;
     s_keys[key].click_cb  = cb;
+}
+
+void panel_button_set_long_cb(unsigned key, panel_button_click_cb_t cb, void *ctx)
+{
+    /* Key 0's long press is the hard-wired restart and cannot be reassigned. */
+    if (key >= PANEL_KEY_COUNT || key == PANEL_KEY_ABORT) return;
+    s_keys[key].long_ctx = ctx;
+    s_keys[key].long_cb  = cb;
 }
 
 void panel_button_set_state(unsigned key, panel_led_state_t state)

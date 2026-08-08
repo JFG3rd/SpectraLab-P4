@@ -70,8 +70,16 @@ typedef struct {
     int            agc_speed;           /* settings_agc_speed_t: slow/medium/fast      */
 } settings_t;
 
+/* Everything this project writes lives under one root, so the web file
+ * browser has exactly one directory to be confined to. */
+#define SETTINGS_ROOT_DIR "/sdcard/spectrum"
 /* Directory for microphone calibration files on the SD card */
-#define SETTINGS_CAL_DIR "/sdcard/spectrum/cal"
+#define SETTINGS_CAL_DIR  SETTINGS_ROOT_DIR "/cal"
+/* Screen captures (screenshot.c) */
+#define SETTINGS_SHOT_DIR SETTINGS_ROOT_DIR "/screenshots"
+
+/* Longest absolute path this project builds: root + a subdirectory + a name. */
+#define SETTINGS_PATH_MAX 96
 
 /**
  * @brief Initialise the settings manager and mount the SD card if present.

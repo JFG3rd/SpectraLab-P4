@@ -23,6 +23,7 @@
 #include "screen_settings.h"
 #include "screen_splash.h"
 #include "screen_wifi.h"
+#include "screenshot.h"
 
 static const char *TAG = "display_ui";
 
@@ -62,6 +63,13 @@ static int          s_last_agc_speed   = AGC_SPEED_SLOW;
  * by spectrum_timer_cb. See display_ui_panel_next_display_mode(). */
 static volatile bool s_panel_mode_request  = false;
 static volatile bool s_panel_theme_request = false;
+static volatile bool s_panel_shot_request  = false;
+
+/* Screenshot result, posted by the capture worker task and rendered as a toast
+ * in LVGL context (same reason: the worker must not touch LVGL). */
+static char          s_shot_toast[48];
+static volatile bool s_shot_toast_ok      = false;
+static volatile bool s_shot_toast_pending = false;
 
 /* Panel LED colours. Full-scale RGB; panel_button_set_rgb() scales them to the
  * configured brightness. Chosen to stay apart from each other on a small
@@ -357,6 +365,32 @@ void display_ui_panel_refresh_leds(void)
     panel_led_show_mode();
 }
 
+void display_ui_panel_screenshot(void)
+{
+    /* Flag only, same reasoning as the mode key below: this is reached from the
+     * panel button's shared timer task, where blocking would also cost the
+     * long-press restart. */
+    s_panel_shot_request = true;
+}
+
+esp_err_t display_ui_take_screenshot(char *path_out, size_t path_len)
+{
+    return screenshot_capture(path_out, path_len);
+}
+
+void display_ui_notify_screenshot(const char *path, bool ok)
+{
+    /* Runs on the screenshot worker task, so it may not touch LVGL directly. */
+    if (ok && path) {
+        const char *base = strrchr(path, '/');
+        strlcpy(s_shot_toast, base ? base + 1 : path, sizeof(s_shot_toast));
+    } else {
+        strlcpy(s_shot_toast, "Screenshot failed", sizeof(s_shot_toast));
+    }
+    s_shot_toast_ok      = ok;
+    s_shot_toast_pending = true;
+}
+
 void display_ui_panel_next_display_mode(void)
 {
     /* Flag only. Cycling the mode touches LVGL objects, so it has to happen in
@@ -419,6 +453,19 @@ static void spectrum_timer_cb(lv_timer_t *timer)
     if (s_panel_theme_request) {
         s_panel_theme_request = false;
         panel_apply_next_color_scheme();
+    }
+    if (s_panel_shot_request) {
+        s_panel_shot_request = false;
+        char path[SETTINGS_PATH_MAX];
+        esp_err_t err = screenshot_capture(path, sizeof(path));
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "screenshot: %s", esp_err_to_name(err));
+            display_ui_notify_screenshot(NULL, false);
+        }
+    }
+    if (s_shot_toast_pending) {
+        s_shot_toast_pending = false;
+        screen_spectrum_show_toast(s_shot_toast, s_shot_toast_ok);
     }
 
     if (!s_data_pending) return;

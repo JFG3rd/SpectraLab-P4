@@ -32,6 +32,7 @@
 #include "net_mgr.h"
 #include "screen_spectrum.h"
 #include "screen_settings.h"
+#include "screenshot.h"
 
 static const char *TAG = "scr_spectrum";
 
@@ -165,6 +166,8 @@ static lv_obj_t *s_lbl_ambient_status;
 static lv_obj_t *s_lbl_source_status;   /* "USB MIC" when the UAC1 mic is live */
 static lv_obj_t *s_lbl_wifi;            /* active SSID / AP name, row 2 centre  */
 static lv_obj_t *s_lbl_title;           /* "SPECTRALAB-P4", row 1 left          */
+static lv_obj_t *s_toast;               /* transient message overlay            */
+static lv_timer_t *s_toast_timer;
 
 /* Display-mode names, indexed by display_mode_t — matches the settings
  * dropdown labels (screen_settings.c disp_mode_opts). */
@@ -331,6 +334,34 @@ static void wifi_label_timer_cb(lv_timer_t *t)
 
     if (strcmp(txt, lv_label_get_text(s_lbl_wifi)) != 0)
         lv_label_set_text(s_lbl_wifi, txt);
+}
+
+/* ── transient toast ──────────────────────────────────────────── */
+
+#define TOAST_MS 2500
+
+static void toast_hide_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_toast) lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+    s_toast_timer = NULL;   /* lv_timer_t is auto-deleted after a one-shot run */
+}
+
+void screen_spectrum_show_toast(const char *msg, bool ok)
+{
+    if (!s_toast || !msg) return;
+
+    lv_label_set_text(lv_obj_get_child(s_toast, 0), msg);
+    lv_obj_set_style_bg_color(s_toast, lv_color_hex(ok ? 0x14361F : 0x3C1418), 0);
+    lv_obj_set_style_text_color(lv_obj_get_child(s_toast, 0),
+                                lv_color_hex(ok ? 0x8CE8A8 : 0xFF9A9A), 0);
+    lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+
+    /* Restart rather than stack: back-to-back captures should not queue up a
+     * pile of timers that each hide the (still current) message. */
+    if (s_toast_timer) lv_timer_delete(s_toast_timer);
+    s_toast_timer = lv_timer_create(toast_hide_cb, TOAST_MS, NULL);
+    lv_timer_set_repeat_count(s_toast_timer, 1);
 }
 
 static void apply_zoom_axis(zoom_axis_t axis, float scale, lv_point_t center)
@@ -620,6 +651,23 @@ static void stop_btn_cb(lv_event_t *e)
     s_frozen = !s_frozen;
     if (s_btn_stop_lbl)
         lv_label_set_text(s_btn_stop_lbl, s_frozen ? LV_SYMBOL_PLAY : LV_SYMBOL_PAUSE);
+}
+
+static void shot_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    /* Runs in LVGL context. screenshot_capture() only snapshots the
+     * framebuffer here — the encode and SD write happen on its worker task —
+     * so this does not block the UI. */
+    esp_err_t err = screenshot_capture(NULL, 0);
+    if (err == ESP_ERR_NOT_FOUND)
+        screen_spectrum_show_toast("No SD card", false);
+    else if (err == ESP_ERR_INVALID_STATE)
+        screen_spectrum_show_toast("Capture already running", false);
+    else if (err != ESP_OK)
+        screen_spectrum_show_toast("Screenshot failed", false);
+    else
+        screen_spectrum_show_toast("Saving screenshot...", true);
 }
 
 static void agc_btn_cb(lv_event_t *e)
@@ -1460,6 +1508,18 @@ esp_err_t screen_spectrum_create(void)
     lv_obj_set_style_text_font(s_lbl_source_status, &lv_font_montserrat_12, 0);
     lv_obj_align(s_lbl_source_status, LV_ALIGN_BOTTOM_RIGHT, -340, -2);
 
+    /* Screenshot key — row 2, right of the mode label. Row 1's button strip is
+     * full (GRD..gear span x590-1018), so this is the only free space in the
+     * status bar that does not force a relayout. */
+    lv_obj_t *btn_shot = lv_button_create(status);
+    lv_obj_set_size(btn_shot, 40, 22);
+    lv_obj_align(btn_shot, LV_ALIGN_BOTTOM_RIGHT, -110, -1);
+    lv_obj_add_event_cb(btn_shot, shot_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *btn_shot_lbl = lv_label_create(btn_shot);
+    lv_label_set_text(btn_shot_lbl, LV_SYMBOL_IMAGE);
+    lv_obj_set_style_text_font(btn_shot_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(btn_shot_lbl);
+
     apply_status_colors();   /* single source of truth for every label colour */
 
     /* ── spectrum area (custom draw) ── */
@@ -1527,6 +1587,21 @@ esp_err_t screen_spectrum_create(void)
         s_freq_ticks[i] = lbl;
     }
     update_axis_ticks();
+
+    /* Toast overlay — hidden until something posts a message. Parented to the
+     * screen rather than the spectrum object so it survives mode switches that
+     * rebuild the canvas. */
+    s_toast = lv_obj_create(s_screen);
+    lv_obj_set_size(s_toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(s_toast, 10, 0);
+    lv_obj_set_style_border_width(s_toast, 0, 0);
+    lv_obj_set_style_radius(s_toast, 6, 0);
+    lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -INFO_H - 12);
+    lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *toast_lbl = lv_label_create(s_toast);
+    lv_label_set_text(toast_lbl, "");
+    lv_obj_set_style_text_font(toast_lbl, &lv_font_montserrat_14, 0);
 
     /* Own timer so the SSID keeps updating while the display is frozen. */
     lv_timer_create(wifi_label_timer_cb, STATUS_WIFI_MS, NULL);
@@ -1731,12 +1806,13 @@ void screen_spectrum_set_color_scheme(color_scheme_t scheme)
 
     apply_status_colors();
 
-    /* Frequency axis labels — direct children of s_screen at index 2+
-     * (0 = status bar, 1 = spectrum_obj, 2..N = freq tick labels) */
-    uint32_t child_cnt = lv_obj_get_child_count(s_screen);
-    for (uint32_t ci = 2; ci < child_cnt; ci++) {
-        lv_obj_t *child = lv_obj_get_child(s_screen, ci);
-        if (child) lv_obj_set_style_text_color(child, lv_color_hex(s_pal->text), 0);
+    /* Frequency axis labels. Addressed through s_freq_ticks[] rather than by
+     * child index: the old "every child from index 2" walk silently claimed
+     * anything later added to the screen, and would have recoloured the toast
+     * overlay's text out from under it. */
+    for (size_t i = 0; i < FREQ_TICK_COUNT; i++) {
+        if (s_freq_ticks[i])
+            lv_obj_set_style_text_color(s_freq_ticks[i], lv_color_hex(s_pal->text), 0);
     }
 
     /* VU readouts + scope HUD follow the theme text color */

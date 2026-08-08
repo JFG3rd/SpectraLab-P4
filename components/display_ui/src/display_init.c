@@ -33,6 +33,15 @@
 
 static const char *TAG = "display_init";
 
+/* Kept so the screenshot path can reach the DPI framebuffer; the handle was
+ * previously a local and thrown away at the end of init. */
+static esp_lcd_panel_handle_t s_panel;
+
+esp_lcd_panel_handle_t display_hw_get_panel(void)
+{
+    return s_panel;
+}
+
 static esp_ldo_channel_handle_t s_phy_pwr_chan = NULL;
 
 /* IRAM_ATTR: DPI driver checks esp_ptr_in_iram() before accepting a callback.
@@ -164,6 +173,7 @@ esp_err_t display_hw_init(lv_display_t **disp_out)
     esp_lcd_panel_handle_t panel;
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_ek79007(io, &panel_dev_cfg, &panel),
                         TAG, "panel_ek79007 failed");
+    s_panel = panel;   /* retained for framebuffer access (screenshots) */
     ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(panel), TAG, "panel reset failed");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_init(panel),  TAG, "panel init failed");
 

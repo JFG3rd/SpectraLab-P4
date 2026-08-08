@@ -29,3 +29,7 @@ bool      screen_spectrum_get_max_hold(void);
 typedef void (*screen_spectrum_agc_cb_t)(bool enabled);
 void      screen_spectrum_set_agc_cb(screen_spectrum_agc_cb_t cb);
 void      screen_spectrum_set_agc(bool enabled);
+
+/* Brief overlay message at the bottom of the spectrum area (screenshot
+ * confirmations). Must be called in LVGL context. `ok` picks the accent. */
+void      screen_spectrum_show_toast(const char *msg, bool ok);

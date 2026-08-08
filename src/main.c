@@ -57,6 +57,14 @@ static void on_panel_mode_click(void *ctx)
     display_ui_panel_next_display_mode();
 }
 
+static void on_panel_mode_hold(void *ctx)
+{
+    (void)ctx;
+    /* Screenshot. Posts a flag; the capture is started from LVGL context on
+     * the next timer tick and the SD write happens on its own worker task. */
+    display_ui_panel_screenshot();
+}
+
 /* ── DSP → display bridge ─────────────────────────────────────── */
 
 static void dsp_to_display(const dsp_result_t *result, void *ctx)
@@ -206,6 +214,7 @@ void app_main(void)
     if (panel_button_init() == ESP_OK) {
         panel_button_set_click_cb(PANEL_KEY_ABORT, on_panel_abort_click, NULL);
         panel_button_set_click_cb(PANEL_KEY_MODE,  on_panel_mode_click,  NULL);
+        panel_button_set_long_cb(PANEL_KEY_MODE,   on_panel_mode_hold,   NULL);
         /* LEDs come up after the settings restore, so paint them now. */
         display_ui_lock();
         display_ui_panel_refresh_leds();

@@ -9,7 +9,8 @@
  * matrix instead, which makes key 1 the only input that still works.
  *
  *   Key 0 (PANEL_KEY_ABORT) — click aborts a QR scan, hold restarts the board
- *   Key 1 (PANEL_KEY_MODE)  — click cycles the spectrum display mode
+ *   Key 1 (PANEL_KEY_MODE)  — click cycles the spectrum display mode,
+ *                             hold captures a screenshot to the SD card
  *
  * Wiring (see hardware-setup.md — power the modules from 3V3, NEVER 5V: the
  * switch connects SIG1 straight to VCC when pressed and P4 GPIOs are not 5 V
@@ -77,6 +78,11 @@ esp_err_t panel_button_init(void);
  * board and is not overridable — it is the last-resort escape when the camera
  * driver wedges and nothing else can recover it. */
 void panel_button_set_click_cb(unsigned key, panel_button_click_cb_t cb, void *ctx);
+
+/* Register a key's long-press action. Ignored for key 0, whose long press is
+ * the hard-wired restart. Same threading contract as the click callback: it
+ * runs in the shared timer task and must not block or touch LVGL. */
+void panel_button_set_long_cb(unsigned key, panel_button_click_cb_t cb, void *ctx);
 
 /* Set a key's LED to one of the canned status colours. Safe from any task;
  * no-op if that LED failed to initialise or the index is out of range. */

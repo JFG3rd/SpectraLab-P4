@@ -31,6 +31,7 @@ static const char *TAG = "web_server";
 #define SAVEWIFI_MIN_INTERVAL_US  (500 * 1000)
 #define UPLOAD_MIN_INTERVAL_US    (1000 * 1000)
 #define CONFIG_MIN_INTERVAL_US    (250 * 1000)   /* throttle flash-writing PUTs */
+#define SHOT_MIN_INTERVAL_US      (2000 * 1000)  /* a capture takes ~1 s to land */
 
 static httpd_handle_t s_server;
 static int64_t s_last_savewifi_us;
@@ -386,6 +387,47 @@ static void reboot_timer_cb(void *arg)
     esp_restart();
 }
 
+/* ── screenshot ───────────────────────────────────────────────── */
+
+static int64_t s_last_shot_us;
+
+static esp_err_t screenshot_post(httpd_req_t *req)
+{
+    int64_t now = esp_timer_get_time();
+    /* A capture holds ~1.5 MB and writes to the SD card; back-to-back requests
+     * would just fail on s_busy anyway. */
+    if (now - s_last_shot_us < SHOT_MIN_INTERVAL_US)
+        return send_too_many_requests(req, "Screenshot already in progress");
+    s_last_shot_us = now;
+
+    char path[SETTINGS_PATH_MAX] = "";
+    esp_err_t err = display_ui_take_screenshot(path, sizeof(path));
+
+    if (err == ESP_ERR_NOT_FOUND)
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "No SD card — nowhere to save the capture");
+    if (err == ESP_ERR_INVALID_STATE)
+        return send_too_many_requests(req, "Screenshot already in progress");
+    if (err != ESP_OK)
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Capture failed");
+
+    /* The file is still being encoded and written when this returns — the
+     * response names where it will land, not that it has landed. */
+    const char *name = strrchr(path, '/');
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "file", name ? name + 1 : path);
+    cJSON_AddStringToObject(root, "path", path);
+    cJSON_AddBoolToObject(root, "pending", true);
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!out) return httpd_resp_send_500(req);
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t r = httpd_resp_sendstr(req, out);
+    free(out);
+    return r;
+}
+
 static esp_err_t reboot_post(httpd_req_t *req)
 {
     if (!s_reboot_timer) {
@@ -409,7 +451,7 @@ esp_err_t web_server_start(void)
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.max_open_sockets  = 7;
-    cfg.max_uri_handlers  = 16;   /* default 8 silently drops routes past #8 */
+    cfg.max_uri_handlers  = 24;   /* default 8 silently drops routes past #8 */
     /* 16 KB (not the 6144 default): a PUT /api/config applies through the
      * same heavy path as a preset load — cJSON parse, DSP reconfig, then
      * multiple save passes (cJSON print + FATFS write + NVS commit) — which
@@ -433,6 +475,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/status",      .method = HTTP_GET,  .handler = status_get },
         { .uri = "/api/config",      .method = HTTP_GET,  .handler = config_get },
         { .uri = "/api/config",      .method = HTTP_PUT,  .handler = config_put },
+        { .uri = "/api/screenshot",  .method = HTTP_POST, .handler = screenshot_post },
         { .uri = "/reboot",          .method = HTTP_POST, .handler = reboot_post },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
