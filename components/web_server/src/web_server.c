@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <time.h>
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_timer.h"
@@ -32,6 +34,8 @@ static const char *TAG = "web_server";
 #define UPLOAD_MIN_INTERVAL_US    (1000 * 1000)
 #define CONFIG_MIN_INTERVAL_US    (250 * 1000)   /* throttle flash-writing PUTs */
 #define SHOT_MIN_INTERVAL_US      (2000 * 1000)  /* a capture takes ~1 s to land */
+#define TIME_MAX_BODY             256
+#define TIME_MIN_INTERVAL_US      (500 * 1000)
 
 static httpd_handle_t s_server;
 static int64_t s_last_savewifi_us;
@@ -291,6 +295,32 @@ static esp_err_t status_get(httpd_req_t *req)
         audio_source_get_active() == AUDIO_SOURCE_USB ? "USB mic" : "I2S mic");
     cJSON_AddBoolToObject(root, "cal_loaded", dsp_engine_cal_loaded());
     cJSON_AddNumberToObject(root, "free_heap", (double)esp_get_free_heap_size());
+
+    /* The clock, so "why is the file date wrong" is answerable from here.
+     * time is 0 when never set — the board has no RTC. */
+    net_time_source_t tsrc = net_mgr_get_time_source();
+    cJSON_AddNumberToObject(root, "time",
+                            net_mgr_time_is_valid() ? (double)time(NULL) : 0.0);
+    cJSON_AddStringToObject(root, "time_source",
+                            tsrc == NET_TIME_SNTP    ? "sntp"    :
+                            tsrc == NET_TIME_BROWSER ? "browser" : "none");
+    {
+        settings_t cur;
+        display_ui_lock();
+        display_ui_get_settings(&cur);
+        display_ui_unlock();
+        cJSON_AddStringToObject(root, "timezone", cur.timezone);
+    }
+    /* The zone list comes from the firmware so the browser cannot offer a
+     * different set of options than the device's own dropdown. */
+    cJSON *tzs = cJSON_AddArrayToObject(root, "timezones");
+    for (int i = 0; tzs && i < SETTINGS_TZ_COUNT; i++) {
+        cJSON *e = cJSON_CreateObject();
+        if (!e) break;
+        cJSON_AddStringToObject(e, "label", SETTINGS_TZ_TABLE[i].label);
+        cJSON_AddStringToObject(e, "tz",    SETTINGS_TZ_TABLE[i].tz);
+        cJSON_AddItemToArray(tzs, e);
+    }
 
     char *out = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -584,6 +614,9 @@ static esp_err_t network_ip_post(httpd_req_t *req)
 
 #define FILES_MAX_ENTRIES 64
 #define DOWNLOAD_CHUNK    4096
+/* Above this, stream instead of buffering. Nothing this browser can reach
+ * comes close; the cap only stops a pathological file exhausting PSRAM. */
+#define DOWNLOAD_BUFFER_MAX (512 * 1024)
 
 static bool dir_from_keyword(const char *kw, settings_dir_t *out)
 {
@@ -709,18 +742,51 @@ static esp_err_t download_get(httpd_req_t *req)
     if (settings_mgr_resolve_path(dir, name, path, sizeof(path)) != ESP_OK)
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename");
 
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No such file");
+
     FILE *f = fopen(path, "rb");
     if (!f) return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No such file");
-
-    char *buf = malloc(DOWNLOAD_CHUNK);
-    if (!buf) { fclose(f); return httpd_resp_send_500(req); }
 
     httpd_resp_set_type(req, mime_for(name));
     char disp[SETTINGS_NAME_MAX + 40];
     snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", name);
     httpd_resp_set_hdr(req, "Content-Disposition", disp);
 
-    esp_err_t r = ESP_OK;
+    esp_err_t r;
+
+    /* Prefer a single buffered send, because that is what gives the response a
+     * Content-Length.
+     *
+     * The chunked path below (Transfer-Encoding: chunked, no Content-Length)
+     * transfers correctly — curl pulls a byte-exact file from it — but an
+     * attachment of indeterminate length is exactly the shape that makes
+     * Chrome's download manager do nothing at all, with no error anywhere.
+     * Nothing reachable here is big enough to need streaming: screenshots run
+     * 20-45 KB, presets under 1 KB, and calibration uploads are capped at
+     * 128 KB by UPLOAD_MAX_BODY. */
+    if (st.st_size > 0 && st.st_size <= DOWNLOAD_BUFFER_MAX) {
+        size_t  len = (size_t)st.st_size;
+        char   *all = heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
+        if (all) {
+            size_t got = fread(all, 1, len, f);
+            fclose(f);
+            /* A short read means the file changed under us; fail rather than
+             * serve a truncated image that looks like a corrupt capture. */
+            r = (got == len) ? httpd_resp_send(req, all, len)
+                             : httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                                   "Short read");
+            free(all);
+            return r;
+        }
+        /* Could not reserve the buffer — fall through and stream instead. */
+    }
+
+    char *buf = malloc(DOWNLOAD_CHUNK);
+    if (!buf) { fclose(f); return httpd_resp_send_500(req); }
+
+    r = ESP_OK;
     size_t n;
     while ((n = fread(buf, 1, DOWNLOAD_CHUNK, f)) > 0) {
         if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) {
@@ -806,6 +872,60 @@ static esp_err_t screenshot_post(httpd_req_t *req)
     return r;
 }
 
+/* POST /api/time  {"epoch": <unix seconds>, "tz": "<POSIX TZ>"}
+ *
+ * The browser fallback for boards with no route to an NTP server. Both fields
+ * are optional. net_mgr_set_time() refuses a browser clock once SNTP has
+ * supplied one, so a machine with a skewed clock cannot degrade a good sync. */
+static int64_t s_last_time_us;
+
+static esp_err_t time_post(httpd_req_t *req)
+{
+    int64_t now = esp_timer_get_time();
+    if (now - s_last_time_us < TIME_MIN_INTERVAL_US)
+        return send_too_many_requests(req, "Slow down");
+    s_last_time_us = now;
+
+    if (req->content_len <= 0 || req->content_len > TIME_MAX_BODY)
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad body size");
+
+    char body[TIME_MAX_BODY + 1];
+    int received = httpd_req_recv(req, body, req->content_len);
+    if (received <= 0) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Read failed");
+    body[received] = '\0';
+
+    cJSON *root = cJSON_Parse(body);
+    if (!root) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+
+    char tz[40] = "";
+    const cJSON *j_tz = cJSON_GetObjectItem(root, "tz");
+    if (cJSON_IsString(j_tz) && j_tz->valuestring[0])
+        strlcpy(tz, j_tz->valuestring, sizeof(tz));
+
+    int64_t epoch = 0;
+    const cJSON *j_ep = cJSON_GetObjectItem(root, "epoch");
+    if (cJSON_IsNumber(j_ep)) epoch = (int64_t)j_ep->valuedouble;
+    cJSON_Delete(root);
+
+    bool clock_set = false;
+    if (epoch > 0 && net_mgr_set_time(epoch, NET_TIME_BROWSER) == ESP_OK)
+        clock_set = true;
+
+    if (tz[0]) {
+        /* Touches LVGL state and the settings file, so take the lock. */
+        display_ui_lock();
+        display_ui_set_timezone(tz);
+        display_ui_unlock();
+    }
+
+    char msg[96];
+    snprintf(msg, sizeof(msg), "%s%s",
+             clock_set ? "Clock set from browser. " : "Clock already set; kept. ",
+             tz[0] ? "Timezone applied." : "");
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_sendstr(req, msg);
+}
+
 static esp_err_t reboot_post(httpd_req_t *req)
 {
     if (!s_reboot_timer) {
@@ -865,6 +985,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/download/*",  .method = HTTP_GET,  .handler = download_get },
         { .uri = "/api/delete",      .method = HTTP_POST, .handler = delete_post },
         { .uri = "/api/screenshot",  .method = HTTP_POST, .handler = screenshot_post },
+        { .uri = "/api/time",        .method = HTTP_POST, .handler = time_post },
         { .uri = "/reboot",          .method = HTTP_POST, .handler = reboot_post },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {

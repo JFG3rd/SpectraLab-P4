@@ -171,12 +171,26 @@
                 var act = document.createElement("td");
                 act.className = "actions";
 
+                var url = downloadUrl(dir, f.name);
                 var dl = document.createElement("a");
                 dl.className = "button btn-info row-btn";
-                dl.href = downloadUrl(dir, f.name);
-                dl.setAttribute("download", f.name);
-                dl.textContent = "⬇";
+                dl.href = url;
+                // No "download" attribute on purpose: the server already sends
+                // Content-Disposition: attachment, which forces a save in every
+                // browser and does not depend on the attribute being honoured.
+                dl.textContent = "⬇ Download";
                 dl.title = "Download " + f.name;
+                // Navigate explicitly as well, so the transfer starts through
+                // one defined path instead of relying on the anchor's default
+                // action surviving whatever the table layout does to it — and
+                // so a click that does nothing is visibly distinguishable from
+                // a request that started and failed.
+                dl.onclick = function (ev) {
+                    ev.preventDefault();
+                    setStatus("Downloading " + f.name + "...");
+                    window.location.assign(url);
+                    return false;
+                };
                 act.appendChild(dl);
 
                 if (deletable) {
@@ -193,6 +207,52 @@
             t.appendChild(tb);
             wrap.appendChild(t);
             container.appendChild(wrap);
+        }
+
+        // ── clock / timezone ──────────────────────────────────────
+        // The zone list comes from the firmware, so this selector can never
+        // offer something the device's own dropdown does not.
+        function loadClock() {
+            fetch("/api/status")
+                .then(function (r) { return r.json(); })
+                .then(function (s) {
+                    var sel = document.getElementById("tzSel");
+                    sel.innerHTML = "";
+                    (s.timezones || []).forEach(function (z) {
+                        var o = document.createElement("option");
+                        o.value = z.tz;
+                        o.textContent = z.label;
+                        sel.appendChild(o);
+                    });
+                    if (s.timezone) sel.value = s.timezone;
+
+                    var when = s.time
+                        ? new Date(s.time * 1000).toLocaleString()
+                        : "not set";
+                    var src = s.time_source === "sntp"    ? "from an NTP server"
+                            : s.time_source === "browser" ? "from a browser"
+                            : "never set \u2014 file dates will show as \u2014";
+                    document.getElementById("clockInfo").textContent =
+                        "Device clock: " + when + " (" + src + ")";
+                })
+                .catch(function () {});
+        }
+
+        function saveTz() {
+            var tz = document.getElementById("tzSel").value;
+            setStatus("Applying timezone...");
+            fetch("/api/time", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ tz: tz })
+            })
+                .then(function (r) { return r.text(); })
+                .then(function (t) {
+                    setStatus(t + " Existing files keep the date they were written with.");
+                    loadClock();
+                    refresh();
+                })
+                .catch(function (e) { setStatus("Failed: " + e.message, true); });
         }
 
         function refresh() {
@@ -236,6 +296,19 @@
         }
 
         document.addEventListener("DOMContentLoaded", refresh);
+        document.addEventListener("DOMContentLoaded", loadClock);
+
+        // Tell the device what time it is. The board has no RTC and may have no
+        // route to an NTP server; the firmware ignores this once SNTP has
+        // supplied a clock, so a skewed browser cannot degrade a good sync.
+        function postBrowserClock() {
+            fetch("/api/time", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ epoch: Math.floor(Date.now() / 1000) })
+            }).catch(function () { /* offline or busy: not worth reporting */ });
+        }
+        document.addEventListener("DOMContentLoaded", postBrowserClock);
     </script>
 </head>
 <body>
@@ -248,6 +321,16 @@
         <button class="button btn-info" onclick="refresh()" title="Reload the file list">🔄 Refresh</button>
         <button class="button btn-test" id="delAllBtn" style="display:none" title="Delete every screenshot on the card">🗑 Delete All Screenshots</button>
         <a class="button btn-nav" href="/" title="Back to the main page">🏠 Home</a>
+
+        <hr style="margin: 20px 0;">
+        <h2>🕒 Clock</h2>
+        <p class="disclaimer" id="clockInfo"></p>
+        <p>The board has no battery-backed clock. It syncs from an NTP server when it can reach one, and otherwise takes the time from whichever browser last opened a page. Files written before the clock is known show no date.</p>
+        <label><strong>Timezone:</strong></label>
+        <select id="tzSel"></select>
+        <button class="button btn-save" onclick="saveTz()" title="Apply this timezone to the analyzer">💾 Apply Timezone</button>
+
+        <hr style="margin: 20px 0;">
 
         <div class="flash-stats" id="filesStatusMsg"></div>
         <div id="fileList"></div>
