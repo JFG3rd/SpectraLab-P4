@@ -42,6 +42,8 @@ The most important functional additions are:
 21. A-weighting and microphone sensitivity now have controls on the Settings screen. Both were previously only reachable by editing settings.json. See section 7.
 22. Saved presets can be selected as a settings profile directly from the Settings screen. See section 16.
 23. Static IP can now also be configured from the browser, and the device's `.local` address is shown on the Wi-Fi screen.
+24. The analyzer knows the time. It syncs from an NTP server when it can reach one, and otherwise takes the time from whichever browser opens a page, so screenshots carry real dates. Timezone is selectable on the device and in the browser. See section 14.
+25. Access-point mode is now a deliberate choice, not just a fallback: the analyzer can be its own Wi-Fi network permanently, with the full web interface, for use where there is none. Phones and laptops open the portal automatically. See section 14.
 
 If you only remember one thing: the analyzer now preserves more of its real
 runtime state, and the display is much more interactive.

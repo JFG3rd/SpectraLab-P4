@@ -36,10 +36,12 @@ Features include:
 
 - Analyzer status dashboard
 - Dark and Light themes
-- Wi-Fi configuration
+- Wi-Fi configuration, including per-network static IP and access-point mode
+- SD card file browser — download screenshots, presets and calibration files
+- Take a screenshot of the analyzer's display from the browser
 - Microphone calibration upload
 - Remote configuration
-- Browser-based operation
+- Works over the analyzer's own access point, with no network required
 
 ## Main Dashboard
 
@@ -86,6 +88,8 @@ Features include:
 
 | Document | Description |
 |----------|-------------|
+| [User Guide](UserGuide.md) | How to operate the analyzer, feature by feature |
+| [Hardware Setup](hardware-setup.md) | Wiring, front-panel keycaps, signal chain |
 | [Quick Start](#quick-start) | Build and flash the analyzer |
 | [Display Modes](#display-modes) | Supported on-device analyzer views |
 | [Embedded Web Interface](#-embedded-web-interface) | Browser dashboard, Wi-Fi setup and calibration upload |
@@ -130,6 +134,8 @@ I am releasing the project as open source in the hope that other engineers, stud
 - SD card configuration storage
 - Wi-Fi provisioning
 - Multiple remembered Wi-Fi networks with automatic reconnect
+- Access-point mode with a captive portal — full web interface with no network at all
+- Automatic clock (NTP, or your browser) so recordings and screenshots carry real dates
 - Embedded web interface
 - Responsive browser interface
 - Dark and Light themes
@@ -208,6 +214,9 @@ Every feature is evaluated against one goal:
 | Peak Readout Cursor | ✅ |
 | Screenshot Capture (PNG to SD) | ✅ |
 | SD File Browser & Download | ✅ |
+| Access-Point Mode + Captive Portal | ✅ |
+| Automatic Clock (NTP / browser) | ✅ |
+| Selectable Timezone | ✅ |
 | Camera QR Wi-Fi Setup | ✅ |
 | Front-Panel Keycaps (optional) | ✅ |
 | Distributed Stereo Analyzer | 🚧 Planned for v2.0 |
@@ -371,6 +380,21 @@ Notes on this path:
 Insert the SD card and reboot. The analyzer starts in the spectrum view; the
 web interface address is shown on the on-device Wi-Fi screen once it joins a
 network.
+
+---
+
+# Using It Without a Network
+
+The analyzer does not need infrastructure. Switch it to **access-point mode**
+and it becomes its own Wi-Fi network: join `SpectraLab-P4-XXXX` and the portal
+opens by itself, with the complete web interface — file browser, screenshot
+capture and download, settings, calibration upload.
+
+The only thing that changes is where the clock comes from. With no route to a
+time server the analyzer takes the time from whichever browser opens a page, so
+captures still carry correct timestamps.
+
+Switch modes on the device under **Wi-Fi Setup → Mode**, or from the browser.
 
 ---
 

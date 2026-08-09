@@ -50,7 +50,7 @@ Make the analyzer useful as a real standalone instrument, not just a demonstrati
 |---------|------|-------|
 | v1.1.0 | 2026-07-11 | Multi-network Wi-Fi, software AGC, first camera QR provisioning |
 | v1.2.0 | 2026-08-07 | Camera QR working on both silicon revisions, front-panel keycaps, QR reliability |
-| v1.3.0 | 2026-08-08 | Screenshots, SD file browser, peak cursor, SPL calibration UI, settings profiles |
+| v1.3.0 | 2026-08-09 | Screenshots, SD file browser, peak cursor, SPL calibration UI, settings profiles, access-point mode, automatic clock |
 
 The 1.x series focuses on polishing the current standalone instrument before adding major architectural complexity.
 
@@ -74,6 +74,8 @@ The 1.x series focuses on polishing the current standalone instrument before add
 - [x] Named settings profiles — load a saved preset from the Settings screen. A profile is a label, not a live save target: ordinary edits never write back to the named file, so a preset stays the snapshot it was taken as
 - [x] The active hostname and address are shown on the Wi-Fi screen and in `GET /api/status`, so first-time setup never involves guessing a URL
 - [x] Per-network static IP configuration from the browser as well as the device
+- [x] Access-point mode as a deliberate choice rather than a fallback, with a captive portal so a phone opens the page on its own — the full web interface works with no infrastructure at all
+- [x] The analyzer knows the time: SNTP where there is a route to a server, otherwise the clock of whichever browser opens a page, so screenshots carry real dates. Timezone selectable on the device and in the browser
 - [x] Every status-bar readout follows the colour theme — several were fixed bright colours, unreadable on the light High Contrast palette
 
 ### Known Limitations
