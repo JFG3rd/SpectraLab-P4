@@ -46,6 +46,18 @@
                 .catch(() => {});
         }
         document.addEventListener("DOMContentLoaded", loadStatus);
+
+        // Tell the device what time it is. The board has no RTC and may have no
+        // route to an NTP server; the firmware ignores this once SNTP has
+        // supplied a clock, so a skewed browser cannot degrade a good sync.
+        function postBrowserClock() {
+            fetch("/api/time", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ epoch: Math.floor(Date.now() / 1000) })
+            }).catch(function () { /* offline or busy: not worth reporting */ });
+        }
+        document.addEventListener("DOMContentLoaded", postBrowserClock);
     </script>
 </head>
 <body>

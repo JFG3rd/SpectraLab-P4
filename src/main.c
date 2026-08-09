@@ -130,6 +130,11 @@ void app_main(void)
     settings_t loaded;
     settings_mgr_load(&loaded);
 
+    /* Apply the timezone before any file is written: FAT records LOCAL time,
+     * so this decides what timestamp a capture carries, not just how it is
+     * displayed. The clock itself is set later by SNTP (or a browser). */
+    net_mgr_apply_timezone(loaded.timezone);
+
     /* 3. Display UI: LCD hardware init + LVGL port + spectrum screen */
     ESP_LOGI(TAG, "Step 3: display_ui_init");
     ESP_ERROR_CHECK(display_ui_init());

@@ -76,6 +76,10 @@ typedef struct {
      * profile changes only when the user explicitly saves it, so a preset stays
      * the snapshot it was taken as. */
     char           active_profile[SETTINGS_NAME_MAX];
+    /* POSIX TZ string, e.g. "CET-1CEST,M3.5.0,M10.5.0/3". FAT stores LOCAL
+     * time, so this decides what timestamp a file is written with, not merely
+     * how it is displayed. "" means UTC. */
+    char           timezone[40];
 } settings_t;
 
 /* Everything this project writes lives under one root, so the web file
@@ -88,6 +92,27 @@ typedef struct {
 
 /* Longest absolute path this project builds: root + a subdirectory + a name. */
 #define SETTINGS_PATH_MAX 96
+
+/* ── timezones ────────────────────────────────────────────────────
+ * One table, shared by the on-device dropdown and the web selector, so the
+ * two cannot offer different lists. Values are POSIX TZ strings with full
+ * daylight-saving rules, which is why they look cryptic: "CET-1CEST,M3.5.0,
+ * M10.5.0/3" means CET, one hour east, switching on the last Sunday of March
+ * and October. */
+typedef struct {
+    const char *label;   /* shown to the user */
+    const char *tz;      /* POSIX TZ string   */
+} settings_tz_t;
+
+extern const settings_tz_t SETTINGS_TZ_TABLE[];
+extern const int           SETTINGS_TZ_COUNT;
+
+/* Enough for every label joined by newlines (LVGL dropdown options). */
+#define SETTINGS_TZ_MAX_OPTS_LEN 320
+
+/* Central European, matching where this board is used. Changeable at runtime
+ * on the device and from the browser. */
+#define SETTINGS_TZ_DEFAULT "CET-1CEST,M3.5.0,M10.5.0/3"
 
 /**
  * @brief Initialise the settings manager and mount the SD card if present.

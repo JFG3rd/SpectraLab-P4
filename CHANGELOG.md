@@ -1,4 +1,59 @@
 ## [Unreleased]
+### Fixed
+- Screen captures were saved upside down. The panel is configured mirror_x +
+  mirror_y, which looks like it should mean the framebuffer is a 180-degree
+  rotation of the display — it is not. Those are applied by the ek79007 driver
+  as a MADCTL command to the panel IC, so the panel corrects its own physical
+  scan-out and the framebuffer already matches what is on screen. The capture
+  path was rotating to "undo" a mirror that had already been undone.
+- Screenshot downloads did nothing in Chrome. The endpoint was correct
+  throughout — curl pulled a byte-exact PNG from it, and Safari saved it fine —
+  but the response was sent with Transfer-Encoding: chunked and therefore no
+  Content-Length, which Chrome's download manager can silently discard. Files
+  here are 20-45 KB, so they are now read into PSRAM and sent in one call,
+  which sets Content-Length automatically; the chunked path is kept as a
+  fallback above 512 KB.
+- The screenshot button was drawn on top of the settings gear. It was created
+  in a different file, on a different parent, in a different coordinate system
+  (the LVGL top layer has no padding, the status bar has 4 px), so re-slotting
+  the status row could not move it. Both now come from one factory —
+  ui_widgets.c — that owns slot geometry, size and colour, and the row is laid
+  out on a single 62 px pitch.
+- Recorded dates showed 1980-01-01 06:34 instead of "unknown". With no RTC,
+  time() returns seconds-since-boot, so FAT records the 1980 epoch *plus the
+  uptime* — values hours past midnight, which sailed straight through a
+  "reject <= 1980-01-01 00:00" check. The threshold is now 2021.
+
+### Added
+- The analyzer learns the time. SNTP starts once the station has an address,
+  preferring a DHCP-advertised server over the public pool so it works on a LAN
+  with no route out; failing that, every web page quietly posts the browser's
+  clock to POST /api/time. A browser is only trusted while the device has no
+  time of its own, so a skewed machine cannot degrade a good sync.
+  Files written before the clock is known still show no date, and are never
+  restamped.
+- Timezone, configurable on the device (Settings) and in the browser. This is
+  not cosmetic: FAT stores local time, so the zone decides what is written into
+  a file. Both selectors are built from one table in the firmware, so they
+  cannot offer different lists.
+- GET /api/status reports time, time_source and timezone; the Wi-Fi screen
+  shows the device clock alongside the browser entry point.
+- The status-row buttons now follow the colour scheme. They were the only part
+  of the status bar that ignored the palette.
+
+### Changed
+- Embedded web pages are served with Cache-Control: no-store. They ship inside
+  the firmware and change with every update, so a browser that had seen a page
+  before kept serving its cached copy after a flash — which hid a fixed
+  download button behind a stale page for an entire debugging session.
+- /api/download takes the filename in the path (/api/download/<dir>/<file>)
+  rather than an X-Filename header, so an ordinary link works. Directory and
+  filename still pass through the same enum lookup and
+  settings_mgr_resolve_path(), and the guards were re-verified on hardware
+  after the rewrite.
+- The SD file listing is a compact table — name, size, recorded date, download
+  and delete on one row — sorted newest first.
+
 
 
 ## [1.3.0] - 2026-08-08

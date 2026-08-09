@@ -17,6 +17,7 @@
 #include "settings_mgr.h"
 #include "agc.h"
 #include "panel_button.h"
+#include "net_mgr.h"
 #include "display_ui.h"
 #include "display_init.h"
 #include "screen_spectrum.h"
@@ -24,6 +25,7 @@
 #include "screen_splash.h"
 #include "screen_wifi.h"
 #include "screenshot.h"
+#include "ui_widgets.h"
 
 static const char *TAG = "display_ui";
 
@@ -56,6 +58,7 @@ static int          s_last_usb_policy = SETTINGS_USB_STEREO_POLICY_SUM;
 static bool         s_last_cal_enabled = false;
 static char         s_last_cal_file[32] = "";
 static char         s_last_profile[SETTINGS_NAME_MAX] = "";
+static char         s_last_timezone[40] = SETTINGS_TZ_DEFAULT;
 static bool         s_last_agc_enabled = false;
 static int          s_last_agc_target  = -12;
 static int          s_last_agc_speed   = AGC_SPEED_SLOW;
@@ -137,6 +140,7 @@ static void save_current_settings(void)
                      .agc_speed               = s_last_agc_speed };
     strlcpy(s.cal_file, s_last_cal_file, sizeof(s.cal_file));
     strlcpy(s.active_profile, s_last_profile, sizeof(s.active_profile));
+    strlcpy(s.timezone, s_last_timezone, sizeof(s.timezone));
     settings_mgr_save(&s);
 }
 
@@ -225,7 +229,17 @@ void display_ui_sync_settings(const settings_t *cfg)
     s_last_agc_target  = cfg->agc_target_dbfs;
     s_last_agc_speed   = cfg->agc_speed;
     strlcpy(s_last_profile, cfg->active_profile, sizeof(s_last_profile));
+    strlcpy(s_last_timezone, cfg->timezone, sizeof(s_last_timezone));
     screen_settings_sync_from(cfg);
+}
+
+void display_ui_set_timezone(const char *tz)
+{
+    if (!tz || !tz[0]) return;
+    if (strcmp(tz, s_last_timezone) == 0) return;   /* nothing to do */
+    strlcpy(s_last_timezone, tz, sizeof(s_last_timezone));
+    net_mgr_apply_timezone(s_last_timezone);
+    save_current_settings();
 }
 
 void display_ui_set_active_profile(const char *name)
@@ -441,17 +455,15 @@ static void create_global_overlay(void)
     lv_obj_set_style_pad_all(top, 0, 0);
     lv_obj_set_style_border_width(top, 0, 0);
 
-    /* Top-right corner of the top line. The spectrum screen's own button strip
-     * was shifted left by 44 px to clear this spot; every other screen has its
-     * title on the left and nothing this high on the right. */
-    lv_obj_t *btn = lv_button_create(top);
-    lv_obj_set_size(btn, 40, 28);
-    lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -2, 4);
-    lv_obj_add_event_cb(btn, global_shot_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *lbl = lv_label_create(btn);
-    lv_label_set_text(lbl, LV_SYMBOL_IMAGE);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(lbl);
+    /* Slot 1 of the status row — immediately left of the settings gear, and
+     * built by the same factory as every other button in that row, so size,
+     * spacing and colour cannot drift from it. `in_status_bar = false` because
+     * the top layer has no padding, unlike the status bar.
+     *
+     * Slot 1 is clear on every screen: Settings' nearest item at this height
+     * is at x 540, the Wi-Fi screen's buttons start at y 72, and the file
+     * dialogs' lists at y 50. */
+    ui_status_btn_create(top, 1, false, LV_SYMBOL_IMAGE, global_shot_btn_cb, NULL);
 
     s_toast = lv_obj_create(top);
     lv_obj_set_size(s_toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);

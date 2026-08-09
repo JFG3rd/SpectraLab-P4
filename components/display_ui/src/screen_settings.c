@@ -79,6 +79,7 @@ static lv_obj_t *s_slider_brightness;
 static lv_obj_t *s_lbl_brightness_val;
 static lv_obj_t *s_dd_a_weight;
 static lv_obj_t *s_dd_profile;
+static lv_obj_t *s_dd_timezone;
 static lv_obj_t *s_lbl_profile_hint;
 static char      s_active_profile[SETTINGS_NAME_MAX] = "";
 /* Names backing s_dd_profile, index 0 = "(none)". Kept so a selection can be
@@ -255,6 +256,40 @@ static void mic_sens_slider_cb(lv_event_t *e)
 
 /* Echo the active profile alongside the SD state, so the PRESETS group shows
  * which named preset the live configuration came from. */
+/* ── timezone ─────────────────────────────────────────────────────
+ * Options come from SETTINGS_TZ_TABLE so the device dropdown and the web
+ * selector always offer the same list. */
+static void timezone_fill_options(void)
+{
+    if (!s_dd_timezone) return;
+    char opts[SETTINGS_TZ_MAX_OPTS_LEN];
+    size_t used = 0;
+    for (int i = 0; i < SETTINGS_TZ_COUNT && used < sizeof(opts) - 1; i++) {
+        used += snprintf(opts + used, sizeof(opts) - used, "%s%s",
+                         i ? "\n" : "", SETTINGS_TZ_TABLE[i].label);
+    }
+    lv_dropdown_set_options(s_dd_timezone, opts);
+}
+
+static uint16_t timezone_tz_to_index(const char *tz)
+{
+    if (tz) {
+        for (int i = 0; i < SETTINGS_TZ_COUNT; i++)
+            if (strcmp(SETTINGS_TZ_TABLE[i].tz, tz) == 0) return (uint16_t)i;
+    }
+    /* A TZ set over REST that is not in the table (or none at all) — show the
+     * default rather than silently claiming to be UTC. */
+    for (int i = 0; i < SETTINGS_TZ_COUNT; i++)
+        if (strcmp(SETTINGS_TZ_TABLE[i].tz, SETTINGS_TZ_DEFAULT) == 0) return (uint16_t)i;
+    return 0;
+}
+
+static const char *timezone_index_to_tz(uint16_t idx)
+{
+    if (idx >= (uint16_t)SETTINGS_TZ_COUNT) return SETTINGS_TZ_DEFAULT;
+    return SETTINGS_TZ_TABLE[idx].tz;
+}
+
 static void update_sd_status_label(void)
 {
     if (!s_lbl_sd_status) return;
@@ -435,6 +470,11 @@ static void apply_settings(void)
     if (s_usb_cb) {
         s_usb_cb((audio_usb_stereo_policy_t)lv_dropdown_get_selected(s_dd_usb_policy), s_usb_ctx);
     }
+
+    /* Timezone applies here rather than through the DSP callback: it is not a
+     * DSP setting, and it must reach the C library (setenv/tzset) not just the
+     * settings file. */
+    display_ui_set_timezone(timezone_index_to_tz(lv_dropdown_get_selected(s_dd_timezone)));
 
     if (s_agc_cb) {
         bool agc_on   = (lv_dropdown_get_selected(s_dd_agc_enable) == 1);
@@ -818,6 +858,13 @@ esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
     lv_obj_set_style_text_font(btn_prof_save_lbl, &lv_font_montserrat_14, 0);
     lv_obj_center(btn_prof_save_lbl);
 
+    /* Timezone sits with the profile group because both are "how the device
+     * labels things" rather than measurement settings. FAT stores local time,
+     * so this changes what timestamp a screenshot is written with. */
+    s_dd_timezone = make_labeled_dropdown(s_screen, "Timezone:", "UTC", 836);
+    timezone_fill_options();
+    lv_dropdown_set_selected(s_dd_timezone, timezone_tz_to_index(SETTINGS_TZ_DEFAULT));
+
     s_lbl_profile_hint = lv_label_create(s_screen);
     lv_obj_set_width(s_lbl_profile_hint, 480);
     lv_label_set_long_mode(s_lbl_profile_hint, LV_LABEL_LONG_WRAP);
@@ -952,6 +999,9 @@ void screen_settings_collect(settings_t *out)
     out->cal_enabled             = (lv_dropdown_get_selected(s_dd_cal_enable) == 1);
     strlcpy(out->cal_file, s_cal_file_name, sizeof(out->cal_file));
     strlcpy(out->active_profile, s_active_profile, sizeof(out->active_profile));
+    strlcpy(out->timezone,
+            timezone_index_to_tz(lv_dropdown_get_selected(s_dd_timezone)),
+            sizeof(out->timezone));
     out->agc_enabled             = (lv_dropdown_get_selected(s_dd_agc_enable) == 1);
     out->agc_target_dbfs         = agc_target_index_to_dbfs(lv_dropdown_get_selected(s_dd_agc_target));
     out->agc_speed               = (int)lv_dropdown_get_selected(s_dd_agc_speed);
@@ -999,6 +1049,7 @@ void screen_settings_sync_from(const settings_t *cfg)
     strlcpy(s_cal_file_name, cfg->cal_file, sizeof(s_cal_file_name));
     update_cal_status_label();
     screen_settings_sync_profile(cfg->active_profile);
+    lv_dropdown_set_selected(s_dd_timezone, timezone_tz_to_index(cfg->timezone));
     screen_settings_sync_agc(cfg->agc_enabled, cfg->agc_target_dbfs, cfg->agc_speed);
 
     if (cfg->ambient_noise_enabled) lv_obj_add_state(s_sw_ambient, LV_STATE_CHECKED);

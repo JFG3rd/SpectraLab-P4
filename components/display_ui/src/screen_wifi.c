@@ -20,6 +20,7 @@
 #include "agc.h"
 #include "audio_source.h"
 #include "display_ui.h"
+#include <time.h>
 #include "net_mgr.h"
 #include "panel_button.h"
 #include "qr_scan.h"
@@ -1523,6 +1524,25 @@ void screen_wifi_show(void)
              * is not running until the station joins. */
             lv_label_set_text(s_lbl_entry, "Open in a browser:\nhttp://192.168.4.1");
         }
+
+        /* The clock, because a wrong file date is otherwise unexplainable
+         * without a serial cable. There is no RTC: the time arrives from SNTP
+         * once the network is up, or from a browser opening a page. */
+        char clk[64];
+        if (net_mgr_time_is_valid()) {
+            time_t    now = time(NULL);
+            struct tm tm_local;
+            char      when[32];
+            localtime_r(&now, &tm_local);
+            strftime(when, sizeof(when), "%Y-%m-%d %H:%M", &tm_local);
+            net_time_source_t src = net_mgr_get_time_source();
+            snprintf(clk, sizeof(clk), "\nClock: %s (%s)", when,
+                     src == NET_TIME_SNTP ? "NTP" : "browser");
+        } else {
+            strlcpy(clk, "\nClock: not set - file dates unknown", sizeof(clk));
+        }
+        /* Appended rather than replacing, so the URL stays visible. */
+        lv_label_ins_text(s_lbl_entry, LV_LABEL_POS_LAST, clk);
     }
 
     /* Pause the auto-join loop so the STA is idle and scannable (otherwise

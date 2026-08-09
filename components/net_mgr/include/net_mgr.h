@@ -45,6 +45,35 @@ net_link_state_t net_mgr_get_link_state(char *ssid_out, size_t ssid_len);
  * derived from the eFuse MAC, so it does not depend on being connected. */
 const char *net_mgr_get_mdns_host(void);
 
+/* ── wall-clock time ──────────────────────────────────────────────
+ *
+ * The board has no RTC, so at boot the clock reads 1970 and FAT stamps every
+ * file it writes with the 1980 epoch. SNTP starts automatically once the
+ * station has an address; where there is no route to an NTP server, a browser
+ * can supply the time instead (POST /api/time).
+ *
+ * Nothing here blocks: callers that need a timestamp should check
+ * net_mgr_time_is_valid() and present "unknown" rather than wait. */
+typedef enum {
+    NET_TIME_NONE = 0,   /* clock never set — treat timestamps as unknown */
+    NET_TIME_SNTP,
+    NET_TIME_BROWSER,
+} net_time_source_t;
+
+bool              net_mgr_time_is_valid(void);
+net_time_source_t net_mgr_get_time_source(void);
+
+/* Set the clock from an external source. Ignored (returns ESP_ERR_INVALID_STATE)
+ * when the clock is already valid and `src` is not more trustworthy, so a
+ * browser with a skewed clock cannot walk over a good SNTP sync.
+ * `epoch` is seconds since 1970-01-01 UTC. */
+esp_err_t net_mgr_set_time(int64_t epoch, net_time_source_t src);
+
+/* Apply a POSIX TZ string (e.g. "CET-1CEST,M3.5.0,M10.5.0/3").
+ * FAT stores LOCAL time, so this changes what timestamps files are written
+ * with, not merely how they are displayed. NULL or "" means UTC. */
+void      net_mgr_apply_timezone(const char *tz);
+
 /* Human-readable one-liner for the settings screen, e.g.
  * "AP SpectraLab-P4-1A2B pw SA-89ABCDEF 192.168.4.1"
  * "WiFi: MyNetwork 192.168.1.57  (2 saved)"  /  "WiFi: off" */

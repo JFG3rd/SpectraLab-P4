@@ -1,0 +1,14 @@
+menu "SpectraLab network manager"
+
+config NET_MGR_NTP_SERVER
+    string "NTP server"
+    default "pool.ntp.org"
+    help
+        Fallback time server, used when the DHCP lease does not advertise one.
+
+        The board has no RTC, so without a time source every file it writes
+        carries the 1980 FAT epoch instead of a real date. A server advertised
+        by DHCP is always preferred, which is what makes this work on a LAN
+        with no route to the public internet.
+
+endmenu

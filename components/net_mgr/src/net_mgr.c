@@ -16,6 +16,9 @@
 #include "esp_netif_net_stack.h"   /* esp_netif_get_netif_impl() for the ARP probe */
 #include "lwip/etharp.h"
 #include "esp_mac.h"
+#include "esp_netif_sntp.h"
+#include "esp_sntp.h"
+#include <time.h>
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -46,6 +49,11 @@ static const char *TAG = "net_mgr";
  * a slow DHCP server (a lease normally lands in 1-3 s) while still leaving the
  * board recoverable in well under a minute. */
 #define IP_TIMEOUT_MS      20000
+
+/* Anything earlier than 2021-01-01 means the clock was never set: the board
+ * has no RTC, so an unset clock reads 1970 and FAT records the 1980 epoch.
+ * This project did not exist before 2021, so nothing real is discarded. */
+#define TIME_VALID_EPOCH   1609459200LL
 
 /* Set to 1 to also surface the underlying esp_wifi / esp-hosted transport
  * logs (very noisy over the C6 RPC link) when debugging join failures. */
@@ -103,6 +111,8 @@ static bool               s_scanning;
 static char               s_scan_ssids[SCAN_MAX][NET_SSID_MAX];
 static int                s_scan_count;
 static bool               s_mdns_up;
+static bool               s_sntp_up;
+static net_time_source_t  s_time_src = NET_TIME_NONE;
 
 /* known-networks list (most-recently-used first) */
 static wifi_net_t         s_known[NET_MAX_KNOWN];
@@ -113,6 +123,7 @@ static bool               s_provisioning;   /* setup UI active: auto-join paused
 
 static void start_setup_ap(void);
 static void connect_current_known(void);
+static void start_sntp(void);
 
 /* ── diagnostics ───────────────────────────── */
 
@@ -588,6 +599,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             s_mdns_up = true;
             ESP_LOGI(TAG, "mDNS: http://%s.local/", s_mdns_host);
         }
+
+        start_sntp();
     }
 }
 
@@ -924,6 +937,80 @@ esp_err_t net_mgr_init(void)
 bool net_mgr_is_sta_connected(void)
 {
     return s_state == NET_STA_UP;
+}
+
+/* ── wall-clock time ──────────────────────────────────────────── */
+
+bool net_mgr_time_is_valid(void)
+{
+    return (int64_t)time(NULL) >= TIME_VALID_EPOCH;
+}
+
+net_time_source_t net_mgr_get_time_source(void)
+{
+    /* An SNTP sync that has landed since we last looked still counts, even
+     * though nothing calls back into here to say so. */
+    if (s_time_src == NET_TIME_NONE && net_mgr_time_is_valid() && s_sntp_up)
+        s_time_src = NET_TIME_SNTP;
+    return s_time_src;
+}
+
+esp_err_t net_mgr_set_time(int64_t epoch, net_time_source_t src)
+{
+    if (epoch < TIME_VALID_EPOCH) return ESP_ERR_INVALID_ARG;
+
+    /* SNTP outranks a browser: only accept a browser's clock while we have
+     * none of our own, so a machine with a skewed clock cannot degrade a
+     * good sync. */
+    if (src == NET_TIME_BROWSER && net_mgr_get_time_source() == NET_TIME_SNTP)
+        return ESP_ERR_INVALID_STATE;
+
+    struct timeval tv = { .tv_sec = (time_t)epoch, .tv_usec = 0 };
+    if (settimeofday(&tv, NULL) != 0) return ESP_FAIL;
+    s_time_src = src;
+
+    char buf[32];
+    time_t t = (time_t)epoch;
+    struct tm tm_local;
+    localtime_r(&t, &tm_local);
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_local);
+    ESP_LOGI(TAG, "clock set to %s (%s)", buf,
+             src == NET_TIME_SNTP ? "SNTP" : "browser");
+    return ESP_OK;
+}
+
+void net_mgr_apply_timezone(const char *tz)
+{
+    /* FAT stores local time, so this decides what future files are stamped
+     * with — not just how existing ones are rendered. */
+    setenv("TZ", (tz && tz[0]) ? tz : "UTC0", 1);
+    tzset();
+    ESP_LOGI(TAG, "timezone: %s", (tz && tz[0]) ? tz : "UTC0");
+}
+
+/* Kick SNTP once the station has an address. Never blocks: the sync lands on
+ * its own thread and the clock simply becomes valid at some point after. */
+static void start_sntp(void)
+{
+    if (s_sntp_up) return;
+
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG(CONFIG_NET_MGR_NTP_SERVER);
+    cfg.start                 = true;
+    cfg.server_from_dhcp      = true;   /* a router-advertised server first */
+    cfg.renew_servers_after_new_IP = true;
+    cfg.index_of_first_server = 1;      /* DHCP server takes slot 0 */
+    cfg.ip_event_to_renew     = IP_EVENT_STA_GOT_IP;
+    cfg.sync_cb               = NULL;
+
+    esp_err_t err = esp_netif_sntp_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "SNTP init failed: %s — timestamps stay unknown until a "
+                      "browser supplies the time", esp_err_to_name(err));
+        return;
+    }
+    s_sntp_up = true;
+    ESP_LOGI(TAG, "SNTP started (DHCP-provided server, then %s)",
+             CONFIG_NET_MGR_NTP_SERVER);
 }
 
 net_link_state_t net_mgr_get_link_state(char *ssid_out, size_t ssid_len)

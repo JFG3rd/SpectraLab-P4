@@ -29,6 +29,24 @@ static const char *TAG = "settings_mgr";
 
 #define SETTINGS_VERSION 1
 
+/* Kept deliberately short: a long list is unusable on a touch dropdown, and
+ * anything missing can still be set as a raw POSIX string over the REST API. */
+const settings_tz_t SETTINGS_TZ_TABLE[] = {
+    { "UTC",              "UTC0" },
+    { "UK (London)",      "GMT0BST,M3.5.0/1,M10.5.0" },
+    { "Central Europe",   "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Eastern Europe",   "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+    { "US Eastern",       "EST5EDT,M3.2.0,M11.1.0" },
+    { "US Central",       "CST6CDT,M3.2.0,M11.1.0" },
+    { "US Mountain",      "MST7MDT,M3.2.0,M11.1.0" },
+    { "US Pacific",       "PST8PDT,M3.2.0,M11.1.0" },
+    { "India",            "IST-5:30" },
+    { "China",            "CST-8" },
+    { "Japan",            "JST-9" },
+    { "Sydney",           "AEST-10AEDT,M10.1.0,M4.1.0/3" },
+};
+const int SETTINGS_TZ_COUNT = (int)(sizeof(SETTINGS_TZ_TABLE) / sizeof(SETTINGS_TZ_TABLE[0]));
+
 static bool s_sd_mounted = false;
 static sdmmc_card_t        *s_card;
 static sd_pwr_ctrl_handle_t s_sd_pwr;
@@ -159,6 +177,7 @@ static char *_settings_to_json(const settings_t *cfg)
     cJSON_AddNumberToObject(root, "agc_target_dbfs",            cfg->agc_target_dbfs);
     cJSON_AddNumberToObject(root, "agc_speed",                  cfg->agc_speed);
     cJSON_AddStringToObject(root, "active_profile",             cfg->active_profile);
+    cJSON_AddStringToObject(root, "timezone",                   cfg->timezone);
 
     char *str = cJSON_Print(root);
     cJSON_Delete(root);
@@ -209,6 +228,9 @@ static bool _json_to_settings(const char *json_str, settings_t *out)
     if ((item = cJSON_GetObjectItem(root, "active_profile")) && cJSON_IsString(item) &&
         item->valuestring != NULL)
         strlcpy(out->active_profile, item->valuestring, sizeof(out->active_profile));
+    if ((item = cJSON_GetObjectItem(root, "timezone")) && cJSON_IsString(item) &&
+        item->valuestring != NULL)
+        strlcpy(out->timezone, item->valuestring, sizeof(out->timezone));
 
 #undef GET_INT
 #undef GET_FLT
@@ -389,6 +411,12 @@ void settings_mgr_sanitize(settings_t *s)
     if (strchr(s->active_profile, '/') || strchr(s->active_profile, '\\'))
         s->active_profile[0] = '\0';
 
+    /* timezone: force termination only. A POSIX TZ string legitimately
+     * contains '/' and ',' (e.g. "CET-1CEST,M3.5.0,M10.5.0/3"), so the
+     * path-separator rejection used above would break valid values; it is
+     * handed to setenv(), never used to build a path. */
+    s->timezone[sizeof(s->timezone) - 1] = '\0';
+
     /* AGC: target is a display headroom (below 0 dBFS); speed is an enum */
     s->agc_target_dbfs = _clampi(s->agc_target_dbfs, -30, -3, -12);
     if ((unsigned)s->agc_speed >= AGC_SPEED_COUNT) s->agc_speed = AGC_SPEED_SLOW;
@@ -412,6 +440,7 @@ static void _set_defaults(settings_t *out)
     out->cal_enabled              = false;
     out->cal_file[0]              = '\0';
     out->active_profile[0]        = '\0';
+    strlcpy(out->timezone, SETTINGS_TZ_DEFAULT, sizeof(out->timezone));
     out->agc_enabled              = false;   /* opt-in */
     out->agc_target_dbfs          = -12;     /* mid-range display headroom */
     out->agc_speed                = AGC_SPEED_SLOW;
@@ -818,10 +847,16 @@ int settings_mgr_list_dir(settings_dir_t dir, settings_file_t *out, int max_coun
 
         strlcpy(out[count].name, ent->d_name, sizeof(out[count].name));
         out[count].size = (long)st.st_size;
-        /* FAT epoch starts at 1980; anything at or below that is the "clock was
-         * never set" sentinel rather than a real date, so report it as unknown
-         * instead of showing the user a fictitious 1980 timestamp. */
-        out[count].mtime = (st.st_mtime > 315532800) ? (int64_t)st.st_mtime : 0;
+        /* "Clock was never set" is reported as unknown (0) rather than shown as
+         * a fictitious date.
+         *
+         * The threshold is 2021, not the 1980 FAT epoch: with no RTC, time()
+         * returns seconds-since-boot, so get_fattime() writes 1980 plus the
+         * uptime — real observed values were 1980-01-01 06:32 and 06:34, hours
+         * past midnight, which sailed straight through a 315532800 check. This
+         * project did not exist before 2021, so nothing genuine is discarded.
+         * Matches TIME_VALID_EPOCH in net_mgr. */
+        out[count].mtime = (st.st_mtime >= 1609459200) ? (int64_t)st.st_mtime : 0;
         count++;
     }
     closedir(d);

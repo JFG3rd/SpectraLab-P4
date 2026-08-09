@@ -749,6 +749,34 @@ confirmation.
 
 To remove anything else, take the card out and use a computer.
 
+### Dates, and why some files have none
+
+The analyzer has no battery-backed clock. At power-on it does not know the
+time, and FAT records whatever the clock says when a file is written — so
+without a time source every capture would be stamped 1980.
+
+It gets the time two ways, in this order:
+
+1. **From an NTP server**, as soon as it joins a network. A server advertised
+   by your router is preferred over the public pool, so this works even on a
+   LAN with no route to the wider internet.
+2. **From your browser.** Every page quietly tells the analyzer what time it
+   is when you open it. This only applies when the analyzer does not already
+   know — a browser with a wrong clock cannot overwrite a good NTP sync.
+
+The **Clock** section of the file page shows the current device time and which
+of those it came from.
+
+**Files written before the clock was known keep no date** and show a dash.
+That is deliberate: the alternative is printing a 1980 timestamp that looks
+like real information. Existing files are never restamped, so captures taken
+before the first sync will always show a dash.
+
+**Timezone** matters more than it looks: FAT stores *local* time, so the zone
+decides what is written into the file, not merely how it is displayed. Set it
+either on the device (**Settings → Timezone**) or on the file page. The two
+offer the same list because it comes from the firmware.
+
 ## 15. The Peak Readout Cursor
 
 Bars tell you the shape of a spectrum; they do not tell you that the hum is at

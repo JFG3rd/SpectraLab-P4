@@ -145,6 +145,11 @@ void      display_ui_notify_screenshot(const char *path, bool ok);
  * in LVGL context. `ok` picks the accent colour. */
 void      display_ui_toast(const char *msg, bool ok);
 
+/* Apply and persist a POSIX TZ string. FAT stores local time, so this changes
+ * what timestamp future files are written with, not just how dates render.
+ * Must be called in LVGL context. */
+void        display_ui_set_timezone(const char *tz);
+
 /* Record which named preset the live configuration came from, "" for none.
  *
  * This is a LABEL, not a save target. Ordinary edits keep auto-saving to the
