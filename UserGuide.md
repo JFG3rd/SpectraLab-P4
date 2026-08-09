@@ -777,6 +777,32 @@ decides what is written into the file, not merely how it is displayed. Set it
 either on the device (**Settings → Timezone**) or on the file page. The two
 offer the same list because it comes from the firmware.
 
+### Using the analyzer with no network at all
+
+The analyzer can be its own Wi-Fi access point, so the web interface works in
+a workshop, a rehearsal room or a field recording with no infrastructure.
+
+Switch on the device under **Settings → Wi-Fi Setup → Mode**, or in the browser
+under **Network Mode** on the Wi-Fi page. Either way it takes two confirmations
+and restarts, because in access-point mode the analyzer leaves your LAN — if
+you change it remotely, the page you are using will stop responding, and you
+recover it from the touchscreen.
+
+Then join the **SpectraLab-P4-XXXX** network. The name and its password are
+shown on the analyzer's own Wi-Fi screen; the password is derived from the
+board's MAC, so it is fixed per unit. Most phones and laptops open the portal
+by themselves once connected. If yours does not, use
+`http://spectralab-p4-xxxx.local/` or `http://192.168.4.1`.
+
+**Everything in the web interface works over the access point** — the file
+browser, downloads, taking and deleting screenshots, settings, calibration
+upload. The one difference is the clock: there is no route to a time server,
+so the analyzer takes the time from whichever browser opens a page. Open any
+page once and captures get correct timestamps.
+
+The analyzer stays scannable in this mode, so you can pick a network and
+switch back to joining without touching a cable.
+
 ## 15. The Peak Readout Cursor
 
 Bars tell you the shape of a spectrum; they do not tell you that the hum is at

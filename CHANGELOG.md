@@ -1,4 +1,25 @@
 ## [Unreleased]
+### Added
+- Access-point mode as a deliberate choice, not just a fallback. The analyzer
+  can be told to be its own Wi-Fi network permanently, for use where there is
+  none. Selectable on the device and in the browser; both confirm twice and
+  restart, because the change takes the analyzer off the LAN.
+  Most of this already worked — the AP was APSTA, the DHCP server was running
+  and the web server was never gated on the station — so the work was the three
+  things that did not: no way to choose it, no mDNS on the AP interface, and
+  no captive portal.
+- Captive portal. A small DNS server answers every query with 192.168.4.1
+  while the AP is up, and a catch-all HTTP route redirects to the portal, so
+  phones and laptops open the page by themselves. One catch-all covers every
+  platform's detection URL, so no per-OS endpoints are needed. It is registered
+  last and only redirects in AP mode — in station mode an unknown URL still
+  returns 404, so a typo does not silently become a redirect.
+- mDNS now starts on the access point too, not only on STA_GOT_IP, so
+  <host>.local resolves without a router.
+- net_mgr_restart_soon(), an esp_timer-based deferred reboot. LVGL timers
+  belong to the screen that created them, so a reboot scheduled through one
+  would silently never fire from a different screen.
+
 ### Fixed
 - Screen captures were saved upside down. The panel is configured mirror_x +
   mirror_y, which looks like it should mean the framebuffer is a 180-degree

@@ -47,6 +47,9 @@ static const char *TAG = "scr_wifi";
 static lv_obj_t   *s_screen;
 static lv_obj_t   *s_status;
 static lv_obj_t   *s_lbl_entry;   /* "http://<host>.local" + raw IP hint */
+static lv_obj_t   *s_btn_mode;
+static lv_obj_t   *s_lbl_mode_btn;
+static bool        s_mode_armed;  /* two-tap confirm, like Forget */
 static lv_obj_t   *s_list;
 static lv_timer_t *s_poll_timer;
 static char        s_sel_ssid[NET_SSID_MAX];
@@ -355,6 +358,47 @@ static void saved_cb(lv_event_t *e)
     saved_open();
 }
 
+static void update_mode_button(void)
+{
+    if (!s_lbl_mode_btn) return;
+    s_mode_armed = false;
+    lv_label_set_text(s_lbl_mode_btn,
+                      net_mgr_get_mode() == NET_MODE_AP
+                          ? LV_SYMBOL_WIFI "  Mode: Access Point"
+                          : LV_SYMBOL_WIFI "  Mode: Join Network");
+}
+
+/* Switching mode changes how the analyzer comes up, so it reboots — and in AP
+ * mode it leaves the LAN entirely, which is why this takes two taps. */
+static void mode_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+
+    bool to_ap = (net_mgr_get_mode() != NET_MODE_AP);
+    if (!s_mode_armed) {
+        s_mode_armed = true;
+        lv_label_set_text(s_lbl_mode_btn,
+                          to_ap ? "Tap again: become an AP"
+                                : "Tap again: join networks");
+        return;
+    }
+    s_mode_armed = false;
+
+    if (net_mgr_set_mode(to_ap ? NET_MODE_AP : NET_MODE_AUTO) != ESP_OK) {
+        lv_label_set_text(s_status, "Could not save the network mode.");
+        update_mode_button();
+        return;
+    }
+    lv_label_set_text(s_status, to_ap
+        ? "Access-point mode saved — restarting. Join the SpectraLab-P4 network."
+        : "Join mode saved — restarting.");
+    lv_label_set_text(s_lbl_mode_btn, "Restarting...");
+    /* An esp_timer, not the IP screen's lv_timer: that one is created when the
+     * IP-settings screen opens, so scheduling through it from here would never
+     * fire and the board would sit at "Restarting..." forever. */
+    net_mgr_restart_soon(1200);
+}
+
 static void list_create(void)
 {
     s_screen = lv_obj_create(NULL);
@@ -373,8 +417,11 @@ static void list_create(void)
     lv_obj_set_style_text_font(s_status, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(s_status, 20, 44);
 
+    /* Shorter than the full column: the entry-point panel moves underneath it
+     * so the button strip on the right gains an eighth slot for the network
+     * mode, which otherwise had nowhere to go. */
     s_list = lv_list_create(s_screen);
-    lv_obj_set_size(s_list, 640, 508);
+    lv_obj_set_size(s_list, 640, 428);
     lv_obj_set_pos(s_list, 20, 72);
 
 #define MAKE_WIFI_BTN(label_str, cb, y_pos) do {          \
@@ -395,15 +442,26 @@ static void list_create(void)
     MAKE_WIFI_BTN(LV_SYMBOL_POWER "  Restart",   restart_cb, 372);
     MAKE_WIFI_BTN(LV_SYMBOL_LEFT "  Back",       back_cb,    432);
 
+    /* Network mode. Two taps, like Forget on the detail screen: switching to
+     * access-point mode drops the analyzer off the LAN, and recovering means
+     * walking to the unit. */
+    s_btn_mode = lv_button_create(s_screen);
+    lv_obj_set_size(s_btn_mode, 300, 48);
+    lv_obj_set_pos(s_btn_mode, 690, 492);
+    lv_obj_add_event_cb(s_btn_mode, mode_cb, LV_EVENT_CLICKED, NULL);
+    s_lbl_mode_btn = lv_label_create(s_btn_mode);
+    lv_obj_center(s_lbl_mode_btn);
+    update_mode_button();
+
     /* Browser entry point, in the gap under the button column. Both forms are
      * shown on purpose: the mDNS name survives a DHCP lease change, and the
      * raw address still works on networks where mDNS resolution does not. */
     s_lbl_entry = lv_label_create(s_screen);
-    lv_obj_set_width(s_lbl_entry, 300);
+    lv_obj_set_width(s_lbl_entry, 640);
     lv_label_set_long_mode(s_lbl_entry, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(s_lbl_entry, lv_color_hex(0x88AACC), 0);
     lv_obj_set_style_text_font(s_lbl_entry, &lv_font_montserrat_12, 0);
-    lv_obj_set_pos(s_lbl_entry, 690, 496);
+    lv_obj_set_pos(s_lbl_entry, 20, 508);
 
 #undef MAKE_WIFI_BTN
 

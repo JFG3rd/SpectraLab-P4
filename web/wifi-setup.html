@@ -183,6 +183,7 @@
                 .then(function (r) { return r.json(); })
                 .then(function (d) {
                     savedNets = d.saved || [];
+                    if (d.mode) document.getElementById("netMode").value = d.mode;
                     var sel = document.getElementById("ipSsid");
                     sel.innerHTML = "";
                     if (!savedNets.length) {
@@ -208,6 +209,28 @@
                     }
                 })
                 .catch(function () { setIpStatus("Could not read the network configuration.", true); });
+        }
+
+        // ── network mode ──────────────────────────────────────────
+        function saveMode() {
+            var mode = document.getElementById("netMode").value;
+            var msg = mode === "ap"
+                ? "Switch to access-point mode?\n\nThe analyzer will stop joining your network and become its own Wi-Fi access point. You will need to join that network to reach it again — its name and password are shown on the analyzer's Wi-Fi screen."
+                : "Switch back to automatic mode?\n\nThe analyzer will rejoin a saved network on restart.";
+            if (!confirm(msg)) { loadNetworks(); return; }
+
+            setIpStatus("Saving mode...");
+            fetch("/api/network/mode", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ mode: mode })
+            })
+                .then(function (r) { return r.text().then(function (t) {
+                    if (!r.ok) throw new Error(t || ("HTTP " + r.status));
+                    return t;
+                }); })
+                .then(function (t) { setIpStatus(t); })
+                .catch(function (e) { setIpStatus(e.message, true); });
         }
 
         function saveIpConfig() {
@@ -281,6 +304,16 @@
         <a class="button btn-nav" href="/" title="Return to the home page." style="display:block; margin-top:10px;">🏠 Home</a>
 
         <div class="flash-stats" id="wifiStatusMsg" style="margin-top: 12px;"></div>
+
+        <hr style="margin: 24px 0;">
+
+        <h2>📡 Network Mode</h2>
+        <p>Normally the analyzer joins one of your saved networks. In access-point mode it becomes its own Wi-Fi network instead, so it can be used where there is none — the whole web interface still works.</p>
+        <select id="netMode">
+            <option value="auto">Join a saved network (normal)</option>
+            <option value="ap">Always be an access point</option>
+        </select>
+        <button class="button btn-test" onclick="saveMode()" title="Save the network mode and restart">📡 Apply Mode &amp; Restart</button>
 
         <hr style="margin: 24px 0;">
 

@@ -25,6 +25,7 @@
 #include "mdns.h"
 #include "esp_hosted.h"
 #include "net_mgr.h"
+#include "captive_dns.h"
 
 static const char *TAG = "net_mgr";
 
@@ -32,6 +33,7 @@ static const char *TAG = "net_mgr";
 #define KEY_SSID      "ssid"    /* legacy single-slot keys (migration source) */
 #define KEY_PASS      "pass"
 #define KEY_KNOWN     "known"   /* known-networks list blob                   */
+#define KEY_MODE      "mode"    /* net_mode_t                                 */
 
 #define KNOWN_BLOB_VERSION 2
 
@@ -113,6 +115,7 @@ static int                s_scan_count;
 static bool               s_mdns_up;
 static bool               s_sntp_up;
 static net_time_source_t  s_time_src = NET_TIME_NONE;
+static net_mode_t         s_mode = NET_MODE_AUTO;
 
 /* known-networks list (most-recently-used first) */
 static wifi_net_t         s_known[NET_MAX_KNOWN];
@@ -124,6 +127,7 @@ static bool               s_provisioning;   /* setup UI active: auto-join paused
 static void start_setup_ap(void);
 static void connect_current_known(void);
 static void start_sntp(void);
+static void start_mdns(void);
 
 /* ── diagnostics ───────────────────────────── */
 
@@ -187,6 +191,37 @@ static void derive_ap_identity(void)
      * instance name is the human-readable label shown by mDNS browsers. */
     snprintf(s_mdns_host, sizeof(s_mdns_host), "spectralab-p4-%02x%02x", mac[4], mac[5]);
     snprintf(s_mdns_instance, sizeof(s_mdns_instance), "SpectraLab-P4 %02X%02X", mac[4], mac[5]);
+}
+
+/* ── network mode persistence ─────────────────────────────────── */
+
+static void load_mode(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_WIFI, NVS_READONLY, &h) != ESP_OK) return;
+    uint8_t v = NET_MODE_AUTO;
+    if (nvs_get_u8(h, KEY_MODE, &v) == ESP_OK && v <= NET_MODE_AP)
+        s_mode = (net_mode_t)v;
+    nvs_close(h);
+}
+
+net_mode_t net_mgr_get_mode(void) { return s_mode; }
+
+esp_err_t net_mgr_set_mode(net_mode_t mode)
+{
+    if (mode != NET_MODE_AUTO && mode != NET_MODE_AP) return ESP_ERR_INVALID_ARG;
+
+    nvs_handle_t h;
+    ESP_RETURN_ON_ERROR(nvs_open(NVS_NS_WIFI, NVS_READWRITE, &h), TAG, "nvs open");
+    esp_err_t err = nvs_set_u8(h, KEY_MODE, (uint8_t)mode);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) return err;
+
+    s_mode = mode;
+    ESP_LOGI(TAG, "network mode -> %s (applies on next boot)",
+             mode == NET_MODE_AP ? "access point" : "auto");
+    return ESP_OK;
 }
 
 /* ── known-networks persistence ───────────────────────────────── */
@@ -347,10 +382,22 @@ static void start_setup_ap(void)
     esp_wifi_set_mode(WIFI_MODE_APSTA);
     esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
 
-    set_state(NET_AP_UP, "setup AP fallback");
+    set_state(NET_AP_UP, s_mode == NET_MODE_AP ? "access-point mode" : "setup AP fallback");
     strlcpy(s_ip_str, "192.168.4.1", sizeof(s_ip_str));
     ESP_LOGI(TAG, "setup AP up: SSID '%s'  password '%s'  http://192.168.4.1",
              s_ap_ssid, s_ap_pass);
+
+    /* Discoverable by name here too, not just on a joined network. */
+    start_mdns();
+
+    /* Make the OS open the portal by itself. 192.168.4.1 is esp_netif's
+     * default AP address and is what the DHCP server hands out as the
+     * gateway, so clients are already pointed at us for DNS. */
+    captive_dns_start(esp_netif_htonl(esp_netif_ip4_makeu32(192, 168, 4, 1)));
+
+    /* No SNTP: there is no uplink from our own AP, so it would only retry
+     * forever. The clock comes from whichever browser opens a page
+     * (POST /api/time) instead. */
 }
 
 /* ── reconnect backoff ────────────────────────────────────────── */
@@ -592,14 +639,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         s_established = true;
         ESP_LOGI(TAG, "event: STA_GOT_IP — connected to '%s' — http://%s/", s_sta_ssid, s_ip_str);
 
-        if (!s_mdns_up && mdns_init() == ESP_OK) {
-            mdns_hostname_set(s_mdns_host);
-            mdns_instance_name_set(s_mdns_instance);
-            mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
-            s_mdns_up = true;
-            ESP_LOGI(TAG, "mDNS: http://%s.local/", s_mdns_host);
-        }
-
+        start_mdns();
         start_sntp();
     }
 }
@@ -785,6 +825,18 @@ bool net_mgr_ip_in_use(uint32_t ip, uint32_t timeout_ms)
     return false;
 }
 
+void net_mgr_restart_soon(uint32_t delay_ms)
+{
+    const esp_timer_create_args_t targs = {
+        .callback = reboot_timer_cb, .name = "net_restart",
+    };
+    esp_timer_handle_t t;
+    if (esp_timer_create(&targs, &t) == ESP_OK)
+        esp_timer_start_once(t, (uint64_t)delay_ms * 1000);
+    else
+        esp_restart();   /* no timer to be had: go now rather than never */
+}
+
 esp_err_t net_mgr_save_credentials(const char *ssid, const char *pass)
 {
     esp_err_t err = net_mgr_add_network(ssid, pass);
@@ -889,13 +941,20 @@ esp_err_t net_mgr_init(void)
     esp_log_level_set("transport", ESP_LOG_DEBUG);
 #endif
 
+    load_mode();
     load_known();   /* blob or one-time legacy migration */
 
     for (int i = 0; i < s_known_count; i++)
         ESP_LOGI(TAG, "known[%d]: '%s' (pw %d chars)",
                  i, s_known[i].ssid, (int)strlen(s_known[i].pass));
 
-    if (s_known_count > 0) {
+    if (s_mode == NET_MODE_AP) {
+        /* Deliberate access-point mode: never enter the join loop. Still
+         * APSTA, so the provisioning UI can scan and the user can switch back
+         * to a network from the touchscreen or the browser. */
+        ESP_LOGI(TAG, "network mode: access point (no join attempted)");
+        start_setup_ap();
+    } else if (s_known_count > 0) {
         /* Configure the first (most-recent) known network; the actual
          * connect fires from the WIFI_EVENT_STA_START handler. */
         s_join_idx  = 0;
@@ -986,6 +1045,20 @@ void net_mgr_apply_timezone(const char *tz)
     setenv("TZ", (tz && tz[0]) ? tz : "UTC0", 1);
     tzset();
     ESP_LOGI(TAG, "timezone: %s", (tz && tz[0]) ? tz : "UTC0");
+}
+
+/* Advertise over mDNS. Called for BOTH the station and the setup AP: it used
+ * to run only on STA_GOT_IP, so <host>.local did not resolve in AP mode and
+ * the only way in was to know the literal 192.168.4.1. Idempotent. */
+static void start_mdns(void)
+{
+    if (s_mdns_up) return;
+    if (mdns_init() != ESP_OK) return;
+    mdns_hostname_set(s_mdns_host);
+    mdns_instance_name_set(s_mdns_instance);
+    mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+    s_mdns_up = true;
+    ESP_LOGI(TAG, "mDNS: http://%s.local/", s_mdns_host);
 }
 
 /* Kick SNTP once the station has an address. Never blocks: the sync lands on

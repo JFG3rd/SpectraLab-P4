@@ -76,7 +76,12 @@ as the main component automatically, ESP-IDF looks for `main/`.
   LABEL only — a named preset is written solely by an explicit save, never by
   the auto-save path
 - `components/net_mgr` — WiFi STA join w/ setup-AP fallback, SSID scan
-  dedup, NVS creds, mDNS `spectralab-p4.local`
+  dedup, NVS creds, mDNS, SNTP. `net_mode_t` (NVS key "mode") selects
+  join-a-network vs. permanent access point; AP mode stays APSTA so scanning
+  still works. `captive_dns.c` answers every DNS query with 192.168.4.1 while
+  the AP is up, paired with the `/*` catch-all in web_server. The mode lives
+  in net_mgr's NVS, NOT settings_t — growing settings_t resets its blob
+  (gotcha 9)
 - `components/web_server` — httpd: provisioning portal, cal upload,
   status API; assets from `web/`
 - `components/qr_scan` — MIPI-CSI capture (esp_video/V4L2) + quirc decode

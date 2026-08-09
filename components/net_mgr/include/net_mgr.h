@@ -25,6 +25,30 @@ extern "C" {
 #define NET_PASS_MAX  64   /* 63 chars + NUL                    */
 #define NET_MAX_KNOWN 8    /* remembered networks (MRU-ordered) */
 
+/* ── network mode ─────────────────────────────────────────────────
+ *
+ * AUTO is the normal behaviour: join a known network, falling back to the
+ * setup AP only when none is reachable. AP makes the analyzer permanently its
+ * own access point, for use where there is no network at all.
+ *
+ * AP mode still runs APSTA, so the provisioning UI can scan and the user can
+ * switch back to a network without a serial cable. The whole web interface
+ * works either way — it was never gated on the station.
+ *
+ * Stored in net_mgr's own NVS namespace rather than settings_t, because
+ * growing settings_t invalidates its blob and forces a one-time settings
+ * reset, and this is a network setting net_mgr already has storage for. */
+typedef enum {
+    NET_MODE_AUTO = 0,   /* join a known network; AP only as fallback */
+    NET_MODE_AP,         /* always be an access point                 */
+} net_mode_t;
+
+net_mode_t net_mgr_get_mode(void);
+
+/* Persist the mode. Takes effect on the next boot, so callers that want it
+ * applied now should reboot. */
+esp_err_t  net_mgr_set_mode(net_mode_t mode);
+
 esp_err_t net_mgr_init(void);            /* non-fatal if the C6/hosted link is absent */
 bool      net_mgr_is_sta_connected(void);
 
@@ -151,6 +175,13 @@ bool      net_mgr_ip_in_use(uint32_t ip, uint32_t timeout_ms);
 uint32_t  net_mgr_get_sta_ip(void);
 uint32_t  net_mgr_get_sta_netmask(void);
 uint32_t  net_mgr_get_sta_gateway(void);
+
+/* Reboot after `delay_ms`, giving the UI time to paint a message first.
+ *
+ * Uses an esp_timer, deliberately NOT an lv_timer: LVGL timers belong to
+ * whichever screen created them, so a reboot scheduled from one screen would
+ * silently never fire while another is loaded. */
+void      net_mgr_restart_soon(uint32_t delay_ms);
 
 /* Store credentials and reboot ~1.5 s later (lets the HTTP response flush)
  * to join. Thin wrapper over net_mgr_add_network() kept for the web/UI

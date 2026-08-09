@@ -468,6 +468,8 @@ static esp_err_t network_get(httpd_req_t *req)
     net_link_state_t st = net_mgr_get_link_state(ssid, sizeof(ssid));
 
     cJSON_AddBoolToObject(root, "connected", st == NET_LINK_STA_UP);
+    cJSON_AddStringToObject(root, "mode",
+        net_mgr_get_mode() == NET_MODE_AP ? "ap" : "auto");
     cJSON_AddStringToObject(root, "ssid", ssid);
     cJSON_AddStringToObject(root, "hostname", net_mgr_get_mdns_host());
     add_ip(root, "ip",      net_mgr_get_sta_ip());
@@ -509,6 +511,52 @@ static esp_err_t send_conflict(httpd_req_t *req, const char *msg)
     httpd_resp_set_status(req, "409 Conflict");
     httpd_resp_set_type(req, "text/plain");
     return httpd_resp_sendstr(req, msg);
+}
+
+/* POST /api/network/mode  {"mode": "auto"|"ap"}
+ *
+ * Reboots to apply: the mode decides what happens during net_mgr_init(), so
+ * switching live would mean tearing down and rebuilding the whole Wi-Fi stack
+ * mid-flight for no benefit. */
+static esp_err_t network_mode_post(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > NETWORK_MAX_BODY)
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large");
+
+    char body[NETWORK_MAX_BODY + 1];
+    int received = httpd_req_recv(req, body, req->content_len);
+    if (received <= 0) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Read failed");
+    body[received] = '\0';
+
+    cJSON *root = cJSON_Parse(body);
+    if (!root) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+
+    const cJSON *j = cJSON_GetObjectItem(root, "mode");
+    bool want_ap  = cJSON_IsString(j) && strcmp(j->valuestring, "ap")   == 0;
+    bool want_auto= cJSON_IsString(j) && strcmp(j->valuestring, "auto") == 0;
+    cJSON_Delete(root);
+
+    if (!want_ap && !want_auto)
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "mode must be \"auto\" or \"ap\"");
+
+    if (net_mgr_set_mode(want_ap ? NET_MODE_AP : NET_MODE_AUTO) != ESP_OK)
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Could not save");
+
+    httpd_resp_set_type(req, "text/plain");
+    esp_err_t r = httpd_resp_sendstr(req,
+        want_ap ? "Access-point mode saved. Restarting — then join the "
+                  "SpectraLab-P4 network shown on the analyzer's Wi-Fi screen."
+                : "Auto mode saved. Restarting — the analyzer will rejoin your network.");
+
+    if (!s_reboot_timer) {
+        const esp_timer_create_args_t targs = {
+            .callback = reboot_timer_cb, .name = "web_reboot",
+        };
+        esp_timer_create(&targs, &s_reboot_timer);
+    }
+    if (s_reboot_timer) esp_timer_start_once(s_reboot_timer, 1200 * 1000);
+    else                esp_restart();
+    return r;
 }
 
 static esp_err_t network_ip_post(httpd_req_t *req)
@@ -926,6 +974,30 @@ static esp_err_t time_post(httpd_req_t *req)
     return httpd_resp_sendstr(req, msg);
 }
 
+/* Catch-all, registered LAST so it is a true fallback.
+ *
+ * esp_http_server returns the first handler whose URI matches, walking the
+ * list in registration order, so a trailing "/*" cannot shadow an exact route
+ * or the earlier /api/download/* wildcard.
+ *
+ * Only redirects while the access point is up. In station mode an unknown URL
+ * must still 404 — otherwise every typo silently becomes a redirect, and a
+ * missing asset looks like a working page. */
+static esp_err_t catch_all_get(httpd_req_t *req)
+{
+    char ssid[NET_SSID_MAX];
+    if (net_mgr_get_link_state(ssid, sizeof(ssid)) != NET_LINK_AP_UP)
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
+
+    /* 302 to the portal. This is what the OS captive-portal detector sees
+     * when it probes /generate_204, /hotspot-detect.html or /ncsi.txt: one
+     * handler covers every platform's URL, so no per-OS endpoints are needed. */
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, NULL, 0);
+}
+
 static esp_err_t reboot_post(httpd_req_t *req)
 {
     if (!s_reboot_timer) {
@@ -949,7 +1021,7 @@ esp_err_t web_server_start(void)
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.max_open_sockets  = 7;
-    cfg.max_uri_handlers  = 24;   /* default 8 silently drops routes past #8 */
+    cfg.max_uri_handlers  = 32;   /* default 8 silently drops routes past #8 */
     /* 16 KB (not the 6144 default): a PUT /api/config applies through the
      * same heavy path as a preset load — cJSON parse, DSP reconfig, then
      * multiple save passes (cJSON print + FATFS write + NVS commit) — which
@@ -980,6 +1052,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/config",      .method = HTTP_PUT,  .handler = config_put },
         { .uri = "/api/network",     .method = HTTP_GET,  .handler = network_get },
         { .uri = "/api/network/ip",  .method = HTTP_POST, .handler = network_ip_post },
+        { .uri = "/api/network/mode",.method = HTTP_POST, .handler = network_mode_post },
         { .uri = "/files.html",      .method = HTTP_GET,  .handler = files_page_get },
         { .uri = "/api/files",       .method = HTTP_GET,  .handler = files_list_get },
         { .uri = "/api/download/*",  .method = HTTP_GET,  .handler = download_get },
@@ -987,6 +1060,8 @@ esp_err_t web_server_start(void)
         { .uri = "/api/screenshot",  .method = HTTP_POST, .handler = screenshot_post },
         { .uri = "/api/time",        .method = HTTP_POST, .handler = time_post },
         { .uri = "/reboot",          .method = HTTP_POST, .handler = reboot_post },
+        /* MUST stay last — see catch_all_get(). */
+        { .uri = "/*",               .method = HTTP_GET,  .handler = catch_all_get },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         esp_err_t err = httpd_register_uri_handler(s_server, &uris[i]);
