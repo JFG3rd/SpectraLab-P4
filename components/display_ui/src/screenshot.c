@@ -13,12 +13,11 @@
  *      multi-second FATFS write would freeze the entire UI, which is the exact
  *      failure this project already fixed once in the QR scanner.
  *
- *   2. The panel is configured mirror_x + mirror_y, applied in hardware. What
- *      the user sees is therefore a 180-degree rotation of the framebuffer, and
- *      a raw dump would come out upside down. Undoing it costs nothing here:
- *      emitting framebuffer rows last-to-first with the pixels within each row
- *      reversed folds the rotation into the RGB565 -> RGB888 conversion that
- *      has to happen anyway.
+ *   2. Despite the panel being configured mirror_x + mirror_y, the buffer
+ *      needs NO rotation. That mirroring is applied by the ek79007 driver as a
+ *      MADCTL command to the panel IC, which corrects the panel's own physical
+ *      scan-out direction — the framebuffer already holds the image the way it
+ *      appears on screen. Only the RGB565 -> RGB888 conversion is needed.
  *
  * PNG is produced with the miniz deflate encoder resident in the ESP32-P4 ROM
  * (tdefl_*, see esp32p4.rom.ld), so real compression costs no flash and pulls
@@ -186,13 +185,20 @@ static esp_err_t write_png(const char *path, const uint16_t *fb)
     if (tdefl_init(comp, png_put_buf, &ctx, TDEFL_WRITE_ZLIB_HEADER | 128) != TDEFL_STATUS_OKAY)
         goto done;
 
-    /* Rows emitted last-to-first with each row reversed: this is the 180-degree
-     * un-mirror, folded into the RGB565 -> RGB888 conversion. */
-    for (int y = SHOT_H - 1; y >= 0; y--) {
+    /* Straight scan order — no rotation.
+     *
+     * The panel is configured mirror_x + mirror_y, which looks like it should
+     * mean the framebuffer is a 180-degree rotation of what is on screen. It
+     * does not: esp_lcd_panel_mirror() on this DPI panel is implemented by the
+     * ek79007 vendor driver sending MADCTL to the panel IC, so the panel
+     * corrects its own physical scan-out orientation and the framebuffer holds
+     * the image exactly as displayed. Reversing here produced upside-down
+     * captures — it introduced the rotation it was meant to undo. */
+    for (int y = 0; y < SHOT_H; y++) {
         const uint16_t *src = fb + (size_t)y * SHOT_W;
         uint8_t        *d   = row;
         *d++ = 0;   /* filter type: None */
-        for (int x = SHOT_W - 1; x >= 0; x--) {
+        for (int x = 0; x < SHOT_W; x++) {
             uint16_t p = src[x];
             /* Expand by replicating high bits so full-scale stays full-scale
              * (0x1F -> 0xFF), rather than left-shifting into a dim ceiling. */

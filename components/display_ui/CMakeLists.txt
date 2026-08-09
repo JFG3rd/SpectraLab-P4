@@ -9,6 +9,7 @@ idf_component_register(
         "src/screen_wifi.c"
         "src/screen_splash.c"
         "src/screenshot.c"
+        "src/ui_widgets.c"
     INCLUDE_DIRS
         "include"
     PRIV_INCLUDE_DIRS

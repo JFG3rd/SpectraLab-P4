@@ -32,6 +32,7 @@
 #include "net_mgr.h"
 #include "screen_spectrum.h"
 #include "screen_settings.h"
+#include "ui_widgets.h"
 
 static const char *TAG = "scr_spectrum";
 
@@ -318,6 +319,11 @@ static void apply_status_colors(void)
     if (s_lbl_ambient_status) lv_obj_set_style_text_color(s_lbl_ambient_status, lv_color_hex(s_pal->alert), 0);
     if (s_lbl_source_status)  lv_obj_set_style_text_color(s_lbl_source_status,  lv_color_hex(s_pal->alert), 0);
     if (s_lbl_wifi)           lv_obj_set_style_text_color(s_lbl_wifi,           lv_color_hex(s_pal->net),   0);
+
+    /* The status-row buttons were the only part of this bar that ignored the
+     * palette — they inherited LVGL's stock theme and stayed the same grey in
+     * all seven schemes. */
+    ui_status_btn_apply_theme(s_pal->grid, s_pal->text, s_pal->status_bar);
 }
 
 /* Refresh the SSID label. Runs on its own lv_timer rather than out of
@@ -1550,83 +1556,35 @@ esp_err_t screen_spectrum_create(void)
     s_lbl_peak = lv_label_create(status);
     lv_label_set_text(s_lbl_peak, "Peak: --- dBFS");
     lv_obj_set_style_text_font(s_lbl_peak, &lv_font_montserrat_16, 0);
-    lv_obj_align(s_lbl_peak, LV_ALIGN_TOP_LEFT, 380, 9);
+    lv_obj_align(s_lbl_peak, LV_ALIGN_TOP_LEFT, 360, 9);
 
-    /* GRD — toggles grid + dB legend */
-    lv_obj_t *btn_grid = lv_button_create(status);
-    lv_obj_set_size(btn_grid, 56, 30);
-    lv_obj_align(btn_grid, LV_ALIGN_TOP_RIGHT, -356, 3);
-    lv_obj_add_event_cb(btn_grid, grid_btn_cb, LV_EVENT_CLICKED, NULL);
-    s_btn_grid_lbl = lv_label_create(btn_grid);
-    lv_label_set_text(s_btn_grid_lbl, s_grid_enabled ? "GRD " LV_SYMBOL_OK : "GRD");
-    lv_obj_set_style_text_font(s_btn_grid_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(s_btn_grid_lbl);
+    /* Status row — every button comes from ui_status_btn_create(), which owns
+     * size, slot geometry and colour. Slot 0 is rightmost; slot 1 is skipped
+     * because it belongs to the screenshot button, which lives on the LVGL top
+     * layer so it appears on every screen (built in display_ui.c with the same
+     * factory). Before this was shared, the two hand-rolled layouts drifted and
+     * the screenshot button ended up stacked on the settings gear.
+     *
+     *   slot 7      6      5      4      3      2      1      0
+     *       [AGC ][GRD ][ ||  ][RST ][ PK ][ MX ][shot][gear]
+     *
+     * Slot 7 puts AGC's left edge at x=528, which is why the Peak readout sits
+     * at 360 (it ends near 517). */
+    ui_status_btn_create(status, 0, true, LV_SYMBOL_SETTINGS, settings_btn_cb, NULL);
+    ui_status_btn_create(status, 2, true, "MX", max_hold_btn_cb,  &s_btn_mx_lbl);
+    ui_status_btn_create(status, 3, true, "PK", peak_hold_btn_cb, &s_btn_pk_lbl);
 
-    /* AGC — software auto-gain toggle (left of GRD) */
-    lv_obj_t *btn_agc = lv_button_create(status);
-    lv_obj_set_size(btn_agc, 56, 30);
-    lv_obj_align(btn_agc, LV_ALIGN_TOP_RIGHT, -418, 3);
-    lv_obj_add_event_cb(btn_agc, agc_btn_cb, LV_EVENT_CLICKED, NULL);
-    s_btn_agc_lbl = lv_label_create(btn_agc);
-    lv_label_set_text(s_btn_agc_lbl, s_agc_enabled ? "AGC " LV_SYMBOL_OK : "AGC");
-    lv_obj_set_style_text_font(s_btn_agc_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(s_btn_agc_lbl);
-
-    /* STOP/PLAY — freezes the display on the current frame */
-    lv_obj_t *btn_stop = lv_button_create(status);
-    lv_obj_set_size(btn_stop, 56, 30);
-    lv_obj_align(btn_stop, LV_ALIGN_TOP_RIGHT, -294, 3);
-    lv_obj_add_event_cb(btn_stop, stop_btn_cb, LV_EVENT_CLICKED, NULL);
-    s_btn_stop_lbl = lv_label_create(btn_stop);
-    lv_label_set_text(s_btn_stop_lbl, LV_SYMBOL_PAUSE);
-    lv_obj_set_style_text_font(s_btn_stop_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(s_btn_stop_lbl);
-
-    /* RST — resets MAX hold (disabled until MX is active).
-     * Layout from right: ⚙@-46  MX@-108  PK@-170  RST@-232  ⏸@-294  GRD@-356
-     * AGC@-418; all 56×30 at y=3. The strip starts at -46 rather than -2 to
-     * leave the far-right corner for the global screenshot button, which lives
-     * on the LVGL top layer so it appears on every screen (see display_ui.c).
-     * Peak moved 410 -> 380 to stay clear of AGC's new left edge. */
-    s_btn_rst = lv_button_create(status);
-    lv_obj_set_size(s_btn_rst, 56, 30);
-    lv_obj_align(s_btn_rst, LV_ALIGN_TOP_RIGHT, -232, 3);
-    lv_obj_add_event_cb(s_btn_rst, rst_btn_cb, LV_EVENT_CLICKED, NULL);
+    /* RST — resets MAX hold; disabled until MX is active. */
+    s_btn_rst = ui_status_btn_create(status, 4, true, "RST", rst_btn_cb, NULL);
     lv_obj_add_state(s_btn_rst, LV_STATE_DISABLED);
-    lv_obj_t *btn_rst_lbl = lv_label_create(s_btn_rst);
-    lv_label_set_text(btn_rst_lbl, "RST");
-    lv_obj_set_style_text_font(btn_rst_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(btn_rst_lbl);
 
-    /* PK — peak hold with configurable decay */
-    lv_obj_t *btn_pk = lv_button_create(status);
-    lv_obj_set_size(btn_pk, 56, 30);
-    lv_obj_align(btn_pk, LV_ALIGN_TOP_RIGHT, -170, 3);
-    lv_obj_add_event_cb(btn_pk, peak_hold_btn_cb, LV_EVENT_CLICKED, NULL);
-    s_btn_pk_lbl = lv_label_create(btn_pk);
-    lv_label_set_text(s_btn_pk_lbl, "PK");
-    lv_obj_set_style_text_font(s_btn_pk_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(s_btn_pk_lbl);
-
-    /* MX — max hold (only grows) */
-    lv_obj_t *btn_mx = lv_button_create(status);
-    lv_obj_set_size(btn_mx, 56, 30);
-    lv_obj_align(btn_mx, LV_ALIGN_TOP_RIGHT, -108, 3);
-    lv_obj_add_event_cb(btn_mx, max_hold_btn_cb, LV_EVENT_CLICKED, NULL);
-    s_btn_mx_lbl = lv_label_create(btn_mx);
-    lv_label_set_text(s_btn_mx_lbl, "MX");
-    lv_obj_set_style_text_font(s_btn_mx_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(s_btn_mx_lbl);
-
-    /* Settings gear */
-    lv_obj_t *btn_settings = lv_button_create(status);
-    lv_obj_set_size(btn_settings, 56, 30);
-    lv_obj_align(btn_settings, LV_ALIGN_TOP_RIGHT, -46, 3);
-    lv_obj_add_event_cb(btn_settings, settings_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *btn_settings_lbl = lv_label_create(btn_settings);
-    lv_label_set_text(btn_settings_lbl, LV_SYMBOL_SETTINGS);
-    lv_obj_set_style_text_font(btn_settings_lbl, &lv_font_montserrat_16, 0);
-    lv_obj_center(btn_settings_lbl);
+    ui_status_btn_create(status, 5, true, LV_SYMBOL_PAUSE, stop_btn_cb, &s_btn_stop_lbl);
+    ui_status_btn_create(status, 6, true,
+                         s_grid_enabled ? "GRD " LV_SYMBOL_OK : "GRD",
+                         grid_btn_cb, &s_btn_grid_lbl);
+    ui_status_btn_create(status, 7, true,
+                         s_agc_enabled ? "AGC " LV_SYMBOL_OK : "AGC",
+                         agc_btn_cb, &s_btn_agc_lbl);
 
     /* Display-mode title — second line of the status bar, right-aligned
      * under the gear (right edge tracks the gear's -2 inset) */
@@ -1717,6 +1675,9 @@ esp_err_t screen_spectrum_create(void)
     lv_obj_set_style_text_font(s_btn_wf_speed_lbl, &lv_font_montserrat_14, 0);
     lv_obj_center(s_btn_wf_speed_lbl);
     lv_obj_add_flag(s_btn_wf_speed, LV_OBJ_FLAG_HIDDEN);
+    /* Positions itself (it overlays the spectrum area, not the status row)
+     * but should still recolour with everything else. */
+    ui_status_btn_register(s_btn_wf_speed);
 
     /* ── info bar (frequency axis labels) ──
      * Each label is positioned individually (see update_axis_ticks(), which

@@ -249,9 +249,11 @@ See instructions.md (user guide) and README.md before editing docs.
     is the only source. Two traps: (a) it is live scan-out memory, so snapshot
     it under `display_ui_lock()` and do the encode + SD write on a worker task,
     because holding the LVGL lock across a FATFS write freezes the whole UI;
-    (b) the panel applies `mirror_x` + `mirror_y` in *hardware*
-    (`sw_rotate = false`), so the buffer is a 180-degree rotation of what is on
-    screen and a raw dump comes out upside down.
+    (b) the buffer needs **no rotation**, despite `mirror_x` + `mirror_y` being
+    set. Those are applied by the ek79007 vendor driver as a MADCTL command to
+    the panel IC, so the *panel* corrects its own physical scan-out direction
+    and the framebuffer already matches what is on screen. Rotating "to undo
+    the mirror" is what produces upside-down captures.
     PNG comes from the **miniz deflate encoder resident in the ESP32-P4 ROM**
     (`tdefl_init` / `tdefl_compress_buffer`, see
     `components/esp_rom/esp32p4/ld/esp32p4.rom.ld`) — real compression for zero
@@ -260,3 +262,15 @@ See instructions.md (user guide) and README.md before editing docs.
     `MZ_MALLOC`, which cannot be steered off internal RAM, and wants the whole
     1.84 MB RGB888 image resident. Output streams to the file as successive
     IDAT chunks (multiple IDATs are legal PNG).
+
+22. **File timestamps come from the system clock, so they need SNTP.** The
+    board has no RTC. ESP-IDF's `get_fattime()` builds the FAT timestamp from
+    `time(NULL)` + `localtime_r()`, so with an unset clock every file is
+    stamped 1980 *plus the uptime* — real observed values were 1980-01-01
+    06:32 and 06:34, hours past the epoch, which is why a "reject <= 1980"
+    sentinel does not work. `net_mgr` starts SNTP on `GOT_IP` (DHCP-advertised
+    server first, then `CONFIG_NET_MGR_NTP_SERVER`) and every web page posts
+    the browser's clock to `/api/time` as a fallback for a LAN with no route
+    out. Anything before `TIME_VALID_EPOCH` (2021) is reported as "unknown"
+    rather than shown. Note FAT stores **local** time, so `settings_t.timezone`
+    changes what is written, not just what is rendered.
