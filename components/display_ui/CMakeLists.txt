@@ -10,6 +10,7 @@ idf_component_register(
         "src/screen_splash.c"
         "src/screenshot.c"
         "src/ui_widgets.c"
+        "src/ui_theme.c"
     INCLUDE_DIRS
         "include"
     PRIV_INCLUDE_DIRS

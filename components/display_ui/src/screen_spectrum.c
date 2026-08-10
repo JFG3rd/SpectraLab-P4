@@ -33,6 +33,8 @@
 #include "screen_spectrum.h"
 #include "screen_settings.h"
 #include "ui_widgets.h"
+#include "ui_theme.h"
+#include "display_ui.h"
 
 static const char *TAG = "scr_spectrum";
 
@@ -69,46 +71,15 @@ static const char *TAG = "scr_spectrum";
 #define SCOPE_GAIN_MIN   0.25f
 #define SCOPE_GAIN_MAX 512.0f
 
-/* ── colour palettes ──────────────────────────────────────────────
- * The status-line accents (spl/peak/info/alert/net) exist because the
- * status labels used to hardcode bright colours that were picked against
- * a dark bar. HIGH CONTRAST is the one light scheme, and on its 0xC8D8E8
- * bar the old 0x00FF88 SPL readout sat at roughly 1.2:1 contrast — legible
- * nowhere. Every scheme now names its own accents; keep new ones readable
- * against that scheme's own status_bar, not against black. */
-typedef struct {
-    uint32_t bg, grid, status_bar, text, bar_lo, bar_mid, bar_hi, max_hold;
-    uint32_t spl;      /* SPL readout (row 1)                       */
-    uint32_t peak;     /* Peak readout (row 1)                      */
-    uint32_t info;     /* DSP config + FPS line (row 2)             */
-    uint32_t alert;    /* ambient-NF / USB-mic indicators (row 2)   */
-    uint32_t net;      /* Wi-Fi SSID (row 2)                        */
-} color_palette_t;
-
-static const color_palette_t s_palettes[] = {
-    /* DARK (default) */
-    { 0x080C18, 0x1E2D3D, 0x111928, 0xBBCCDD, 0x00CC55, 0xFFAA00, 0xFF3333, 0xFFFFFF,
-      0x00FF88, 0xFFAA00, 0x7799BB, 0x00DDFF, 0x88BBEE },
-    /* CLASSIC — green phosphor */
-    { 0x000000, 0x1A2A1A, 0x0A0F0A, 0x44FF44, 0x00BB00, 0x00EE44, 0x00FF00, 0xFFFFFF,
-      0x66FF66, 0xCCFF66, 0x339933, 0x99FF99, 0x66DD66 },
-    /* HIGH CONTRAST — light background: accents must be dark, not bright */
-    { 0xE8EEF4, 0xA0B8CC, 0xC8D8E8, 0x102030, 0x0066CC, 0xDD6600, 0xCC0000, 0x000000,
-      0x006644, 0xAA4400, 0x334455, 0x004466, 0x113366 },
-    /* AMBER — warm amber phosphor CRT */
-    { 0x100800, 0x2A1800, 0x180C00, 0xFFCC44, 0xCC6600, 0xFF9900, 0xFFCC00, 0xFFFFFF,
-      0xFFDD66, 0xFF9933, 0xAA7722, 0xFFBB55, 0xDDAA44 },
-    /* BLUE NEON — electric blue on near-black */
-    { 0x00080F, 0x001830, 0x000C1E, 0x66CCFF, 0x0055BB, 0x0099EE, 0x00CCFF, 0xFFFFFF,
-      0x33FFDD, 0x66CCFF, 0x4477AA, 0x00DDFF, 0x88CCFF },
-    /* MATRIX — deep green on black */
-    { 0x000800, 0x001800, 0x000C00, 0x33FF33, 0x006600, 0x009900, 0x00FF00, 0xFFFFFF,
-      0x66FF33, 0xCCFF33, 0x228822, 0x99FF66, 0x55DD33 },
-    /* RED NEON — hot red on near-black */
-    { 0x0F0004, 0x30000A, 0x1E0006, 0xFF6688, 0x990022, 0xDD1133, 0xFF3355, 0xFFFFFF,
-      0xFF88AA, 0xFFAA66, 0xAA4455, 0xFF99BB, 0xEE7799 },
-};
-static const color_palette_t *s_pal = &s_palettes[0];  /* active palette */
+/* ── colour palette ───────────────────────────────────────────────
+ * The table now lives in ui_theme.c, shared with every other screen — keeping
+ * it private here is precisely why the spectrum view used to be the only
+ * screen that followed the user's colour choice.
+ *
+ * Deliberately a macro rather than a cached pointer: the draw code reads it on
+ * every frame, and this way it cannot go stale if the theme is switched through
+ * a path that does not pass through screen_spectrum_set_color_scheme(). */
+#define s_pal (ui_theme_palette())
 
 /* ── shared data ──────────────────────────────────────────────── */
 #define MAX_BINS (16384 / 2)
@@ -1544,7 +1515,9 @@ esp_err_t screen_spectrum_create(void)
      * four buttons (RST MX PK ⚙) top-right-aligned so they stay in the
      * upper half of the 70 px bar and never bleed into the DSP info row. */
     s_lbl_title = lv_label_create(status);
-    lv_label_set_text(s_lbl_title, "SPECTRALAB-P4");
+    /* Names the board it is actually running on — the P4X (rev-3 silicon) and
+     * the older P4 used to be indistinguishable once booted. */
+    lv_label_set_text(s_lbl_title, display_ui_board_name());
     lv_obj_set_style_text_font(s_lbl_title, &lv_font_montserrat_16, 0);
     lv_obj_align(s_lbl_title, LV_ALIGN_TOP_LEFT, 4, 9);
 
@@ -1882,9 +1855,10 @@ void screen_spectrum_load(void)
 
 void screen_spectrum_set_color_scheme(color_scheme_t scheme)
 {
-    if ((unsigned)scheme >= (sizeof(s_palettes) / sizeof(s_palettes[0])))
-        scheme = COLOR_SCHEME_DARK;
-    s_pal = &s_palettes[scheme];
+    /* Re-points the shared palette and re-tints every widget on every screen
+     * that uses the shared styles; what follows is the spectrum screen's own
+     * share of the work — objects painted with explicit colours. */
+    ui_theme_apply(scheme);
 
     if (!s_screen) return;  /* called before screen_spectrum_create() */
 

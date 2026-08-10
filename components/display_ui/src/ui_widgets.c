@@ -2,6 +2,7 @@
 
 #include "esp_log.h"
 #include "ui_widgets.h"
+#include "ui_theme.h"
 
 static const char *TAG = "ui_widgets";
 
@@ -13,13 +14,24 @@ static lv_obj_t *s_btns[UI_BTN_MAX];
 static int       s_btn_count;
 
 /* Last applied colours, so a button created after a theme change still comes
- * up in the right colours instead of stock-theme grey until the next switch. */
-static uint32_t s_bg      = 0x1E2D3D;
-static uint32_t s_fg      = 0xBBCCDD;
-static uint32_t s_pressed = 0x111928;
+ * up in the right colours instead of stock-theme grey until the next switch.
+ * Seeded from the active palette on first use rather than from a hardcoded
+ * DARK triple, which was wrong for any button built before the spectrum
+ * screen got round to calling ui_status_btn_apply_theme(). */
+static uint32_t s_bg, s_fg, s_pressed;
+static bool     s_have_theme;
+
+static void seed_from_palette(void)
+{
+    if (s_have_theme) return;
+    const ui_palette_t *p = ui_theme_palette();
+    s_bg = p->grid; s_fg = p->text; s_pressed = p->status_bar;
+    s_have_theme = true;
+}
 
 static void style_one(lv_obj_t *btn)
 {
+    seed_from_palette();
     lv_obj_set_style_bg_color(btn, lv_color_hex(s_bg),      LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(btn, lv_color_hex(s_pressed), LV_PART_MAIN | LV_STATE_PRESSED);
     /* A hairline in the text colour keeps the button readable on the light
@@ -76,8 +88,19 @@ lv_obj_t *ui_status_btn_create(lv_obj_t *parent, int slot, bool in_status_bar,
     return btn;
 }
 
+lv_obj_t *ui_nav_back_create(lv_obj_t *screen, lv_event_cb_t cb)
+{
+    return ui_status_btn_create(screen, 0, false, "Back", cb, NULL);
+}
+
+lv_obj_t *ui_nav_home_create(lv_obj_t *screen, lv_event_cb_t cb)
+{
+    return ui_status_btn_create(screen, 2, false, "Home", cb, NULL);
+}
+
 void ui_status_btn_apply_theme(uint32_t bg, uint32_t fg, uint32_t pressed)
 {
     s_bg = bg; s_fg = fg; s_pressed = pressed;
+    s_have_theme = true;
     for (int i = 0; i < s_btn_count; i++) style_one(s_btns[i]);
 }
