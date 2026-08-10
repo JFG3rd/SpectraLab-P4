@@ -48,8 +48,8 @@ static void saveas_commit(void)
     const char *name = lv_textarea_get_text(s_saveas_ta);
     if (name == NULL || name[0] == '\0') {
         lv_label_set_text(s_saveas_title,
-            s_dlg_mode == DLG_MODE_SAVE ? "Save Settings As — enter a name!"
-                                        : "Rename Preset — enter a name!");
+            s_dlg_mode == DLG_MODE_SAVE ? "Save Settings As - enter a name!"
+                                        : "Rename Preset - enter a name!");
         return;
     }
 
@@ -72,7 +72,7 @@ static void saveas_commit(void)
     } else {  /* rename */
         esp_err_t r = settings_mgr_rename_named(s_rename_old, name);
         if (r == ESP_ERR_INVALID_STATE) {
-            lv_label_set_text(s_saveas_title, "Rename Preset — name already exists!");
+            lv_label_set_text(s_saveas_title, "Rename Preset - name already exists!");
             return;
         }
         if (r == ESP_OK) s_selected[0] = '\0';

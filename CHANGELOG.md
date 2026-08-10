@@ -1,5 +1,23 @@
 ## [Unreleased]
 
+### Fixed
+- The SSID and saved-network lists stayed stock white in every colour scheme.
+  `lv_list` is not an `lv_obj` subclass the theme hook was matching, so it kept
+  the default theme's card background — a bright white panel on, say, Red Neon.
+  List rows are now flat with a themed separator, and the selected row uses the
+  scheme's accent.
+- 54 characters in on-screen labels were outside Montserrat's ASCII range and
+  rendered as tofu boxes: 29 em dashes (`—`), 24 bullets (`•`, the password
+  mask on the saved-network detail screen was a row of empty squares) and one
+  multiplication sign. Serial-log strings keep theirs — those render in a
+  terminal, not in Montserrat.
+- The mic-sensitivity readout wrapped to two lines: "-38.0 dBV" measures about
+  63 px at Montserrat 14 and the value cell was 64.
+
+### Changed
+- `.gitignore` now covers the `" 2"`/`" 3"`-suffixed duplicates a sync client
+  keeps creating in this working copy, so they cannot be committed by accident.
+
 
 ## [1.3.1] - 2026-08-10
 

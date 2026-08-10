@@ -16,3 +16,13 @@ build/
 .warp/
 build.p4/
 build.p4x/
+
+# Sync-client duplicates. Something on this machine (iCloud Drive or similar)
+# periodically copies files with a " 2"/" 3" suffix — it has produced
+# "ui_theme 2.c", "web/app 2.js", "components/net_mgr/Kconfig 2", and even a
+# broken git ref named "refs/tags/v1.3.0 3". None are compiled (component
+# CMakeLists list their sources explicitly, and tools/gen_web_assets.py has a
+# hardcoded asset list), but an absent-minded `git add -A` would commit them.
+# The real fix is to stop syncing this folder; this is the seatbelt.
+* [0-9].*
+* [0-9]

@@ -333,7 +333,7 @@ static void update_profile_hint(void)
                           "under a name.");
     } else {
         lv_label_set_text_fmt(s_lbl_profile_hint,
-                              "Loaded from '%s'. Later changes are NOT written back to it — "
+                              "Loaded from '%s'. Later changes are NOT written back to it - "
                               "use PRESETS > Save.", s_active_profile);
     }
 }
@@ -695,7 +695,9 @@ static void sd_format_btn_cb(lv_event_t *e)
 #define CTRL_W        165   /* fits every option string at font 14 */
 #define ROW_H          30   /* column 1 is the tallest; 32 pushed it past 600 */
 #define ROW_PAD_Y       3
-#define VAL_W          64   /* slider readout: "-38.0 dBV" must not wrap */
+/* Slider readout width. "-38.0 dBV" measures ~63 px at Montserrat 14, so 64
+ * was exactly on the boundary and wrapped; this leaves real margin. */
+#define VAL_W          78
 
 /* A row: label on the left taking whatever width is left, control on the
  * right at a fixed width. Returns the row so the caller can add the control. */

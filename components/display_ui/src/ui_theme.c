@@ -68,6 +68,7 @@ static lv_style_t st_dd_sel;      /* highlighted option in that list     */
 static lv_style_t st_btn;
 static lv_style_t st_btn_pr;
 static lv_style_t st_btn_ck;      /* selected row in a list of buttons     */
+static lv_style_t st_list_item;   /* flat row inside an lv_list            */
 static lv_style_t st_slider_bg;
 static lv_style_t st_slider_ind;
 static lv_style_t st_slider_knob;
@@ -105,6 +106,9 @@ static void refresh_styles(void)
     lv_style_set_bg_color(&st_btn_pr,  lv_color_hex(s_pal->btn_press));
     lv_style_set_bg_color(&st_btn_ck,   lv_color_hex(s_pal->accent));
     lv_style_set_text_color(&st_btn_ck, lv_color_hex(s_pal->bg));
+
+    lv_style_set_text_color(&st_list_item,   lv_color_hex(s_pal->text));
+    lv_style_set_border_color(&st_list_item, lv_color_hex(s_pal->grid));
 
     lv_style_set_bg_color(&st_slider_bg,     lv_color_hex(s_pal->grid));
     lv_style_set_bg_color(&st_slider_ind,    lv_color_hex(s_pal->accent));
@@ -162,6 +166,15 @@ void ui_theme_init(void)
     lv_style_init(&st_btn_ck);
     lv_style_set_bg_opa(&st_btn_ck, LV_OPA_COVER);
 
+    /* A list row is flat: the list itself is the panel, so a row only needs
+     * text colour and the hairline that separates it from the next one. */
+    lv_style_init(&st_list_item);
+    lv_style_set_bg_opa(&st_list_item, LV_OPA_TRANSP);
+    lv_style_set_border_width(&st_list_item, 1);
+    lv_style_set_border_side(&st_list_item, LV_BORDER_SIDE_BOTTOM);
+    lv_style_set_border_opa(&st_list_item, LV_OPA_30);
+    lv_style_set_radius(&st_list_item, 0);
+
     lv_style_init(&st_slider_bg);
     lv_style_set_bg_opa(&st_slider_bg, LV_OPA_COVER);
     lv_style_init(&st_slider_ind);
@@ -201,6 +214,25 @@ static void theme_apply_cb(lv_theme_t *th, lv_obj_t *obj)
      * cover the whole UI. */
     if (lv_obj_get_parent(obj) == NULL) {
         lv_obj_add_style(obj, &st_screen, 0);
+        return;
+    }
+
+    /* Lists first: lv_list_button_class is a subclass of lv_button_class, and a
+     * list row wants to be flat rather than carry a full button face. The list
+     * container itself was the one thing still coming up stock white — the
+     * SSID and saved-network lists were bright white panels in every scheme. */
+    if (lv_obj_check_type(obj, &lv_list_class)) {
+        lv_obj_add_style(obj, &st_panel, 0);
+        return;
+    }
+    if (lv_obj_check_type(obj, &lv_list_button_class)) {
+        lv_obj_add_style(obj, &st_list_item, 0);
+        lv_obj_add_style(obj, &st_btn_pr, LV_STATE_PRESSED);
+        lv_obj_add_style(obj, &st_btn_ck, LV_STATE_CHECKED);
+        return;
+    }
+    if (lv_obj_check_type(obj, &lv_list_text_class)) {
+        lv_obj_add_style(obj, &st_header, 0);
         return;
     }
 

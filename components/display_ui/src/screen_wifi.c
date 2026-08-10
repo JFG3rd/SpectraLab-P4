@@ -274,7 +274,7 @@ static void list_refresh(bool scanning)
 
     if (n <= 0) {
         lv_list_add_text(s_list, scanning ? "Scanning..."
-                                          : "No networks found — tap Rescan, or use Manual");
+                                          : "No networks found - tap Rescan, or use Manual");
         return;
     }
     for (int i = 0; i < n; i++) {
@@ -403,8 +403,8 @@ static void mode_cb(lv_event_t *e)
         return;
     }
     lv_label_set_text(s_status, to_ap
-        ? "Access-point mode saved — restarting. Join the SpectraLab-P4 network."
-        : "Join mode saved — restarting.");
+        ? "Access-point mode saved - restarting. Join the SpectraLab-P4 network."
+        : "Join mode saved - restarting.");
     lv_label_set_text(s_lbl_mode_btn, "Restarting...");
     /* An esp_timer, not the IP screen's lv_timer: that one is created when the
      * IP-settings screen opens, so scheduling through it from here would never
@@ -501,11 +501,11 @@ static void entry_commit(void)
     /* ENTRY_PASS — empty password allowed (open networks) */
     esp_err_t r = net_mgr_save_credentials(s_sel_ssid, text ? text : "");
     if (r != ESP_OK) {
-        lv_label_set_text(s_entry_title, "Could not save — check the SSID");
+        lv_label_set_text(s_entry_title, "Could not save - check the SSID");
         return;
     }
     /* net_mgr reboots ~1.5 s after this returns; just tell the user. */
-    lv_label_set_text(s_entry_title, "Saved — rebooting to connect...");
+    lv_label_set_text(s_entry_title, "Saved - rebooting to connect...");
     lv_obj_add_state(s_entry_ok_btn, LV_STATE_DISABLED);
 }
 
@@ -738,7 +738,7 @@ static void qr_mark_wedged(void)
     ESP_LOGE(TAG, "QR scanner did not shut down; camera driver is stuck");
     panel_button_set_state(PANEL_KEY_ABORT, PANEL_LED_ERROR);
     if (s_qr_status) {
-        lv_label_set_text(s_qr_status, "Camera did not shut down — restart required");
+        lv_label_set_text(s_qr_status, "Camera did not shut down - restart required");
     }
     if (s_qr_payload) {
         lv_label_set_text(s_qr_payload,
@@ -800,7 +800,7 @@ static void qr_timer_cb(lv_timer_t *t)
             lv_label_set_text(s_qr_status, "Opening camera...");
             break;
         case QR_SCAN_STATUS_CAMERA_READY:
-            lv_label_set_text(s_qr_status, "Camera ready — point at a Wi-Fi QR code");
+            lv_label_set_text(s_qr_status, "Camera ready - point at a Wi-Fi QR code");
             panel_button_set_state(PANEL_KEY_ABORT, PANEL_LED_SCANNING);
             break;
         case QR_SCAN_STATUS_DECODED:
@@ -1109,12 +1109,12 @@ static void saved_refresh(void)
 
     if (n == 0) {
         lv_label_set_text(s_saved_status,
-                          "No saved networks yet — connect to one and it is remembered.");
+                          "No saved networks yet - connect to one and it is remembered.");
         return;
     }
 
     char msg[64];
-    snprintf(msg, sizeof(msg), "%d saved — tap one to view or edit it", n);
+    snprintf(msg, sizeof(msg), "%d saved - tap one to view or edit it", n);
     lv_label_set_text(s_saved_status, msg);
 
     for (int i = 0; i < n; i++) {
@@ -1144,7 +1144,7 @@ static void detail_show_pw_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
     bool show = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
-    lv_label_set_text(s_detail_pass_lbl, show ? s_detail_pass : "••••••••");
+    lv_label_set_text(s_detail_pass_lbl, show ? s_detail_pass : "********");
 }
 
 static void detail_forget_cb(lv_event_t *e)
@@ -1197,7 +1197,7 @@ static void detail_create(void)
     lv_obj_set_pos(pw_cap, 20, 64);
 
     s_detail_pass_lbl = lv_label_create(s_detail_screen);
-    lv_label_set_text(s_detail_pass_lbl, "••••••••");
+    lv_label_set_text(s_detail_pass_lbl, "********");
     lv_obj_set_style_text_font(s_detail_pass_lbl, &lv_font_montserrat_16, 0);
     lv_obj_set_pos(s_detail_pass_lbl, 20, 88);
 
@@ -1267,7 +1267,7 @@ static void detail_open(void)
      * left at last time. */
     lv_obj_remove_state(s_detail_show_cb, LV_STATE_CHECKED);
     lv_label_set_text(s_detail_pass_lbl,
-                      s_detail_pass[0] ? "••••••••" : "(open network — no password)");
+                      s_detail_pass[0] ? "********" : "(open network - no password)");
 
     if (s_detail_ip.use_static) {
         char ip[16], nm[16], gw[16], dns[16], buf[160];
@@ -1333,7 +1333,7 @@ static void ipcfg_commit(const net_ip_cfg_t *cfg)
         return;
     }
     s_detail_ip = *cfg;
-    lv_label_set_text(s_ipcfg_status, "Saved — restarting to apply...");
+    lv_label_set_text(s_ipcfg_status, "Saved - restarting to apply...");
     ESP_LOGI(TAG, "IP config saved for '%s' — restarting", s_sel_ssid);
     /* Addressing is applied at join time, so a restart is the honest way to
      * put it into effect rather than tearing down a live connection. */
@@ -1361,7 +1361,7 @@ static void ipcfg_timer_cb(lv_timer_t *t)
         return;
     }
 
-    lv_label_set_text(s_ipcfg_status, "Address is free — saving...");
+    lv_label_set_text(s_ipcfg_status, "Address is free - saving...");
     ipcfg_commit(&s_probe_cfg);
 }
 
@@ -1392,7 +1392,7 @@ static void ipcfg_save_cb(lv_event_t *e)
     cfg.use_static = (lv_dropdown_get_selected(s_ipcfg_mode_dd) == 1);
 
     if (!cfg.use_static) {
-        lv_label_set_text(s_ipcfg_status, "Switching to DHCP — saving...");
+        lv_label_set_text(s_ipcfg_status, "Switching to DHCP - saving...");
         ipcfg_set_busy(true);
         ipcfg_commit(&cfg);
         return;
@@ -1431,7 +1431,7 @@ static void ipcfg_save_cb(lv_event_t *e)
     lv_label_set_text(s_ipcfg_status, "Checking whether that address is already in use...");
 
     if (xTaskCreate(ipcfg_probe_task, "ip_probe", 3072, NULL, 4, NULL) != pdPASS) {
-        lv_label_set_text(s_ipcfg_status, "Could not start the address check — saving anyway...");
+        lv_label_set_text(s_ipcfg_status, "Could not start the address check - saving anyway...");
         ipcfg_commit(&cfg);
     }
 }
@@ -1516,7 +1516,7 @@ static void ipcfg_open(void)
     if (!s_ipcfg_screen) ipcfg_create();
 
     char t[NET_SSID_MAX + 24];
-    snprintf(t, sizeof(t), LV_SYMBOL_SETTINGS "  IP settings — %s", s_sel_ssid);
+    snprintf(t, sizeof(t), LV_SYMBOL_SETTINGS "  IP settings - %s", s_sel_ssid);
     lv_label_set_text(s_ipcfg_title, t);
 
     lv_dropdown_set_selected(s_ipcfg_mode_dd, s_detail_ip.use_static ? 1 : 0);
@@ -1550,7 +1550,7 @@ static void ipcfg_open(void)
     lv_label_set_text(s_ipcfg_status,
         net_mgr_is_sta_connected()
             ? "A static address is checked against the network before it is saved."
-            : "Not connected — the in-use check will be skipped.");
+            : "Not connected - the in-use check will be skipped.");
     lv_screen_load(s_ipcfg_screen);
 }
 
