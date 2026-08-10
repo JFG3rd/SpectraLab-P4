@@ -44,7 +44,7 @@ Make the analyzer useful as a real standalone instrument, not just a demonstrati
 
 ## Version 1.x — Stabilization and Usability
 
-**Status:** In progress — **v1.3.1** is the current release
+**Status:** In progress — **v1.3.2** is the current release
 
 | Release | Date | Theme |
 |---------|------|-------|
@@ -52,6 +52,7 @@ Make the analyzer useful as a real standalone instrument, not just a demonstrati
 | v1.2.0 | 2026-08-07 | Camera QR working on both silicon revisions, front-panel keycaps, QR reliability |
 | v1.3.0 | 2026-08-09 | Screenshots, SD file browser, peak cursor, SPL calibration UI, settings profiles, access-point mode, automatic clock |
 | v1.3.1 | 2026-08-10 | Whole-UI colour theming, three-column Settings, browser settings page and shared web navigation, board self-identification, configurable splash |
+| v1.3.2 | 2026-08-10 | Themed list panels, tofu glyphs removed from every label, layout polish |
 
 The 1.x series focuses on polishing the current standalone instrument before adding major architectural complexity.
 

@@ -7,7 +7,7 @@ list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_SOURCE_DIR}/components")
 list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_SOURCE_DIR}/src")
 
 # Explicit firmware release version used by esp_app_get_description()->version.
-set(PROJECT_VER "1.3.1")
+set(PROJECT_VER "1.3.2")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(SpectraLab-P4)

@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+
+## [1.3.2] - 2026-08-10
+
 ### Fixed
 - The SSID and saved-network lists stayed stock white in every colour scheme.
   `lv_list` is not an `lv_obj` subclass the theme hook was matching, so it kept
