@@ -10,9 +10,9 @@
 ![PlatformIO](https://img.shields.io/badge/PlatformIO-supported-orange)
 ![ESP-IDF](https://img.shields.io/badge/ESP--IDF-supported-green)
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue)
-![Version](https://img.shields.io/badge/Release-v1.2.0-success)
+![Version](https://img.shields.io/badge/Release-v1.3.1-success)
 
-> **Status:** Stable Public Release – **v1.2.0**
+> **Status:** Stable Public Release – **v1.3.1**
 
 ---
 
@@ -35,11 +35,16 @@ The analyzer includes a fully integrated responsive web interface. No additional
 Features include:
 
 - Analyzer status dashboard
+- **Device settings page** — every measurement, display, auto-gain and startup
+  setting, configurable from the browser
+- Shared navigation bar across all five pages
 - Dark and Light themes
-- Wi-Fi configuration
+- Wi-Fi configuration, including per-network static IP and access-point mode
+- SD card file browser — download screenshots, presets and calibration files
+- Take a screenshot of the analyzer's display from the browser
 - Microphone calibration upload
-- Remote configuration
-- Browser-based operation
+- Clock and timezone
+- Works over the analyzer's own access point, with no network required
 
 ## Main Dashboard
 
@@ -86,24 +91,28 @@ Features include:
 
 | Document | Description |
 |----------|-------------|
+| [User Guide](UserGuide.md) | How to operate the analyzer, feature by feature |
+| [Hardware Setup](hardware-setup.md) | Wiring, front-panel keycaps, signal chain |
 | [Quick Start](#quick-start) | Build and flash the analyzer |
 | [Display Modes](#display-modes) | Supported on-device analyzer views |
 | [Embedded Web Interface](#-embedded-web-interface) | Browser dashboard, Wi-Fi setup and calibration upload |
 | [Roadmap](#roadmap) | Planned future enhancements |
 | [Release Notes](https://github.com/JFG3rd/SpectraLab-P4/releases) | GitHub releases |
-| [Changelog](CHANGELOG.md) | Version history, once `CHANGELOG.md` is added |
+| [Changelog](CHANGELOG.md) | Version history, release-by-release |
 
 ---
 
 ## Why I Built This Project
 
-The ESP32-P4 is a remarkably capable embedded platform, yet most audio examples stop at demonstrating individual peripherals or basic FFT processing.
+This project began as a personal engineering challenge while I was undergoing treatment for acute myeloid leukemia (AML). During an extended hospital stay I wanted to continue learning, solving problems and building something real — work I could pick up and put down around treatment, and that would still be there when I came back to it.
 
-The goal is to build a complete embedded audio measurement instrument that feels like a real piece of laboratory equipment rather than a technology demonstration.
+Engineering has always been one of the ways I make sense of complex problems, and this project became an opportunity to keep learning while facing a very different kind of challenge.
+
+The ESP32-P4 is a remarkably capable embedded platform, yet most audio examples stop at demonstrating individual peripherals or basic FFT processing. What started as an exploration of the ESP32-P4 and real-time DSP gradually evolved into a much more capable audio measurement instrument. Every new feature was added with the same goal in mind: to make it behave like a real piece of laboratory equipment rather than a technology demonstration.
 
 It combines modern embedded graphics, DSP, USB Audio Class support, persistent configuration, touchscreen interaction and web-based configuration into a single standalone application.
 
-Although it began as a personal engineering project, it is released as open source so that others can learn from it, improve it and build on it.
+I am releasing the project as open source in the hope that other engineers, students, makers, and audio enthusiasts will find it useful, learn from it, and perhaps extend it in directions I never anticipated.
 
 ---
 
@@ -121,14 +130,22 @@ Although it began as a personal engineering project, it is released as open sour
 - Automatic Gain Control (AGC) with manual override
 - Noise-floor capture and subtraction
 - Presets with full runtime persistence
+- Named settings profiles
+- A-weighted SPL and mic sensitivity entry
+- Peak readout cursor — long-press a peak for exact frequency, level, band and note
+- Screenshot capture to SD card (PNG)
 - SD card configuration storage
 - Wi-Fi provisioning
 - Multiple remembered Wi-Fi networks with automatic reconnect
+- Access-point mode with a captive portal — full web interface with no network at all
+- Automatic clock (NTP, or your browser) so recordings and screenshots carry real dates
 - Embedded web interface
 - Responsive browser interface
 - Dark and Light themes
 - Browser-based Wi-Fi configuration
 - Browser-based microphone calibration upload
+- Browser-based SD card file browser, downloads and screenshot capture
+- Browser-based static IP configuration
 - Remote analyzer configuration
 - PlatformIO and ESP-IDF compatible
 
@@ -194,7 +211,15 @@ Every feature is evaluated against one goal:
 | Wi-Fi Provisioning | ✅ |
 | Multiple Saved Wi-Fi Networks | ✅ |
 | Saved Network Management (view / forget) | ✅ |
-| Static IP Configuration | ✅ |
+| Static IP Configuration (device + browser) | ✅ |
+| Named Settings Profiles | ✅ |
+| A-Weighting / Mic Sensitivity | ✅ |
+| Peak Readout Cursor | ✅ |
+| Screenshot Capture (PNG to SD) | ✅ |
+| SD File Browser & Download | ✅ |
+| Access-Point Mode + Captive Portal | ✅ |
+| Automatic Clock (NTP / browser) | ✅ |
+| Selectable Timezone | ✅ |
 | Camera QR Wi-Fi Setup | ✅ |
 | Front-Panel Keycaps (optional) | ✅ |
 | Distributed Stereo Analyzer | 🚧 Planned for v2.0 |
@@ -205,7 +230,9 @@ Every feature is evaluated against one goal:
 
 ## Hardware Required
 
-- ESP32-P4 Function EV Board
+- An ESP32-P4 Function EV Board — **either** revision:
+  - **ESP32-P4-Function-EV-Board v1.5.2** — P4 silicon rev 1.x
+  - **ESP32-P4X-Function-EV-Board v1.6** — P4 silicon rev 3.x
 - USB-C cable
 - microSD card
 - Optional USB UAC1 interface, such as the Behringer UCA222
@@ -220,29 +247,163 @@ Every feature is evaluated against one goal:
 
 ```bash
 git clone https://github.com/JFG3rd/SpectraLab-P4.git
+cd SpectraLab-P4
 ```
+
+## Which board do I have?
+
+The two boards are peripheral-identical — same LCD, ES8311 codec, ESP32-C6,
+SD slot — and differ only in P4 silicon revision. Revision 3.x is a *breaking*
+major revision, so **one binary cannot run on both**. Each board therefore has
+its own build environment and its own `sdkconfig`:
+
+| Board | Silicon | PlatformIO env | sdkconfig |
+|-------|---------|----------------|-----------|
+| ESP32-P4-Function-EV-Board **v1.5.2** | rev 1.x | `esp32-p4-evboard` | `sdkconfig.esp32-p4-evboard` |
+| ESP32-P4X-Function-EV-Board **v1.6** | rev 3.x | `esp32-p4x-evboard` | `sdkconfig.esp32-p4x-evboard` |
+
+If you are not sure which you have, plug it in and ask it:
+
+```bash
+esptool.py chip_id          # or:  python -m esptool chip_id
+```
+
+Look for `Chip is ESP32-P4 (revision v1.x)` or `(revision v3.x)`.
+
+Flashing the wrong image leaves the board unbootable until it is reflashed
+correctly. The PlatformIO upload path guards against this automatically
+(`tools/check_chip_rev.py` probes the connected chip before every upload and
+aborts on a mismatch); the raw ESP-IDF path does not.
 
 ## Build with PlatformIO
 
+This is the supported path — it applies the correct `sdkconfig`, the OTA
+partition table, the camera ISP tuning generation and the chip-revision guard
+for you.
+
 ```bash
+# Build both board images at once (no board needs to be connected)
 pio run
-pio run -t upload
+
+# Build and flash ONE board — pick the env that matches your hardware
+pio run -e esp32-p4-evboard  -t upload    # v1.5.2 board (silicon rev 1.x)
+pio run -e esp32-p4x-evboard -t upload    # P4X v1.6 board (silicon rev 3.x)
+
+# Serial monitor (115200 baud)
+pio run -e esp32-p4-evboard  -t monitor
+pio run -e esp32-p4x-evboard -t monitor
+```
+
+Do **not** run a bare `pio run -t upload`: with two environments defined it
+tries to flash both images to the same board, and the chip-revision guard will
+abort one of them. Always pass `-e`.
+
+If the upload cannot find the board, name the port explicitly:
+
+```bash
+pio run -e esp32-p4x-evboard -t upload --upload-port /dev/cu.usbmodem1101
+```
+
+After changing the partition table, erase the chip first:
+
+```bash
+pio run -e esp32-p4x-evboard -t erase
 ```
 
 ## Build with ESP-IDF
 
+Also supported, but you have to supply by hand what PlatformIO otherwise
+infers. Three things are mandatory and the build silently does the wrong thing
+without them: the **target**, the **per-board sdkconfig**, and a **separate
+build directory per board** (the two boards cannot share one, and a stale
+`build/` from an earlier attempt will fail with confusing toolchain errors).
+
+Set up the toolchain once — the ESP-IDF that PlatformIO already downloaded
+works fine:
+
 ```bash
-idf.py build
-idf.py flash
+~/.platformio/packages/framework-espidf/install.sh esp32p4      # once, ever
+. ~/.platformio/packages/framework-espidf/export.sh             # each new shell
 ```
 
-Insert the SD card and reboot.
+Or use your own ESP-IDF **v5.5.3 or newer** — rev-3 silicon needs it.
+
+For the **v1.5.2 board (silicon rev 1.x)**:
+
+```bash
+idf.py -B build.p4 \
+       -D SDKCONFIG_DEFAULTS=sdkconfig.esp32-p4-evboard \
+       -D SDKCONFIG=build.p4/sdkconfig \
+       build
+
+idf.py -B build.p4 \
+       -D SDKCONFIG_DEFAULTS=sdkconfig.esp32-p4-evboard \
+       -D SDKCONFIG=build.p4/sdkconfig \
+       -p /dev/cu.usbmodem1101 flash monitor
+```
+
+For the **P4X v1.6 board (silicon rev 3.x)** — same commands, `p4x` everywhere:
+
+```bash
+idf.py -B build.p4x \
+       -D SDKCONFIG_DEFAULTS=sdkconfig.esp32-p4x-evboard \
+       -D SDKCONFIG=build.p4x/sdkconfig \
+       build
+
+idf.py -B build.p4x \
+       -D SDKCONFIG_DEFAULTS=sdkconfig.esp32-p4x-evboard \
+       -D SDKCONFIG=build.p4x/sdkconfig \
+       -p /dev/cu.usbmodem1101 flash monitor
+```
+
+Notes on this path:
+
+- Both `SDKCONFIG_DEFAULTS` **and** `SDKCONFIG` are needed. The first supplies
+  the board's configuration; the second keeps the generated copy inside the
+  build directory. Passing only `SDKCONFIG=sdkconfig.esp32-p4x-evboard` also
+  builds correctly, but ESP-IDF rewrites that tracked file on every build
+  (it strips PlatformIO's `# default:` comments), leaving the working tree
+  dirty for no reason.
+- `idf.py set-target` is **not** needed and should not be run — the target and
+  the silicon-revision keys already live in each `sdkconfig.*`, and it would
+  overwrite them.
+- A separate `-B` build directory per board is required, not just tidy: the two
+  configurations cannot share one, and a stale `build/` from an earlier attempt
+  fails with confusing "compiler not found" errors about the wrong architecture.
+- Nothing here checks that the image matches the connected silicon. Confirm the
+  revision yourself before flashing, or use the PlatformIO path, which does.
+- Flash over USB-Serial/JTAG, which is the default. Do **not** flash the P4X
+  board via OpenOCD — on rev-3 silicon it writes without overlap checks and
+  produces "Checksum failure" boot loops.
+- The serial port differs by machine: `/dev/cu.usbmodem*` on macOS,
+  `/dev/ttyACM*` on Linux, `COM*` on Windows. Omit `-p` to let idf.py guess.
+
+## First boot
+
+Insert the SD card and reboot. The analyzer starts in the spectrum view; the
+web interface address is shown on the on-device Wi-Fi screen once it joins a
+network.
+
+---
+
+# Using It Without a Network
+
+The analyzer does not need infrastructure. Switch it to **access-point mode**
+and it becomes its own Wi-Fi network: join `SpectraLab-P4-XXXX` and the portal
+opens by itself, with the complete web interface — file browser, screenshot
+capture and download, settings, calibration upload.
+
+The only thing that changes is where the clock comes from. With no route to a
+time server the analyzer takes the time from whichever browser opens a page, so
+captures still carry correct timestamps.
+
+Switch modes on the device under **Wi-Fi Setup → Mode**, or from the browser.
 
 ---
 
 # Typical Applications
 
-SpectraLab-P4 is suitable for loudspeaker development, audio amplifier analysis, AVR setup and testing, USB audio debugging, DSP development, educational demonstrations, embedded audio de[...]
+SpectraLab-P4 is suitable for loudspeaker development, audio amplifier analysis, AVR setup and testing, USB audio debugging, DSP development, educational demonstrations, embedded audio design, room acoustics and noise-floor measurement.
 
 ---
 
@@ -268,12 +429,16 @@ No recompilation required.
 
 # Display Modes
 
-- Spectrum
-- Waterfall
-- Oscilloscope
-- Mirror
-- VU Meter
-- 1/3 Octave
+Eight modes, cycled from the Settings screen or from the optional front-panel keycap:
+
+- Bars — classic bar spectrum
+- Line — filled line/area spectrum
+- 1/3 Octave — 31-band RTA
+- Persistence — phosphor-style ghost trails
+- Waterfall — scrolling spectrogram
+- Oscilloscope — raw waveform
+- VU Meter — large SPL and peak readouts
+- Mirror — bars growing from the vertical centre
 
 Most analyzer views support two-finger pinch zoom for frequency span and display range.
 
@@ -311,21 +476,27 @@ The firmware is intentionally organized into independent components including au
 
 ```text
 components/
-    audio_source/
-    dsp_engine/
-    agc/
-    display_ui/
-    settings_mgr/
-    net_mgr/
-    web_server/
+    audio_source/     ES8311 I2S + USB UAC1 host, hot-swap
+    dsp_engine/       FFT, windows, averaging, SPL, noise floor, calibration
+    agc/              software automatic gain control
+    display_ui/       LVGL 9 screens, screenshot capture
+    settings_mgr/     SD + NVS persistence, presets, file listing
+    net_mgr/          Wi-Fi join, setup AP, static IP, mDNS
+    web_server/       HTTP portal, REST API, file browser
+    qr_scan/          MIPI-CSI capture + QR decode for Wi-Fi provisioning
+    panel_button/     optional Grove-Mech Keycaps
 
 Docu/
     images/
-    UserGuide.md
 
-web/
-include/
+web/                  browser assets (baked into web_server by tools/)
+tools/
 src/
+
+UserGuide.md
+hardware-setup.md
+CHANGELOG.md
+ROADMAP.md
 ```
 
 ---
@@ -354,7 +525,7 @@ src/
 
 Operate two ESP32-P4 analyzers as a synchronized pair.
 
-Planned features include Primary / Secondary operating modes, stereo channel split, low latency PCM streaming, preset synchronization, automatic pairing, shared configuration and synchronized dis[...]
+Planned features include Primary / Secondary operating modes, stereo channel split, low latency PCM streaming, preset synchronization, automatic pairing, shared configuration and synchronized displays.
 
 ## Future Development
 
@@ -369,18 +540,6 @@ If you build the project, I would enjoy hearing about it.
 Bug reports, suggestions and pull requests are welcome.
 
 If the project proves useful, please consider giving it a ⭐ on GitHub to help others discover it.
-
----
-
-## Project Background
-
-This project began as a personal engineering challenge while I was undergoing treatment for acute myeloid leukemia (AML). During an extended hospital stay I wanted to continue learning, solving p[...]
-
-Engineering has always been one of the ways I make sense of complex problems, and this project became an opportunity to keep learning while facing a very different kind of challenge.
-
-What started as an exploration of the ESP32-P4 and real-time DSP gradually evolved into a much more capable audio measurement instrument. Every new feature was added with the same goal in mind: t[...]
-
-I am releasing the project as open source in the hope that other engineers, students, makers, and audio enthusiasts will find it useful, learn from it, and perhaps extend it in directions I never[...]
 
 ---
 

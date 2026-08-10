@@ -44,12 +44,14 @@ Make the analyzer useful as a real standalone instrument, not just a demonstrati
 
 ## Version 1.x — Stabilization and Usability
 
-**Status:** In progress — **v1.2.0** is the current release
+**Status:** In progress — **v1.3.1** is the current release
 
 | Release | Date | Theme |
 |---------|------|-------|
 | v1.1.0 | 2026-07-11 | Multi-network Wi-Fi, software AGC, first camera QR provisioning |
 | v1.2.0 | 2026-08-07 | Camera QR working on both silicon revisions, front-panel keycaps, QR reliability |
+| v1.3.0 | 2026-08-09 | Screenshots, SD file browser, peak cursor, SPL calibration UI, settings profiles, access-point mode, automatic clock |
+| v1.3.1 | 2026-08-10 | Whole-UI colour theming, three-column Settings, browser settings page and shared web navigation, board self-identification, configurable splash |
 
 The 1.x series focuses on polishing the current standalone instrument before adding major architectural complexity.
 
@@ -66,6 +68,16 @@ The 1.x series focuses on polishing the current standalone instrument before add
 - [x] Saved Wi-Fi network management on-device — view stored networks, reveal a saved password behind a toggle, and forget a network with a two-step confirm
 - [x] Per-network static IP configuration with an ARP address-in-use check before saving, and DHCP as the default. Stored per network so a fixed address at one site and DHCP elsewhere both work
 - [x] Camera QR provisioning working on ESP32-P4 rev 3.x ("P4X") — required esp_video 2.3.0 (2.2.0 fixed an uninitialised ISP AWB subwindow that only rev >=3.0 validates) plus a build fix so the generated ISP tuning table wins the link over a dummy one shipped in esp_ipa's prebuilt library. Released as **v1.2.0**
+- [x] **A-weighting toggle** and **mic sensitivity entry** — the engine had computed and persisted both since Phase 2 M2; the Settings controls that make the SPL readout calibratable from the device shipped in **v1.3.0**
+- [x] Screenshot capture to the SD card as PNG, from the status bar, a keycap hold, or the browser — encoded with the miniz deflate compressor already resident in the ESP32-P4 ROM, so it costs no flash and no third-party code
+- [x] Browser-based SD card file browser with downloads and screenshot deletion
+- [x] Peak readout cursor — long-press a peak for exact frequency, level, nearest 1/3-octave band and nearest note. Zoom-aware, since it stores an FFT bin rather than a pixel
+- [x] Named settings profiles — load a saved preset from the Settings screen. A profile is a label, not a live save target: ordinary edits never write back to the named file, so a preset stays the snapshot it was taken as
+- [x] The active hostname and address are shown on the Wi-Fi screen and in `GET /api/status`, so first-time setup never involves guessing a URL
+- [x] Per-network static IP configuration from the browser as well as the device
+- [x] Access-point mode as a deliberate choice rather than a fallback, with a captive portal so a phone opens the page on its own — the full web interface works with no infrastructure at all
+- [x] The analyzer knows the time: SNTP where there is a route to a server, otherwise the clock of whichever browser opens a page, so screenshots carry real dates. Timezone selectable on the device and in the browser
+- [x] Every status-bar readout follows the colour theme — several were fixed bright colours, unreadable on the light High Contrast palette
 
 ### Known Limitations
 
@@ -79,28 +91,12 @@ The 1.x series focuses on polishing the current standalone instrument before add
       camera's SCCB bus and the GT911 touch controller share GPIO 7/8. The
       optional front-panel keycaps exist to cover this gap.
 
-### Quick Wins — the hard part is already done
-
-These are UI-only jobs; the underlying engine work has shipped and is persisted
-in `settings_t` / `dsp_config_t` already.
-
-- [ ] **A-weighting toggle.** `dsp_engine` computes IEC 61672 A-weighted SPL and
-      `dsp_config_t.a_weighting` is saved and restored — there is simply no
-      control on the Settings screen to turn it on.
-- [ ] **Mic sensitivity entry.** `dsp_config_t.mic_sensitivity_dbv` is plumbed
-      through and persisted; entering the value from the mic's datasheet is what
-      makes the SPL readout match a calibrated meter. No UI for it yet.
-
 ### Candidate Improvements
 
-- [ ] Named settings profiles (`settings_music.json`, `settings_voice.json`, …)
-      with a profile selector, so different rooms don't mean re-tuning by hand
-- [ ] Show the active hostname and DHCP address on the Wi-Fi/status screen, so
-      first-time setup never involves guessing a URL
-- [ ] Peak readout cursor — tap a peak to freeze exact frequency, level and
-      nearest 1/3-octave band. Many measurements need a number, not a bar
-- [ ] Harmonic marker overlay — long-press a bar to mark its fundamental and
-      harmonics, for separating overtones from real peaks
+- [ ] Harmonic marker overlay — mark a fundamental and its harmonics, for
+      separating overtones from real peaks. Long-press is now taken by the peak
+      cursor; since the cursor already identifies a fundamental, this is better
+      built as a button on that readout than as a second gesture
 - [ ] Improve documentation and setup instructions
 - [ ] Add more screenshots and diagrams
 - [ ] Improve preset management workflow
@@ -269,7 +265,6 @@ These ideas are not scheduled, but they fit naturally with the project direction
 
 - CSV export
 - JSON export
-- Screenshot capture
 - Session recording
 - Web API expansion
 

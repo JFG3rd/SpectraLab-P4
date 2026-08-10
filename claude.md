@@ -17,6 +17,23 @@ pio run -e esp32-p4x-evboard -t upload    # P4X EV-Board v1.6 (chip rev v3.x)
 pio run -e <env> -t erase                 # full chip erase (after partition changes)
 ```
 
+Plain ESP-IDF also works, but needs three things supplied by hand — a
+per-board build dir, the board's sdkconfig as *defaults*, and a build-local
+sdkconfig so the tracked file is not rewritten:
+
+```bash
+. ~/.platformio/packages/framework-espidf/export.sh
+idf.py -B build.p4x -D SDKCONFIG_DEFAULTS=sdkconfig.esp32-p4x-evboard \
+                    -D SDKCONFIG=build.p4x/sdkconfig build
+```
+
+Never run `idf.py set-target` here — the target and the silicon-revision keys
+already live in each `sdkconfig.<env>` and it would overwrite them. The raw
+IDF path also skips `tools/check_chip_rev.py`, so nothing stops you flashing a
+rev-1 image onto rev-3 silicon. `src/` is on `EXTRA_COMPONENT_DIRS` in the root
+CMakeLists precisely so this path can find the app: PlatformIO treats `src/`
+as the main component automatically, ESP-IDF looks for `main/`.
+
 - Each env has its own `sdkconfig.<env>`; silicon-revision keys
   (`ESP32P4_SELECTS_REV_LESS_V3`, `ESP32P4_REV_MIN_*`) live ONLY there,
   never in `sdkconfig.defaults`. Chip rev ≥3.0 needs ESP-IDF ≥5.5.3
@@ -48,12 +65,23 @@ pio run -e <env> -t erase                 # full chip erase (after partition cha
   the "manual override" that disables it). All gain writes happen in
   `agc_on_frame`; UI-task setters only publish state via volatile flags
 - `components/display_ui` — LVGL 9 screens: spectrum (8 display modes),
-  settings, save-as/file browsers, splash
+  settings, save-as/file browsers, splash. `screenshot.c` captures the DPI
+  scan-out framebuffer to PNG on SD — see gotcha 21
 - `components/settings_mgr` — persistence: SD `settings.json` + NVS blob
   fallback, named presets, cal files; `settings_sanitize()` clamps ALL
-  persisted input — extend it when adding settings_t fields
+  persisted input — extend it when adding settings_t fields. Also owns every
+  SD path: `settings_mgr_resolve_path()` is the single gate the web file
+  browser goes through, and directories are named by enum so a request cannot
+  express a path outside `/sdcard/spectrum`. `settings_t.active_profile` is a
+  LABEL only — a named preset is written solely by an explicit save, never by
+  the auto-save path
 - `components/net_mgr` — WiFi STA join w/ setup-AP fallback, SSID scan
-  dedup, NVS creds, mDNS `spectralab-p4.local`
+  dedup, NVS creds, mDNS, SNTP. `net_mode_t` (NVS key "mode") selects
+  join-a-network vs. permanent access point; AP mode stays APSTA so scanning
+  still works. `captive_dns.c` answers every DNS query with 192.168.4.1 while
+  the AP is up, paired with the `/*` catch-all in web_server. The mode lives
+  in net_mgr's NVS, NOT settings_t — growing settings_t resets its blob
+  (gotcha 9)
 - `components/web_server` — httpd: provisioning portal, cal upload,
   status API; assets from `web/`
 - `components/qr_scan` — MIPI-CSI capture (esp_video/V4L2) + quirc decode
@@ -219,3 +247,71 @@ M6 OTA (signed), M7 SD recording/CSV export, M8 CI + host-side tests.
 Software AGC (feature_suggestions.md) shipped as `components/agc`.
 See instructions.md (user guide) and README.md before editing docs.
 ```
+
+21. **Screenshots read the panel framebuffer, not LVGL.** LVGL renders through
+    a 50-line partial draw buffer (`direct_mode` and `full_refresh` both off),
+    so it never holds a full-screen image — `esp_lcd_dpi_panel_get_frame_buffer`
+    is the only source. Two traps: (a) it is live scan-out memory, so snapshot
+    it under `display_ui_lock()` and do the encode + SD write on a worker task,
+    because holding the LVGL lock across a FATFS write freezes the whole UI;
+    (b) the buffer needs **no rotation**, despite `mirror_x` + `mirror_y` being
+    set. Those are applied by the ek79007 vendor driver as a MADCTL command to
+    the panel IC, so the *panel* corrects its own physical scan-out direction
+    and the framebuffer already matches what is on screen. Rotating "to undo
+    the mirror" is what produces upside-down captures.
+    PNG comes from the **miniz deflate encoder resident in the ESP32-P4 ROM**
+    (`tdefl_init` / `tdefl_compress_buffer`, see
+    `components/esp_rom/esp32p4/ld/esp32p4.rom.ld`) — real compression for zero
+    flash and no third-party source. Allocate `tdefl_compressor` yourself in
+    PSRAM; the one-call `tdefl_write_image_to_png_file_in_memory_ex()` uses
+    `MZ_MALLOC`, which cannot be steered off internal RAM, and wants the whole
+    1.84 MB RGB888 image resident. Output streams to the file as successive
+    IDAT chunks (multiple IDATs are legal PNG).
+
+22. **File timestamps come from the system clock, so they need SNTP.** The
+    board has no RTC. ESP-IDF's `get_fattime()` builds the FAT timestamp from
+    `time(NULL)` + `localtime_r()`, so with an unset clock every file is
+    stamped 1980 *plus the uptime* — real observed values were 1980-01-01
+    06:32 and 06:34, hours past the epoch, which is why a "reject <= 1980"
+    sentinel does not work. `net_mgr` starts SNTP on `GOT_IP` (DHCP-advertised
+    server first, then `CONFIG_NET_MGR_NTP_SERVER`) and every web page posts
+    the browser's clock to `/api/time` as a fallback for a LAN with no route
+    out. Anything before `TIME_VALID_EPOCH` (2021) is reported as "unknown"
+    rather than shown. Note FAT stores **local** time, so `settings_t.timezone`
+    changes what is written, not just what is rendered.
+
+23. **Colour theming is styles + a theme hook, never a walk of the object
+    tree.** `components/display_ui/src/ui_theme.{c,h}` owns the palette table
+    (it used to be `static` inside screen_spectrum.c, which is exactly why the
+    spectrum view was the only screen that followed the user's choice). Two
+    mechanisms, and both are needed:
+    - **Shared `lv_style_t` objects.** `ui_theme_apply()` mutates them in place
+      and calls `lv_obj_report_style_change(NULL)`. Screens here are built once
+      at boot and never rebuilt (there is no `screen_settings_destroy()`), and
+      most labels are created as locals with no stored handle, so there is
+      nothing to walk — this is the only workable refresh path.
+    - **An LVGL theme hook** (`ui_theme_attach_display()`), chained onto the
+      port's theme with `lv_theme_set_parent()`, so every widget gets the
+      palette *as it is created*. Without it each new widget is a call site to
+      remember. `lv_theme_t` is opaque — use `lv_theme_create()` +
+      `lv_theme_copy()`, not a static struct.
+    Ordering traps: the hook only reaches objects created *after* it is
+    installed, so `ui_theme_attach_display()` runs in `display_ui_init()` right
+    after `display_hw_init()` and before the first screen; and
+    `display_ui_preconfigure()` must run before `display_ui_init()` so the
+    splash and every screen come up in the saved scheme rather than flashing
+    the default. Layers (`lv_layer_top()`) are created with the display, i.e.
+    before the hook, which is deliberate — painting an opaque background onto
+    the top layer would cover the whole UI.
+    Test any theme change against **HIGH CONTRAST**: it is the only light
+    scheme, so anything still using a hardcoded or stock colour is unreadable
+    there and nowhere else.
+
+24. **`tools/gen_web_assets.py` has a hardcoded ASSETS list, not a glob**, and
+    is *not* wired into the build (`platformio.ini` has only
+    `pre:tools/fix_openocd_upload.py`). A new file in `web/` that is not added
+    to that list is silently never served, and editing an existing one without
+    re-running the script silently ships the old page. After touching `web/`:
+    `python3 tools/gen_web_assets.py`, then rebuild. Each page also needs a
+    route in `web_server.c` — and the `/*` catch-all must stay registered
+    **last**, or it shadows everything after it.

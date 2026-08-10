@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "src/net_mgr.c"
+        "src/captive_dns.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

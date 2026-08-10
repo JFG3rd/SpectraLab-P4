@@ -422,6 +422,6 @@ direct_dependencies:
 - espressif/mdns
 - espressif/quirc
 - espressif/usb_host_uac
-manifest_hash: 1c95221cd1a450c91dd8cea8d8bfd7c62863164fe45f50ed0e96b0078f7cce29
+manifest_hash: 4c44ae47b080ff6a12f8456423e5183f63dd8a29637316a2c7a1688db40a10a2
 target: esp32p4
 version: 2.0.0

@@ -20,7 +20,7 @@
 
 static const char *TAG = "settings_mgr";
 
-#define SD_DIR          "/sdcard/spectrum"
+#define SD_DIR          SETTINGS_ROOT_DIR
 #define SD_SETTINGS     SD_DIR "/settings.json"
 #define PRESET_NF_MAGIC 0x4E465032U  /* "NFP2" */
 
@@ -28,6 +28,24 @@ static const char *TAG = "settings_mgr";
 #define NVS_KEY_CFG     "settings"
 
 #define SETTINGS_VERSION 1
+
+/* Kept deliberately short: a long list is unusable on a touch dropdown, and
+ * anything missing can still be set as a raw POSIX string over the REST API. */
+const settings_tz_t SETTINGS_TZ_TABLE[] = {
+    { "UTC",              "UTC0" },
+    { "UK (London)",      "GMT0BST,M3.5.0/1,M10.5.0" },
+    { "Central Europe",   "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Eastern Europe",   "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+    { "US Eastern",       "EST5EDT,M3.2.0,M11.1.0" },
+    { "US Central",       "CST6CDT,M3.2.0,M11.1.0" },
+    { "US Mountain",      "MST7MDT,M3.2.0,M11.1.0" },
+    { "US Pacific",       "PST8PDT,M3.2.0,M11.1.0" },
+    { "India",            "IST-5:30" },
+    { "China",            "CST-8" },
+    { "Japan",            "JST-9" },
+    { "Sydney",           "AEST-10AEDT,M10.1.0,M4.1.0/3" },
+};
+const int SETTINGS_TZ_COUNT = (int)(sizeof(SETTINGS_TZ_TABLE) / sizeof(SETTINGS_TZ_TABLE[0]));
 
 static bool s_sd_mounted = false;
 static sdmmc_card_t        *s_card;
@@ -102,6 +120,7 @@ esp_err_t settings_mgr_init(void)
         /* Ensure the app directories exist */
         mkdir(SD_DIR, 0777);
         mkdir(SETTINGS_CAL_DIR, 0777);
+        mkdir(SETTINGS_SHOT_DIR, 0777);
         ESP_LOGI(TAG, "SD card mounted at /sdcard (SDMMC slot 0)");
     } else {
         s_sd_mounted = false;
@@ -157,6 +176,9 @@ static char *_settings_to_json(const settings_t *cfg)
     cJSON_AddBoolToObject  (root, "agc_enabled",                cfg->agc_enabled);
     cJSON_AddNumberToObject(root, "agc_target_dbfs",            cfg->agc_target_dbfs);
     cJSON_AddNumberToObject(root, "agc_speed",                  cfg->agc_speed);
+    cJSON_AddStringToObject(root, "active_profile",             cfg->active_profile);
+    cJSON_AddStringToObject(root, "timezone",                   cfg->timezone);
+    cJSON_AddNumberToObject(root, "splash_seconds",             cfg->splash_seconds);
 
     char *str = cJSON_Print(root);
     cJSON_Delete(root);
@@ -204,6 +226,13 @@ static bool _json_to_settings(const char *json_str, settings_t *out)
     GET_BOOL("agc_enabled",              agc_enabled);
     GET_INT ("agc_target_dbfs",          agc_target_dbfs);
     GET_INT ("agc_speed",                agc_speed);
+    if ((item = cJSON_GetObjectItem(root, "active_profile")) && cJSON_IsString(item) &&
+        item->valuestring != NULL)
+        strlcpy(out->active_profile, item->valuestring, sizeof(out->active_profile));
+    if ((item = cJSON_GetObjectItem(root, "timezone")) && cJSON_IsString(item) &&
+        item->valuestring != NULL)
+        strlcpy(out->timezone, item->valuestring, sizeof(out->timezone));
+    GET_INT ("splash_seconds",           splash_seconds);
 
 #undef GET_INT
 #undef GET_FLT
@@ -378,6 +407,23 @@ void settings_mgr_sanitize(settings_t *s)
     if (strchr(s->cal_file, '/') || strchr(s->cal_file, '\\'))
         s->cal_file[0] = '\0';
 
+    /* active_profile: same treatment. It is only a label, but it is echoed
+     * into the UI and used to look up a preset, so it must not carry a path. */
+    s->active_profile[sizeof(s->active_profile) - 1] = '\0';
+    if (strchr(s->active_profile, '/') || strchr(s->active_profile, '\\'))
+        s->active_profile[0] = '\0';
+
+    /* timezone: force termination only. A POSIX TZ string legitimately
+     * contains '/' and ',' (e.g. "CET-1CEST,M3.5.0,M10.5.0/3"), so the
+     * path-separator rejection used above would break valid values; it is
+     * handed to setenv(), never used to build a path. */
+    s->timezone[sizeof(s->timezone) - 1] = '\0';
+
+    /* Splash: 0 means "skip it", so 0 is a legal value rather than a default
+     * to be replaced. The upper bound just stops a bad value from stranding
+     * the user on the splash screen. */
+    s->splash_seconds = _clampi(s->splash_seconds, 0, 15, 5);
+
     /* AGC: target is a display headroom (below 0 dBFS); speed is an enum */
     s->agc_target_dbfs = _clampi(s->agc_target_dbfs, -30, -3, -12);
     if ((unsigned)s->agc_speed >= AGC_SPEED_COUNT) s->agc_speed = AGC_SPEED_SLOW;
@@ -400,9 +446,12 @@ static void _set_defaults(settings_t *out)
     out->ambient_margin           = 1.5f;
     out->cal_enabled              = false;
     out->cal_file[0]              = '\0';
+    out->active_profile[0]        = '\0';
+    strlcpy(out->timezone, SETTINGS_TZ_DEFAULT, sizeof(out->timezone));
     out->agc_enabled              = false;   /* opt-in */
     out->agc_target_dbfs          = -12;     /* mid-range display headroom */
     out->agc_speed                = AGC_SPEED_SLOW;
+    out->splash_seconds           = 5;
 }
 
 esp_err_t settings_mgr_load(settings_t *out)
@@ -743,6 +792,102 @@ int settings_mgr_list_cal_files(char names[][SETTINGS_NAME_MAX], int max_count)
     }
     closedir(dir);
     return count;
+}
+
+/* ── generic browsing (web file browser) ───────────────────────── */
+
+static const char *dir_path(settings_dir_t dir)
+{
+    switch (dir) {
+    case SETTINGS_DIR_ROOT:  return SD_DIR;
+    case SETTINGS_DIR_CAL:   return SETTINGS_CAL_DIR;
+    case SETTINGS_DIR_SHOTS: return SETTINGS_SHOT_DIR;
+    default:                 return NULL;
+    }
+}
+
+/* A plain filename: no separators, no traversal, no hidden files, and short
+ * enough to fit the fixed buffers everywhere downstream. */
+static bool name_is_plain(const char *name)
+{
+    if (!name || name[0] == '\0' || name[0] == '.') return false;
+    if (strlen(name) >= SETTINGS_NAME_MAX)          return false;
+    if (strstr(name, ".."))                         return false;
+    for (const char *p = name; *p; p++) {
+        if (*p == '/' || *p == '\\') return false;
+    }
+    return true;
+}
+
+esp_err_t settings_mgr_resolve_path(settings_dir_t dir, const char *name,
+                                    char *out, size_t out_len)
+{
+    const char *base = dir_path(dir);
+    if (!base || !out || out_len == 0)  return ESP_ERR_INVALID_ARG;
+    if (!name_is_plain(name))           return ESP_ERR_INVALID_ARG;
+
+    int n = snprintf(out, out_len, "%s/%s", base, name);
+    if (n < 0 || (size_t)n >= out_len)  return ESP_ERR_INVALID_ARG;
+    return ESP_OK;
+}
+
+int settings_mgr_list_dir(settings_dir_t dir, settings_file_t *out, int max_count)
+{
+    const char *base = dir_path(dir);
+    if (!out || max_count <= 0 || !base) return -1;
+    if (!s_sd_mounted)                   return 0;
+
+    DIR *d = opendir(base);
+    if (!d) return 0;
+
+    int count = 0;
+    struct dirent *ent;
+    while (count < max_count && (ent = readdir(d)) != NULL) {
+        if (!name_is_plain(ent->d_name)) continue;   /* also skips "." and ".." */
+
+        char path[SETTINGS_PATH_MAX];
+        if (snprintf(path, sizeof(path), "%s/%s", base, ent->d_name) >= (int)sizeof(path))
+            continue;
+
+        struct stat st;
+        if (stat(path, &st) != 0)   continue;
+        if (!S_ISREG(st.st_mode))   continue;        /* directories are not listed */
+
+        strlcpy(out[count].name, ent->d_name, sizeof(out[count].name));
+        out[count].size = (long)st.st_size;
+        /* "Clock was never set" is reported as unknown (0) rather than shown as
+         * a fictitious date.
+         *
+         * The threshold is 2021, not the 1980 FAT epoch: with no RTC, time()
+         * returns seconds-since-boot, so get_fattime() writes 1980 plus the
+         * uptime — real observed values were 1980-01-01 06:32 and 06:34, hours
+         * past midnight, which sailed straight through a 315532800 check. This
+         * project did not exist before 2021, so nothing genuine is discarded.
+         * Matches TIME_VALID_EPOCH in net_mgr. */
+        out[count].mtime = (st.st_mtime >= 1609459200) ? (int64_t)st.st_mtime : 0;
+        count++;
+    }
+    closedir(d);
+    return count;
+}
+
+esp_err_t settings_mgr_delete_screenshot(const char *name)
+{
+    if (!s_sd_mounted) return ESP_ERR_NOT_FOUND;
+
+    /* Extension check on top of the fixed directory: two independent gates,
+     * so neither alone has to be perfect. */
+    size_t len = name ? strlen(name) : 0;
+    if (len < 5 || strcasecmp(name + len - 4, ".png") != 0)
+        return ESP_ERR_INVALID_ARG;
+
+    char path[SETTINGS_PATH_MAX];
+    esp_err_t err = settings_mgr_resolve_path(SETTINGS_DIR_SHOTS, name, path, sizeof(path));
+    if (err != ESP_OK) return err;
+
+    if (remove(path) != 0) return ESP_ERR_NOT_FOUND;
+    ESP_LOGI(TAG, "deleted screenshot %s", name);
+    return ESP_OK;
 }
 
 /* ── SD card management ────────────────────────────────────────── */

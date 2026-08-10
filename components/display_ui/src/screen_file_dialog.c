@@ -11,8 +11,12 @@
 #include "lvgl.h"
 #include "settings_mgr.h"
 #include "dsp_engine.h"
+#include "display_ui.h"
 #include "screen_settings.h"
 #include "screen_file_dialog.h"
+#include "ui_theme.h"
+#include "ui_widgets.h"
+#include "screen_spectrum.h"
 
 static const char *TAG = "scr_filedlg";
 
@@ -57,6 +61,9 @@ static void saveas_commit(void)
         if (r == ESP_OK) {
             /* Persist the current captured noise-floor baseline with preset. */
             settings_mgr_save_named_noise_floor(name);
+            /* An explicit save is what makes a preset the active profile —
+             * nothing else ever writes to it. */
+            display_ui_set_active_profile(name);
             snprintf(msg, sizeof(msg), "Saved '%s' " LV_SYMBOL_OK, name);
         }
         else             snprintf(msg, sizeof(msg), "Save failed (%s)", esp_err_to_name(r));
@@ -99,15 +106,16 @@ static void saveas_cancel_btn_cb(lv_event_t *e)
     if (lv_event_get_code(e) == LV_EVENT_CLICKED) saveas_cancel();
 }
 
+static void dlg_home_cb(lv_event_t *e);   /* defined with the browser callbacks */
+
 static void saveas_create(void)
 {
     s_saveas_screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_saveas_screen, lv_color_hex(0x0D1B2A), 0);
+    ui_theme_style_screen(s_saveas_screen);
     lv_obj_set_style_pad_all(s_saveas_screen, 0, 0);
 
     s_saveas_title = lv_label_create(s_saveas_screen);
     lv_label_set_text(s_saveas_title, "Save Settings As");
-    lv_obj_set_style_text_color(s_saveas_title, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(s_saveas_title, &lv_font_montserrat_16, 0);
     lv_obj_align(s_saveas_title, LV_ALIGN_TOP_MID, 0, 24);
 
@@ -141,6 +149,9 @@ static void saveas_create(void)
     lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_keyboard_set_textarea(kb, s_saveas_ta);
     lv_obj_add_event_cb(kb, saveas_kb_event_cb, LV_EVENT_ALL, NULL);
+
+    ui_nav_home_create(s_saveas_screen, dlg_home_cb);
+    ui_nav_back_create(s_saveas_screen, saveas_cancel_btn_cb);
 
     ESP_LOGI(TAG, "save-as screen created");
 }
@@ -200,7 +211,6 @@ static void files_refresh(void)
         lv_obj_t *btn = lv_list_add_button(s_files_list, LV_SYMBOL_FILE, names[i]);
         lv_obj_add_event_cb(btn, file_item_cb, LV_EVENT_CLICKED, NULL);
         /* visible highlight when CHECKED */
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A4A7A), LV_PART_MAIN | LV_STATE_CHECKED);
         lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_CHECKED);
         if (s_selected[0] && strcmp(names[i], s_selected) == 0) {
             lv_obj_add_state(btn, LV_STATE_CHECKED);
@@ -235,6 +245,8 @@ static void files_load_btn_cb(lv_event_t *e)
         snprintf(msg, sizeof(msg), "Loaded cfg, NF load failed (%s)", esp_err_to_name(nf));
         lv_label_set_text(s_files_status, msg);
     }
+
+    display_ui_set_active_profile(s_selected);
 
     char msg[64];
     snprintf(msg, sizeof(msg), "Loaded '%s' " LV_SYMBOL_OK, s_selected);
@@ -293,15 +305,22 @@ static void files_back_btn_cb(lv_event_t *e)
     if (lv_event_get_code(e) == LV_EVENT_CLICKED) screen_settings_load();
 }
 
+/* Home skips the Settings screen these dialogs were opened from and goes
+ * straight to the analyzer — otherwise leaving a nested dialog is two or
+ * three Backs. */
+static void dlg_home_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) screen_spectrum_load();
+}
+
 static void files_create(void)
 {
     s_files_screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_files_screen, lv_color_hex(0x0D1B2A), 0);
+    ui_theme_style_screen(s_files_screen);
     lv_obj_set_style_pad_all(s_files_screen, 0, 0);
 
     lv_obj_t *title = lv_label_create(s_files_screen);
     lv_label_set_text(title, "Settings Presets (SD Card)");
-    lv_obj_set_style_text_color(title, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
     lv_obj_set_pos(title, 20, 14);
 
@@ -311,7 +330,7 @@ static void files_create(void)
 
     s_files_status = lv_label_create(s_files_screen);
     lv_label_set_text(s_files_status, "");
-    lv_obj_set_style_text_color(s_files_status, lv_color_hex(0x88AACC), 0);
+    ui_theme_style_label_dim(s_files_status);
     lv_obj_set_style_text_font(s_files_status, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(s_files_status, 20, 535);
 
@@ -328,9 +347,11 @@ static void files_create(void)
     MAKE_FILE_BTN("Load",   files_load_btn_cb,    60);
     MAKE_FILE_BTN("Rename", files_rename_btn_cb, 140);
     MAKE_FILE_BTN("Delete", files_delete_btn_cb, 220);
-    MAKE_FILE_BTN("Back",   files_back_btn_cb,   300);
 
 #undef MAKE_FILE_BTN
+
+    ui_nav_home_create(s_files_screen, dlg_home_cb);
+    ui_nav_back_create(s_files_screen, files_back_btn_cb);
 
     ESP_LOGI(TAG, "file browser screen created");
 }
@@ -385,7 +406,6 @@ static void cal_refresh(void)
     for (int i = 0; i < n; i++) {
         lv_obj_t *btn = lv_list_add_button(s_cal_list, LV_SYMBOL_FILE, names[i]);
         lv_obj_add_event_cb(btn, calfile_item_cb, LV_EVENT_CLICKED, NULL);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A4A7A), LV_PART_MAIN | LV_STATE_CHECKED);
         lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_CHECKED);
     }
 }
@@ -419,12 +439,11 @@ static void cal_back_cb(lv_event_t *e)
 static void cal_create(void)
 {
     s_cal_screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_cal_screen, lv_color_hex(0x0D1B2A), 0);
+    ui_theme_style_screen(s_cal_screen);
     lv_obj_set_style_pad_all(s_cal_screen, 0, 0);
 
     lv_obj_t *title = lv_label_create(s_cal_screen);
     lv_label_set_text(title, "Microphone Calibration Files (SD Card)");
-    lv_obj_set_style_text_color(title, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
     lv_obj_set_pos(title, 20, 14);
 
@@ -434,7 +453,7 @@ static void cal_create(void)
 
     s_cal_status = lv_label_create(s_cal_screen);
     lv_label_set_text(s_cal_status, "");
-    lv_obj_set_style_text_color(s_cal_status, lv_color_hex(0x88AACC), 0);
+    ui_theme_style_label_dim(s_cal_status);
     lv_obj_set_style_text_font(s_cal_status, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(s_cal_status, 20, 535);
 
@@ -449,9 +468,11 @@ static void cal_create(void)
 } while (0)
 
     MAKE_CALPICK_BTN("Load",  cal_load_cb,  60);
-    MAKE_CALPICK_BTN("Back",  cal_back_cb, 140);
 
 #undef MAKE_CALPICK_BTN
+
+    ui_nav_home_create(s_cal_screen, dlg_home_cb);
+    ui_nav_back_create(s_cal_screen, cal_back_cb);
 
     ESP_LOGI(TAG, "cal file picker created");
 }

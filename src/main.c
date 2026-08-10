@@ -57,6 +57,14 @@ static void on_panel_mode_click(void *ctx)
     display_ui_panel_next_display_mode();
 }
 
+static void on_panel_mode_hold(void *ctx)
+{
+    (void)ctx;
+    /* Screenshot. Posts a flag; the capture is started from LVGL context on
+     * the next timer tick and the SD write happens on its own worker task. */
+    display_ui_panel_screenshot();
+}
+
 /* ── DSP → display bridge ─────────────────────────────────────── */
 
 static void dsp_to_display(const dsp_result_t *result, void *ctx)
@@ -121,6 +129,16 @@ void app_main(void)
 
     settings_t loaded;
     settings_mgr_load(&loaded);
+
+    /* Apply the timezone before any file is written: FAT records LOCAL time,
+     * so this decides what timestamp a capture carries, not just how it is
+     * displayed. The clock itself is set later by SNTP (or a browser). */
+    net_mgr_apply_timezone(loaded.timezone);
+
+    /* display_ui_init() builds every screen and shows the splash, so the
+     * splash duration and the colour theme have to be handed over before it —
+     * which works out, because the settings are already loaded by this point. */
+    display_ui_preconfigure(&loaded);
 
     /* 3. Display UI: LCD hardware init + LVGL port + spectrum screen */
     ESP_LOGI(TAG, "Step 3: display_ui_init");
@@ -206,6 +224,7 @@ void app_main(void)
     if (panel_button_init() == ESP_OK) {
         panel_button_set_click_cb(PANEL_KEY_ABORT, on_panel_abort_click, NULL);
         panel_button_set_click_cb(PANEL_KEY_MODE,  on_panel_mode_click,  NULL);
+        panel_button_set_long_cb(PANEL_KEY_MODE,   on_panel_mode_hold,   NULL);
         /* LEDs come up after the settings restore, so paint them now. */
         display_ui_lock();
         display_ui_panel_refresh_leds();

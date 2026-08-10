@@ -25,8 +25,78 @@ extern "C" {
 #define NET_PASS_MAX  64   /* 63 chars + NUL                    */
 #define NET_MAX_KNOWN 8    /* remembered networks (MRU-ordered) */
 
+/* ── network mode ─────────────────────────────────────────────────
+ *
+ * AUTO is the normal behaviour: join a known network, falling back to the
+ * setup AP only when none is reachable. AP makes the analyzer permanently its
+ * own access point, for use where there is no network at all.
+ *
+ * AP mode still runs APSTA, so the provisioning UI can scan and the user can
+ * switch back to a network without a serial cable. The whole web interface
+ * works either way — it was never gated on the station.
+ *
+ * Stored in net_mgr's own NVS namespace rather than settings_t, because
+ * growing settings_t invalidates its blob and forces a one-time settings
+ * reset, and this is a network setting net_mgr already has storage for. */
+typedef enum {
+    NET_MODE_AUTO = 0,   /* join a known network; AP only as fallback */
+    NET_MODE_AP,         /* always be an access point                 */
+} net_mode_t;
+
+net_mode_t net_mgr_get_mode(void);
+
+/* Persist the mode. Takes effect on the next boot, so callers that want it
+ * applied now should reboot. */
+esp_err_t  net_mgr_set_mode(net_mode_t mode);
+
 esp_err_t net_mgr_init(void);            /* non-fatal if the C6/hosted link is absent */
 bool      net_mgr_is_sta_connected(void);
+
+/* Machine-readable link state, for callers that need to render their own
+ * string (the spectrum status bar) rather than the one-liner below.
+ * `ssid_out` receives the station SSID when joining or joined, the setup-AP
+ * SSID in AP mode, and "" when off; it may be NULL. */
+typedef enum {
+    NET_LINK_OFF = 0,
+    NET_LINK_JOINING,
+    NET_LINK_STA_UP,
+    NET_LINK_AP_UP,
+} net_link_state_t;
+net_link_state_t net_mgr_get_link_state(char *ssid_out, size_t ssid_len);
+
+/* Per-device mDNS hostname without the ".local" suffix, e.g.
+ * "spectralab-p4-1a2b". Always valid after net_mgr_init(); the name is
+ * derived from the eFuse MAC, so it does not depend on being connected. */
+const char *net_mgr_get_mdns_host(void);
+
+/* ── wall-clock time ──────────────────────────────────────────────
+ *
+ * The board has no RTC, so at boot the clock reads 1970 and FAT stamps every
+ * file it writes with the 1980 epoch. SNTP starts automatically once the
+ * station has an address; where there is no route to an NTP server, a browser
+ * can supply the time instead (POST /api/time).
+ *
+ * Nothing here blocks: callers that need a timestamp should check
+ * net_mgr_time_is_valid() and present "unknown" rather than wait. */
+typedef enum {
+    NET_TIME_NONE = 0,   /* clock never set — treat timestamps as unknown */
+    NET_TIME_SNTP,
+    NET_TIME_BROWSER,
+} net_time_source_t;
+
+bool              net_mgr_time_is_valid(void);
+net_time_source_t net_mgr_get_time_source(void);
+
+/* Set the clock from an external source. Ignored (returns ESP_ERR_INVALID_STATE)
+ * when the clock is already valid and `src` is not more trustworthy, so a
+ * browser with a skewed clock cannot walk over a good SNTP sync.
+ * `epoch` is seconds since 1970-01-01 UTC. */
+esp_err_t net_mgr_set_time(int64_t epoch, net_time_source_t src);
+
+/* Apply a POSIX TZ string (e.g. "CET-1CEST,M3.5.0,M10.5.0/3").
+ * FAT stores LOCAL time, so this changes what timestamps files are written
+ * with, not merely how they are displayed. NULL or "" means UTC. */
+void      net_mgr_apply_timezone(const char *tz);
 
 /* Human-readable one-liner for the settings screen, e.g.
  * "AP SpectraLab-P4-1A2B pw SA-89ABCDEF 192.168.4.1"
@@ -105,6 +175,13 @@ bool      net_mgr_ip_in_use(uint32_t ip, uint32_t timeout_ms);
 uint32_t  net_mgr_get_sta_ip(void);
 uint32_t  net_mgr_get_sta_netmask(void);
 uint32_t  net_mgr_get_sta_gateway(void);
+
+/* Reboot after `delay_ms`, giving the UI time to paint a message first.
+ *
+ * Uses an esp_timer, deliberately NOT an lv_timer: LVGL timers belong to
+ * whichever screen created them, so a reboot scheduled from one screen would
+ * silently never fire while another is loaded. */
+void      net_mgr_restart_soon(uint32_t delay_ms);
 
 /* Store credentials and reboot ~1.5 s later (lets the HTTP response flush)
  * to join. Thin wrapper over net_mgr_add_network() kept for the web/UI

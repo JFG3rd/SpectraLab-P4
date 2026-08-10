@@ -1,5 +1,104 @@
 ## [Unreleased]
+
+
+## [1.3.1] - 2026-08-10
+
 ### Added
+- The analyzer names the board it is actually running on. A P4X (rev-3
+  silicon, EV board v1.6) now reads "SpectraLab-P4X" on the status bar, the
+  splash and in `GET /api/status`; the older v1.5.2 board still reads
+  "SpectraLab-P4". Detected from the silicon revision at runtime rather than
+  from the build environment, so it stays correct down the raw `idf.py` path,
+  which skips `tools/check_chip_rev.py`.
+- Configurable boot splash. Five seconds by default (was a hardcoded 2.5), set
+  from the on-device Settings screen or the browser, and **Off** skips it
+  entirely. The credit line pulses rather than sitting still.
+- **A device settings page in the browser** — `/settings.html`. The REST config
+  API has been complete since M4 and no HTML page had ever called it, so every
+  setting except the network was device-only. The form is built from a single
+  descriptor array rather than 25 hand-written fields.
+- Shared navigation across every web page. Navigation used to be hub-and-spoke:
+  each page had one link home and none to its siblings, so Files to Network was
+  two hops.
+- `Home` button beside `Back` on the screens reached from Settings, so leaving a
+  nested dialog is one tap instead of three.
+
+### Changed
+- **The colour theme now applies to the whole UI.** It used to cover only the
+  spectrum screen and the status-row buttons; Settings, Wi-Fi setup, the file
+  dialogs, the splash and the toast were permanently dark-blue, and their
+  dropdowns, buttons, sliders and switches were not styled at all — they
+  inherited LVGL's stock theme, which this project builds in its *light*
+  variant. Choosing HIGH CONTRAST turned the spectrum light and left everything
+  else dark. The palette moved into a shared `ui_theme` module which also
+  installs an LVGL theme hook, so every widget picks up the scheme as it is
+  created — including screens added later.
+- **Settings is three columns instead of two.** The old layout wasted 160 px
+  down the middle, gave a 220 px dropdown to text like "50%", and pushed three
+  whole groups (SPL Calibration, Settings Profile, Auto Gain) below the 600 px
+  fold where they were easy to miss. Everything now fits on one screen. Built
+  with flex containers, so a row fills its column by itself.
+- `Back` sits in the top-right button row on every screen that has one, in line
+  with the settings gear and the screenshot button, instead of at the bottom of
+  a column where it moved whenever a group grew.
+- The clock and timezone controls moved off the file browser onto the new
+  settings page, where a device-wide setting belongs.
+- The theme toggle and the browser-clock push are served once from `/app.js`
+  instead of being pasted into all four pages.
+
+### Fixed
+- Two long-standing overlaps on the Settings screen: the profile hint wrapped
+  into the timezone dropdown, and the Wi-Fi Setup button sat inside the mic
+  calibration band despite being unrelated to it.
+- The toast overlay was unreadable on the light scheme (fixed dark green on
+  dark red); it now takes its colours from the active palette.
+- A status-row button created before the spectrum screen came up used hardcoded
+  DARK colours until the next theme change.
+
+### Note
+- `settings_t` grew a field (`splash_seconds`), which invalidates the NVS blob.
+  Devices without an SD card get a one-time settings reset on first boot; SD
+  `settings.json` keeps every existing value. Expected, not a bug.
+
+## [1.3.0] - 2026-08-09
+
+### Added
+- Access-point mode as a deliberate choice, not just a fallback. The analyzer
+  can be told to be its own Wi-Fi network permanently, for use where there is
+  none. Selectable on the device and in the browser; both confirm twice and
+  restart, because the change takes the analyzer off the LAN.
+  Most of this already worked — the AP was APSTA, the DHCP server was running
+  and the web server was never gated on the station — so the work was the three
+  things that did not: no way to choose it, no mDNS on the AP interface, and
+  no captive portal.
+- Captive portal. A small DNS server answers every query with 192.168.4.1
+  while the AP is up, and a catch-all HTTP route redirects to the portal, so
+  phones and laptops open the page by themselves. One catch-all covers every
+  platform's detection URL, so no per-OS endpoints are needed. It is registered
+  last and only redirects in AP mode — in station mode an unknown URL still
+  returns 404, so a typo does not silently become a redirect.
+- mDNS now starts on the access point too, not only on STA_GOT_IP, so
+  <host>.local resolves without a router.
+- net_mgr_restart_soon(), an esp_timer-based deferred reboot. LVGL timers
+  belong to the screen that created them, so a reboot scheduled through one
+  would silently never fire from a different screen.
+
+- The analyzer learns the time. SNTP starts once the station has an address,
+  preferring a DHCP-advertised server over the public pool so it works on a LAN
+  with no route out; failing that, every web page quietly posts the browser's
+  clock to POST /api/time. A browser is only trusted while the device has no
+  time of its own, so a skewed machine cannot degrade a good sync.
+  Files written before the clock is known still show no date, and are never
+  restamped.
+- Timezone, configurable on the device (Settings) and in the browser. This is
+  not cosmetic: FAT stores local time, so the zone decides what is written into
+  a file. Both selectors are built from one table in the firmware, so they
+  cannot offer different lists.
+- GET /api/status reports time, time_source and timezone; the Wi-Fi screen
+  shows the device clock alongside the browser entry point.
+- The status-row buttons now follow the colour scheme. They were the only part
+  of the status bar that ignored the palette.
+
 - On-device saved Wi-Fi network management, reached from Wi-Fi Setup ->
   "Saved Nets": the stored networks in most-recently-used order, each tagged
   `[DHCP]` or `[static]`; a detail screen showing the saved password masked
@@ -20,6 +119,129 @@
   to v2 with an explicit v1 migration, so existing credentials survive the
   upgrade instead of being silently discarded by the size check.
 
+
+- Screen capture to the SD card as PNG, triggered from a status-bar button, a
+  long press on front-panel key 2, or `POST /api/screenshot`. Files land in
+  `/sdcard/spectrum/screenshots/` as `shot-NNNN.png`, numbered past the highest
+  existing index so deleting from the middle never overwrites.
+  The image comes from the DPI scan-out framebuffer, because LVGL renders
+  through a 50-line partial draw buffer and never holds a full frame. The
+  framebuffer is snapshotted under the LVGL lock and encoded on a worker task —
+  the SD write must not happen under that lock, which has no timeout. The panel
+  applies mirror_x + mirror_y in hardware, so the buffer is a 180-degree
+  rotation of what is on screen; undoing it is folded into the RGB565 -> RGB888
+  conversion and costs nothing.
+  PNG rather than BMP because the ESP32-P4 ROM already contains miniz's
+  streaming deflate encoder, so real compression costs no flash and no
+  third-party source — and unlike BMP, the result renders in GitHub markdown.
+  Output streams to the card as successive IDAT chunks, so the encoded image
+  never has to fit in RAM.
+- Browser-based SD card file browser at `/files.html`: lists screenshots,
+  presets and calibration files with sizes, downloads any of them, and deletes
+  screenshots. Downloads stream with chunked transfer, so a full-screen PNG is
+  never buffered whole.
+  Deletion is confined to screenshots in the firmware, not just the page —
+  presets, calibration files and `settings.json` are work that cannot be
+  regenerated, whereas a capture can be retaken. Directories are named by an
+  enum keyword rather than a path, so a request cannot express a location
+  outside `/sdcard/spectrum` at all.
+- Peak readout cursor: long-press a peak in any FFT-based view to freeze its
+  exact frequency and level, the nearest 1/3-octave band, and the nearest note
+  with cents error. Long press rather than tap so a stray touch or a pinch can
+  never plant one. The position is stored as an FFT bin, so the cursor tracks
+  its peak through a pinch zoom instead of drifting, and the snap-to-peak
+  search window scales with the zoom.
+- A-weighting and microphone sensitivity controls on the Settings screen, in a
+  new SPL CALIBRATION group. Both have been computed and persisted by the DSP
+  engine since Phase 2 M2 but had no control, so the SPL readout could only be
+  calibrated by hand-editing `settings.json`. Sensitivity applies on release
+  rather than on Back, so it can be dialled in against a reference meter.
+- Named settings profiles: load any saved preset directly from the Settings
+  screen, with the active name shown in the PRESETS group.
+  A profile is a label, not a save target — ordinary edits keep auto-saving to
+  the working configuration and never write back to the named file, so a preset
+  stays the snapshot it was taken as. `settings_t.active_profile` records where
+  the live configuration came from.
+- The connected Wi-Fi network is shown in the spectrum status bar, refreshed on
+  its own timer so it keeps updating while the display is frozen.
+- Per-network static IP configuration from the browser as well as the device,
+  with the same ARP address-in-use check. Saved passwords are deliberately not
+  exposed over the portal, which is plain HTTP with no authentication.
+- The device's mDNS entry point is now visible: `http://<host>.local` and the
+  raw address appear on the Wi-Fi screen, `GET /api/status` gains `hostname`
+  and `url` fields, and the landing page renders it as a bookmarkable link.
+- `panel_button` gains a registrable long-press callback. Key 0's long press
+  stays hard-wired to the restart, since that is the last-resort recovery when
+  the camera driver wedges.
+
+### Changed
+- Embedded web pages are served with Cache-Control: no-store. They ship inside
+  the firmware and change with every update, so a browser that had seen a page
+  before kept serving its cached copy after a flash — which hid a fixed
+  download button behind a stale page for an entire debugging session.
+- /api/download takes the filename in the path (/api/download/<dir>/<file>)
+  rather than an X-Filename header, so an ordinary link works. Directory and
+  filename still pass through the same enum lookup and
+  settings_mgr_resolve_path(), and the guards were re-verified on hardware
+  after the rewrite.
+- The SD file listing is a compact table — name, size, recorded date, download
+  and delete on one row — sorted newest first.
+
+- `max_uri_handlers` raised from 16 to 24. This release adds six routes, and
+  `esp_http_server` drops anything past the limit without reporting it.
+- README: "Project Background" merged into "Why I Built This Project" and the
+  truncated sentences committed into the file restored. Display Modes now lists
+  all eight modes (Line and Persistence were missing), and the repository
+  structure and changelog references were corrected.
+- `settings_t` gains `active_profile`, so the NVS blob size check fails once and
+  resets to defaults on the first boot after upgrading (expected; see CLAUDE.md
+  gotcha 9). SD `settings.json` keeps existing keys, so a card-equipped board
+  loses nothing.
+
+### Fixed
+- Screen captures were saved upside down. The panel is configured mirror_x +
+  mirror_y, which looks like it should mean the framebuffer is a 180-degree
+  rotation of the display — it is not. Those are applied by the ek79007 driver
+  as a MADCTL command to the panel IC, so the panel corrects its own physical
+  scan-out and the framebuffer already matches what is on screen. The capture
+  path was rotating to "undo" a mirror that had already been undone.
+- Screenshot downloads did nothing in Chrome. The endpoint was correct
+  throughout — curl pulled a byte-exact PNG from it, and Safari saved it fine —
+  but the response was sent with Transfer-Encoding: chunked and therefore no
+  Content-Length, which Chrome's download manager can silently discard. Files
+  here are 20-45 KB, so they are now read into PSRAM and sent in one call,
+  which sets Content-Length automatically; the chunked path is kept as a
+  fallback above 512 KB.
+- The screenshot button was drawn on top of the settings gear. It was created
+  in a different file, on a different parent, in a different coordinate system
+  (the LVGL top layer has no padding, the status bar has 4 px), so re-slotting
+  the status row could not move it. Both now come from one factory —
+  ui_widgets.c — that owns slot geometry, size and colour, and the row is laid
+  out on a single 62 px pitch.
+- Recorded dates showed 1980-01-01 06:34 instead of "unknown". With no RTC,
+  time() returns seconds-since-boot, so FAT records the 1980 epoch *plus the
+  uptime* — values hours past midnight, which sailed straight through a
+  "reject <= 1980-01-01 00:00" check. The threshold is now 2021.
+
+- Status-bar readouts were unreadable in the High Contrast theme. Five labels
+  (SPL, Peak, DSP info, ambient and USB indicators) hardcoded bright colours
+  chosen against a dark bar; on High Contrast's light `0xC8D8E8` status bar the
+  SPL readout sat at roughly 1.2:1 contrast. Root cause was that the colours
+  were written at widget-creation time and the theme switcher only ever
+  repainted the status background and the title, so nothing else could follow a
+  theme change even in principle. Every scheme now names its own status
+  accents, applied from one place.
+- The display-mode label kept the *previous* theme's text colour after a theme
+  switch — the same bug from the other direction: it was built from the palette
+  but never repainted.
+- `screen_spectrum_set_color_scheme()` recoloured "every child of the screen
+  from index 2", silently claiming anything later added to the screen. It now
+  addresses the frequency tick labels directly.
+- `display_ui.h` documented the LVGL lock as non-recursive. It is recursive
+  (`xSemaphoreTakeRecursive`); the rule that matters is never to block while
+  holding it. The old wording steered callers away from a safe pattern.
+- `net_mgr_add_network()` wiped the whole entry when re-saving a network, so
+  changing a password silently discarded that network's static IP.
 
 ## [1.2.0] - 2026-08-07
 ### Added

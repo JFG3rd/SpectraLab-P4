@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "esp_chip_info.h"
 #include "bsp/esp32_p4_function_ev_board.h"
 #include "lvgl.h"
 
@@ -17,12 +18,16 @@
 #include "settings_mgr.h"
 #include "agc.h"
 #include "panel_button.h"
+#include "net_mgr.h"
 #include "display_ui.h"
 #include "display_init.h"
 #include "screen_spectrum.h"
 #include "screen_settings.h"
 #include "screen_splash.h"
 #include "screen_wifi.h"
+#include "screenshot.h"
+#include "ui_widgets.h"
+#include "ui_theme.h"
 
 static const char *TAG = "display_ui";
 
@@ -54,6 +59,9 @@ static float        s_last_amb_margin = 1.5f;
 static int          s_last_usb_policy = SETTINGS_USB_STEREO_POLICY_SUM;
 static bool         s_last_cal_enabled = false;
 static char         s_last_cal_file[32] = "";
+static char         s_last_profile[SETTINGS_NAME_MAX] = "";
+static char         s_last_timezone[40] = SETTINGS_TZ_DEFAULT;
+static int          s_last_splash_s   = 5;
 static bool         s_last_agc_enabled = false;
 static int          s_last_agc_target  = -12;
 static int          s_last_agc_speed   = AGC_SPEED_SLOW;
@@ -62,6 +70,13 @@ static int          s_last_agc_speed   = AGC_SPEED_SLOW;
  * by spectrum_timer_cb. See display_ui_panel_next_display_mode(). */
 static volatile bool s_panel_mode_request  = false;
 static volatile bool s_panel_theme_request = false;
+static volatile bool s_panel_shot_request  = false;
+
+/* Screenshot result, posted by the capture worker task and rendered as a toast
+ * in LVGL context (same reason: the worker must not touch LVGL). */
+static char          s_shot_toast[48];
+static volatile bool s_shot_toast_ok      = false;
+static volatile bool s_shot_toast_pending = false;
 
 /* Panel LED colours. Full-scale RGB; panel_button_set_rgb() scales them to the
  * configured brightness. Chosen to stay apart from each other on a small
@@ -125,8 +140,11 @@ static void save_current_settings(void)
                      .cal_enabled             = s_last_cal_enabled,
                      .agc_enabled             = s_last_agc_enabled,
                      .agc_target_dbfs         = s_last_agc_target,
-                     .agc_speed               = s_last_agc_speed };
+                     .agc_speed               = s_last_agc_speed,
+                     .splash_seconds          = s_last_splash_s };
     strlcpy(s.cal_file, s_last_cal_file, sizeof(s.cal_file));
+    strlcpy(s.active_profile, s_last_profile, sizeof(s.active_profile));
+    strlcpy(s.timezone, s_last_timezone, sizeof(s.timezone));
     settings_mgr_save(&s);
 }
 
@@ -214,7 +232,31 @@ void display_ui_sync_settings(const settings_t *cfg)
     s_last_agc_enabled = cfg->agc_enabled;
     s_last_agc_target  = cfg->agc_target_dbfs;
     s_last_agc_speed   = cfg->agc_speed;
+    strlcpy(s_last_profile, cfg->active_profile, sizeof(s_last_profile));
+    strlcpy(s_last_timezone, cfg->timezone, sizeof(s_last_timezone));
+    s_last_splash_s    = cfg->splash_seconds;
     screen_settings_sync_from(cfg);
+}
+
+void display_ui_set_timezone(const char *tz)
+{
+    if (!tz || !tz[0]) return;
+    if (strcmp(tz, s_last_timezone) == 0) return;   /* nothing to do */
+    strlcpy(s_last_timezone, tz, sizeof(s_last_timezone));
+    net_mgr_apply_timezone(s_last_timezone);
+    save_current_settings();
+}
+
+void display_ui_set_active_profile(const char *name)
+{
+    strlcpy(s_last_profile, name ? name : "", sizeof(s_last_profile));
+    save_current_settings();
+    screen_settings_sync_profile(s_last_profile);
+}
+
+const char *display_ui_get_active_profile(void)
+{
+    return s_last_profile;
 }
 
 /* AGC on-screen button (spectrum status bar) toggled by the user. */
@@ -357,6 +399,126 @@ void display_ui_panel_refresh_leds(void)
     panel_led_show_mode();
 }
 
+/* ── global screenshot button + toast (LVGL top layer) ────────────
+ *
+ * Both live on lv_layer_top(), which is drawn above whatever screen is loaded
+ * and survives lv_screen_load(). That is what makes the button available on
+ * every screen from one object, rather than one copy per screen that each
+ * needs its own placement and wiring.
+ *
+ * The layer itself is made non-clickable and transparent so it only consumes
+ * touches that actually land on the button; LVGL still hit-tests children of a
+ * non-clickable parent, so the button works while the rest of the screen
+ * underneath stays fully interactive. */
+
+static lv_obj_t   *s_toast;
+static lv_timer_t *s_toast_timer;
+
+#define TOAST_MS 2500
+
+static void toast_hide_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_toast) lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+    s_toast_timer = NULL;   /* a one-shot lv_timer deletes itself after firing */
+}
+
+void display_ui_toast(const char *msg, bool ok)
+{
+    if (!s_toast || !msg) return;
+
+    /* Colours come from the palette rather than a fixed dark green/red, which
+     * was unreadable on the light HIGH CONTRAST scheme: the panel colour is
+     * always a legible ground for that scheme's own accents. */
+    const ui_palette_t *pal = ui_theme_palette();
+    lv_label_set_text(lv_obj_get_child(s_toast, 0), msg);
+    lv_obj_set_style_bg_color(s_toast, lv_color_hex(pal->panel), 0);
+    lv_obj_set_style_border_color(s_toast,
+                                  lv_color_hex(ok ? ui_theme_ok_color() : ui_theme_err_color()), 0);
+    lv_obj_set_style_text_color(lv_obj_get_child(s_toast, 0),
+                                lv_color_hex(ok ? ui_theme_ok_color() : ui_theme_err_color()), 0);
+    lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+
+    /* Restart rather than stack: back-to-back captures should not queue up a
+     * pile of timers that each hide the (still current) message. */
+    if (s_toast_timer) lv_timer_delete(s_toast_timer);
+    s_toast_timer = lv_timer_create(toast_hide_cb, TOAST_MS, NULL);
+    lv_timer_set_repeat_count(s_toast_timer, 1);
+}
+
+static void global_shot_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    /* LVGL context. screenshot_capture() only snapshots the framebuffer here —
+     * the encode and SD write run on its own task — so this never blocks. */
+    esp_err_t err = screenshot_capture(NULL, 0);
+    if (err == ESP_ERR_NOT_FOUND)          display_ui_toast("No SD card", false);
+    else if (err == ESP_ERR_INVALID_STATE) display_ui_toast("Capture already running", false);
+    else if (err != ESP_OK)                display_ui_toast("Screenshot failed", false);
+    else                                   display_ui_toast("Saving screenshot...", true);
+}
+
+static void create_global_overlay(void)
+{
+    lv_obj_t *top = lv_layer_top();
+    lv_obj_remove_flag(top, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_opa(top, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(top, 0, 0);
+    lv_obj_set_style_border_width(top, 0, 0);
+
+    /* Slot 1 of the status row — immediately left of the settings gear, and
+     * built by the same factory as every other button in that row, so size,
+     * spacing and colour cannot drift from it. `in_status_bar = false` because
+     * the top layer has no padding, unlike the status bar.
+     *
+     * Slot 1 is clear on every screen: Settings' nearest item at this height
+     * is at x 540, the Wi-Fi screen's buttons start at y 72, and the file
+     * dialogs' lists at y 50. */
+    ui_status_btn_create(top, 1, false, LV_SYMBOL_IMAGE, global_shot_btn_cb, NULL);
+
+    s_toast = lv_obj_create(top);
+    lv_obj_set_size(s_toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(s_toast, 10, 0);
+    /* A border rather than none: on the light scheme the panel fill is close
+     * to the page, so the accent outline is what makes the toast read as an
+     * overlay. Its colour is set per message in display_ui_toast(). */
+    lv_obj_set_style_border_width(s_toast, 2, 0);
+    lv_obj_set_style_radius(s_toast, 6, 0);
+    lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -30);
+    lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *tl = lv_label_create(s_toast);
+    lv_label_set_text(tl, "");
+    lv_obj_set_style_text_font(tl, &lv_font_montserrat_14, 0);
+}
+
+void display_ui_panel_screenshot(void)
+{
+    /* Flag only, same reasoning as the mode key below: this is reached from the
+     * panel button's shared timer task, where blocking would also cost the
+     * long-press restart. */
+    s_panel_shot_request = true;
+}
+
+esp_err_t display_ui_take_screenshot(char *path_out, size_t path_len)
+{
+    return screenshot_capture(path_out, path_len);
+}
+
+void display_ui_notify_screenshot(const char *path, bool ok)
+{
+    /* Runs on the screenshot worker task, so it may not touch LVGL directly. */
+    if (ok && path) {
+        const char *base = strrchr(path, '/');
+        strlcpy(s_shot_toast, base ? base + 1 : path, sizeof(s_shot_toast));
+    } else {
+        strlcpy(s_shot_toast, "Screenshot failed", sizeof(s_shot_toast));
+    }
+    s_shot_toast_ok      = ok;
+    s_shot_toast_pending = true;
+}
+
 void display_ui_panel_next_display_mode(void)
 {
     /* Flag only. Cycling the mode touches LVGL objects, so it has to happen in
@@ -420,6 +582,19 @@ static void spectrum_timer_cb(lv_timer_t *timer)
         s_panel_theme_request = false;
         panel_apply_next_color_scheme();
     }
+    if (s_panel_shot_request) {
+        s_panel_shot_request = false;
+        char path[SETTINGS_PATH_MAX];
+        esp_err_t err = screenshot_capture(path, sizeof(path));
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "screenshot: %s", esp_err_to_name(err));
+            display_ui_notify_screenshot(NULL, false);
+        }
+    }
+    if (s_shot_toast_pending) {
+        s_shot_toast_pending = false;
+        display_ui_toast(s_shot_toast, s_shot_toast_ok);
+    }
 
     if (!s_data_pending) return;
     if (xSemaphoreTake(s_pend_mutex, 0) != pdTRUE) return;
@@ -445,6 +620,46 @@ static void spectrum_timer_cb(lv_timer_t *timer)
 void display_ui_lock(void)   { bsp_display_lock(0); }
 void display_ui_unlock(void) { bsp_display_unlock(); }
 
+const char *display_ui_board_name(void)
+{
+    /* esp_chip_info() reports the revision as major*100 + minor. The two
+     * boards this project supports are distinguished by exactly that: the
+     * P4X (EV board v1.6) carries rev-3 silicon, the older v1.5.2 rev-1.
+     * Cached because the answer cannot change while we are running. */
+    static const char *s_name;
+    if (!s_name) {
+        esp_chip_info_t info;
+        esp_chip_info(&info);
+        s_name = (info.revision / 100) >= 3 ? "SpectraLab-P4X" : "SpectraLab-P4";
+        ESP_LOGI(TAG, "board: %s (chip rev v%d.%d)", s_name,
+                 info.revision / 100, info.revision % 100);
+    }
+    return s_name;
+}
+
+void display_ui_preconfigure(const settings_t *cfg)
+{
+    if (!cfg) return;
+    screen_splash_set_seconds(cfg->splash_seconds);
+    s_last_splash_s = cfg->splash_seconds;
+    s_last_scheme   = cfg->color_scheme;
+
+    /* Styles first, then the palette: ui_theme_apply() is a no-op on the
+     * styles until they exist. Both run before any screen is built, so every
+     * widget comes up in the right colours instead of flashing the default. */
+    ui_theme_init();
+    ui_theme_apply(cfg->color_scheme);
+}
+
+void display_ui_set_splash_seconds(int seconds)
+{
+    if (seconds < 0)  seconds = 0;
+    if (seconds > 15) seconds = 15;
+    if (seconds == s_last_splash_s) return;   /* nothing to persist */
+    s_last_splash_s = seconds;
+    save_current_settings();
+}
+
 esp_err_t display_ui_init(void)
 {
     ESP_RETURN_ON_FALSE(!s_initialized, ESP_ERR_INVALID_STATE, TAG, "already initialized");
@@ -465,6 +680,9 @@ esp_err_t display_ui_init(void)
 
     /* Create screens — must hold LVGL lock */
     bsp_display_lock(0);
+    /* Before the first screen exists: the theme hook only reaches objects
+     * created after it is installed. */
+    ui_theme_attach_display();
     ESP_RETURN_ON_ERROR(screen_spectrum_create(), TAG, "spectrum screen create failed");
     screen_spectrum_set_agc_cb(on_agc_button);
     ESP_RETURN_ON_ERROR(screen_settings_create(on_settings_changed, NULL,
@@ -474,6 +692,10 @@ esp_err_t display_ui_init(void)
                         TAG, "settings screen create failed");
     screen_splash_show();   /* fades into the spectrum screen after ~2.5 s */
     screen_spectrum_set_dsp_info(&s_last_dsp_cfg, s_last_gain_db);
+
+    /* Screenshot button + toast on the top layer, so they are present on every
+     * screen rather than only the spectrum view. */
+    create_global_overlay();
 
     /* 33 ms timer → ~30 fps UI updates */
     lv_timer_create(spectrum_timer_cb, 33, NULL);

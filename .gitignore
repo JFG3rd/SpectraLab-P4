@@ -10,3 +10,9 @@ managed_components/
 components/web_server/generated/
 README_v1_draft.md
 SpectraLab-P4.zip
+
+# Local tooling / scratch
+build/
+.warp/
+build.p4/
+build.p4x/

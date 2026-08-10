@@ -5,25 +5,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="/style.css">
+    <script src="/app.js"></script>
     <script>
-        function applyTheme(dark) {
-            document.body.classList.toggle("dark-mode", dark);
-            document.documentElement.style.colorScheme = dark ? "dark" : "light";
-            var b = document.getElementById("themeToggle");
-            if (b) b.textContent = dark ? "☀️ Light Mode" : "🌙 Dark Mode";
-        }
-        function toggleTheme() {
-            var dark = !document.body.classList.contains("dark-mode");
-            try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch (e) {}
-            applyTheme(dark);
-        }
-        (function () {
-            var saved = null;
-            try { saved = localStorage.getItem("theme"); } catch (e) {}
-            var dark = saved ? (saved === "dark")
-                : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
-            document.addEventListener("DOMContentLoaded", function () { applyTheme(dark); });
-        })();
         function loadStatus() {
             fetch("/api/status")
                 .then(r => r.json())
@@ -31,27 +14,45 @@
                     document.getElementById("status").textContent =
                         "v" + s.version + " · " + s.network + " · " + s.source +
                         (s.cal_loaded ? " · mic cal active" : "");
+                    // Bookmarkable entry point: the mDNS name survives a
+                    // DHCP lease change, unlike whatever address you typed.
+                    var e = document.getElementById("entry");
+                    if (e && s.url) {
+                        e.innerHTML = "";
+                        var a = document.createElement("a");
+                        a.href = s.url;
+                        a.textContent = s.url;
+                        e.appendChild(document.createTextNode("Always reachable at "));
+                        e.appendChild(a);
+                    }
                 })
                 .catch(() => {});
         }
         document.addEventListener("DOMContentLoaded", loadStatus);
+
     </script>
 </head>
 <body>
     <button class="button theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark / light mode">🌙 Dark Mode</button>
     <div class="wifi-setup-container">
-        <h1>🎵 SpectraLab-P4</h1>
+        <h1>🎵 <span data-board>SpectraLab-P4</span></h1>
+        <nav class="sl-nav" id="slNav"></nav>
         <p>ESP32-P4 Real-Time Audio Spectrum Analyzer</p>
 
+        <a class="button btn-save" href="/settings.html"
+           style="display:block; margin: 10px 0;">⚙️ Device Settings</a>
         <a class="button btn-info" href="/wifi-setup.html"
-           style="display:block; margin: 10px 0;">📶 WiFi Setup</a>
+           style="display:block; margin: 10px 0;">📶 Network Setup</a>
+        <a class="button btn-nav" href="/files.html"
+           style="display:block; margin: 10px 0;">💾 SD Card Files &amp; Screenshots</a>
         <a class="button btn-save" href="/cal-upload.html"
            style="display:block; margin: 10px 0;">🎤 Upload Mic Calibration</a>
 
         <div class="flash-stats" id="status" style="margin-top: 16px;"></div>
+        <div class="flash-stats" id="entry" style="margin-top: 8px;"></div>
 
         <footer>
-            <p class="disclaimer">SpectraLab-P4 — made by JFG3rd</p>
+            <p class="disclaimer"><span data-board>SpectraLab-P4</span> — made by JFG3rd</p>
             <p class="disclaimer">
                 <a href="https://github.com/JFG3rd/SpectraLab-P4" target="_blank" rel="noopener">GitHub</a>
                 &middot; Licensed under Apache&nbsp;2.0

@@ -13,10 +13,39 @@ extern "C" {
 esp_err_t display_ui_init(void);
 esp_err_t display_ui_push_spectrum(const dsp_result_t *result);
 
+/* Product name for the board this firmware is actually running on:
+ * "SpectraLab-P4X" on chip revision >= 3.0 (the v1.6 EV board), otherwise
+ * "SpectraLab-P4" (v1.5.2). Read from the silicon at runtime rather than from
+ * the build env, so it stays correct down the raw idf.py path, which skips
+ * tools/check_chip_rev.py. Valid before display_ui_init(). */
+const char *display_ui_board_name(void);
+
+/* Hand the persisted configuration over BEFORE display_ui_init() builds any
+ * screen. Two things have to be known that early:
+ *
+ *   - the splash duration, because display_ui_init() is what shows the splash;
+ *   - the colour scheme, because every screen is built exactly once and the
+ *     splash is on screen long before the boot restore runs, so applying the
+ *     theme afterwards would show a dark splash to someone who chose Amber.
+ *
+ * Safe to skip: both fall back to their defaults. */
+void      display_ui_preconfigure(const settings_t *cfg);
+
+/* Record the splash duration (seconds, 0 = off) and persist it. Applies on the
+ * next boot — the splash for this run is long gone by the time this is called
+ * from the settings screen. */
+void      display_ui_set_splash_seconds(int seconds);
+
 /* Take/release the LVGL rendering lock. Must wrap any display_ui_set_* /
  * display_ui_sync_settings calls made from OUTSIDE the LVGL task (e.g. the
- * boot-time restore in main.c). Do NOT use from LVGL event callbacks — the
- * lock is not recursive. */
+ * boot-time restore in main.c).
+ *
+ * The underlying mutex IS recursive (xSemaphoreTakeRecursive), so taking it
+ * from LVGL-context code is safe. What is NOT safe is blocking while holding
+ * it: it has no timeout, so anything slow underneath — SD I/O, waiting on
+ * another task — stalls every other would-be locker indefinitely. The cheap
+ * alternative used by the QR screen and the panel button is to post a flag and
+ * let an lv_timer act on it. */
 void      display_ui_lock(void);
 void      display_ui_unlock(void);
 void      display_ui_deinit(void);
@@ -116,6 +145,43 @@ void      display_ui_panel_cycle_color_scheme(void);
 /* Paint both panel LEDs from the restored theme/display mode. Call once after
  * panel_button_init(), which comes up after the settings restore. */
 void      display_ui_panel_refresh_leds(void);
+
+/* Request a screen capture to the SD card. Same post-a-flag contract as the
+ * other panel entry points, so it is safe from the button task and from httpd;
+ * the capture itself is kicked off from LVGL context on the next timer tick.
+ *
+ * Deliberately fire-and-forget: the caller learns nothing about the outcome
+ * because the encode and SD write happen on a worker task afterwards. The
+ * result surfaces on screen (a brief toast) and in the log. */
+void      display_ui_panel_screenshot(void);
+
+/* Capture directly and report the path. Blocks only for the framebuffer
+ * snapshot, never for the SD write. For callers that need to know the filename
+ * and can tolerate LVGL-lock acquisition (the web handler). */
+esp_err_t display_ui_take_screenshot(char *path_out, size_t path_len);
+
+/* Called by the screenshot worker when a capture finishes; shows a toast.
+ * `path` is NULL on failure. Not for general use. */
+void      display_ui_notify_screenshot(const char *path, bool ok);
+
+/* Brief message overlay, shown above whatever screen is loaded. Must be called
+ * in LVGL context. `ok` picks the accent colour. */
+void      display_ui_toast(const char *msg, bool ok);
+
+/* Apply and persist a POSIX TZ string. FAT stores local time, so this changes
+ * what timestamp future files are written with, not just how dates render.
+ * Must be called in LVGL context. */
+void        display_ui_set_timezone(const char *tz);
+
+/* Record which named preset the live configuration came from, "" for none.
+ *
+ * This is a LABEL, not a save target. Ordinary edits keep auto-saving to the
+ * working configuration (settings.json + NVS) and never write back to the
+ * named file — a preset changes only when the user explicitly saves it, so it
+ * stays the snapshot it was taken as. Call after an explicit preset save or
+ * load. Must be called in LVGL context. */
+void        display_ui_set_active_profile(const char *name);
+const char *display_ui_get_active_profile(void);
 
 #ifdef __cplusplus
 }

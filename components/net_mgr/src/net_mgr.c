@@ -16,12 +16,16 @@
 #include "esp_netif_net_stack.h"   /* esp_netif_get_netif_impl() for the ARP probe */
 #include "lwip/etharp.h"
 #include "esp_mac.h"
+#include "esp_netif_sntp.h"
+#include "esp_sntp.h"
+#include <time.h>
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "mdns.h"
 #include "esp_hosted.h"
 #include "net_mgr.h"
+#include "captive_dns.h"
 
 static const char *TAG = "net_mgr";
 
@@ -29,6 +33,7 @@ static const char *TAG = "net_mgr";
 #define KEY_SSID      "ssid"    /* legacy single-slot keys (migration source) */
 #define KEY_PASS      "pass"
 #define KEY_KNOWN     "known"   /* known-networks list blob                   */
+#define KEY_MODE      "mode"    /* net_mode_t                                 */
 
 #define KNOWN_BLOB_VERSION 2
 
@@ -42,6 +47,15 @@ static const char *TAG = "net_mgr";
 #define RECONNECT_MAX_MS   8000
 #define SCAN_MAX           20
 #define SCAN_TIMEOUT_US    (8 * 1000 * 1000)   /* clear 'scanning' if SCAN_DONE never fires */
+/* Give up on an association that never yields an address. Generous enough for
+ * a slow DHCP server (a lease normally lands in 1-3 s) while still leaving the
+ * board recoverable in well under a minute. */
+#define IP_TIMEOUT_MS      20000
+
+/* Anything earlier than 2021-01-01 means the clock was never set: the board
+ * has no RTC, so an unset clock reads 1970 and FAT records the 1980 epoch.
+ * This project did not exist before 2021, so nothing real is discarded. */
+#define TIME_VALID_EPOCH   1609459200LL
 
 /* Set to 1 to also surface the underlying esp_wifi / esp-hosted transport
  * logs (very noisy over the C6 RPC link) when debugging join failures. */
@@ -84,6 +98,7 @@ static int                s_retry;          /* attempts against the current know
 static bool               s_established;    /* got an IP at least once this boot        */
 static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_scan_timeout_timer;
+static esp_timer_handle_t s_ip_timeout_timer;
 static char               s_sta_ssid[NET_SSID_MAX];
 static char               s_ip_str[16] = "";
 static esp_netif_t       *s_sta_netif;      /* kept for static-IP and ARP probing */
@@ -98,6 +113,9 @@ static bool               s_scanning;
 static char               s_scan_ssids[SCAN_MAX][NET_SSID_MAX];
 static int                s_scan_count;
 static bool               s_mdns_up;
+static bool               s_sntp_up;
+static net_time_source_t  s_time_src = NET_TIME_NONE;
+static net_mode_t         s_mode = NET_MODE_AUTO;
 
 /* known-networks list (most-recently-used first) */
 static wifi_net_t         s_known[NET_MAX_KNOWN];
@@ -108,6 +126,8 @@ static bool               s_provisioning;   /* setup UI active: auto-join paused
 
 static void start_setup_ap(void);
 static void connect_current_known(void);
+static void start_sntp(void);
+static void start_mdns(void);
 
 /* ── diagnostics ───────────────────────────── */
 
@@ -171,6 +191,37 @@ static void derive_ap_identity(void)
      * instance name is the human-readable label shown by mDNS browsers. */
     snprintf(s_mdns_host, sizeof(s_mdns_host), "spectralab-p4-%02x%02x", mac[4], mac[5]);
     snprintf(s_mdns_instance, sizeof(s_mdns_instance), "SpectraLab-P4 %02X%02X", mac[4], mac[5]);
+}
+
+/* ── network mode persistence ─────────────────────────────────── */
+
+static void load_mode(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_WIFI, NVS_READONLY, &h) != ESP_OK) return;
+    uint8_t v = NET_MODE_AUTO;
+    if (nvs_get_u8(h, KEY_MODE, &v) == ESP_OK && v <= NET_MODE_AP)
+        s_mode = (net_mode_t)v;
+    nvs_close(h);
+}
+
+net_mode_t net_mgr_get_mode(void) { return s_mode; }
+
+esp_err_t net_mgr_set_mode(net_mode_t mode)
+{
+    if (mode != NET_MODE_AUTO && mode != NET_MODE_AP) return ESP_ERR_INVALID_ARG;
+
+    nvs_handle_t h;
+    ESP_RETURN_ON_ERROR(nvs_open(NVS_NS_WIFI, NVS_READWRITE, &h), TAG, "nvs open");
+    esp_err_t err = nvs_set_u8(h, KEY_MODE, (uint8_t)mode);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) return err;
+
+    s_mode = mode;
+    ESP_LOGI(TAG, "network mode -> %s (applies on next boot)",
+             mode == NET_MODE_AP ? "access point" : "auto");
+    return ESP_OK;
 }
 
 /* ── known-networks persistence ───────────────────────────────── */
@@ -331,10 +382,22 @@ static void start_setup_ap(void)
     esp_wifi_set_mode(WIFI_MODE_APSTA);
     esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
 
-    set_state(NET_AP_UP, "setup AP fallback");
+    set_state(NET_AP_UP, s_mode == NET_MODE_AP ? "access-point mode" : "setup AP fallback");
     strlcpy(s_ip_str, "192.168.4.1", sizeof(s_ip_str));
     ESP_LOGI(TAG, "setup AP up: SSID '%s'  password '%s'  http://192.168.4.1",
              s_ap_ssid, s_ap_pass);
+
+    /* Discoverable by name here too, not just on a joined network. */
+    start_mdns();
+
+    /* Make the OS open the portal by itself. 192.168.4.1 is esp_netif's
+     * default AP address and is what the DHCP server hands out as the
+     * gateway, so clients are already pointed at us for DNS. */
+    captive_dns_start(esp_netif_htonl(esp_netif_ip4_makeu32(192, 168, 4, 1)));
+
+    /* No SNTP: there is no uplink from our own AP, so it would only retry
+     * forever. The clock comes from whichever browser opens a page
+     * (POST /api/time) instead. */
 }
 
 /* ── reconnect backoff ────────────────────────────────────────── */
@@ -360,6 +423,43 @@ static void schedule_reconnect(uint32_t delay_ms)
     if (!s_reconnect_timer) { esp_wifi_connect(); return; }
     esp_timer_stop(s_reconnect_timer);   /* no-op if not armed */
     esp_timer_start_once(s_reconnect_timer, (uint64_t)delay_ms * 1000);
+}
+
+/* Associated but no address.
+ *
+ * The state machine otherwise only advances on STA_DISCONNECTED, so an AP that
+ * accepts the association and then never hands out a lease parks the analyzer
+ * in JOINING permanently: no fallback to the setup AP, and nothing on screen
+ * saying why. That state is unrecoverable without a serial cable, which is the
+ * opposite of what the setup-AP fallback exists for.
+ *
+ * Treat it as a failed join instead: disconnect and move on, so the usual
+ * per-network retry and eventual setup-AP fallback do their job. */
+static void ip_timeout_cb(void *arg)
+{
+    (void)arg;
+    if (s_provisioning || s_state != NET_JOINING) return;
+
+    ESP_LOGW(TAG, "no IP within %d s of associating with '%s' "
+                  "(DHCP server not responding?) — treating as a failed join",
+             IP_TIMEOUT_MS / 1000, s_sta_ssid);
+
+    /* Produces STA_DISCONNECTED, which the existing handler turns into a
+     * retry and, once the retries are spent, the next known network or the
+     * setup AP. */
+    esp_wifi_disconnect();
+}
+
+static void arm_ip_timeout(void)
+{
+    if (!s_ip_timeout_timer) return;
+    esp_timer_stop(s_ip_timeout_timer);
+    esp_timer_start_once(s_ip_timeout_timer, (uint64_t)IP_TIMEOUT_MS * 1000);
+}
+
+static void cancel_ip_timeout(void)
+{
+    if (s_ip_timeout_timer) esp_timer_stop(s_ip_timeout_timer);
 }
 
 static void scan_timeout_cb(void *arg)
@@ -428,9 +528,10 @@ static void connect_current_known(void)
     esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
     set_state(NET_JOINING, "connect known");
     s_retry = 0;
-    ESP_LOGI(TAG, "joining '%s' (%d/%d), pw %d chars...",
+    ESP_LOGI(TAG, "joining '%s' (%d/%d), pw %d chars, %s...",
              s_sta_ssid, s_join_idx + 1, s_known_count,
-             (int)strlen(s_known[s_join_idx].pass));
+             (int)strlen(s_known[s_join_idx].pass),
+             s_known[s_join_idx].ip.use_static ? "static IP" : "DHCP");
     esp_wifi_connect();
 }
 
@@ -462,11 +563,19 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             break;
         case WIFI_EVENT_STA_CONNECTED: {
             wifi_event_sta_connected_t *c = (wifi_event_sta_connected_t *)data;
-            ESP_LOGI(TAG, "event: STA_CONNECTED to '%s' ch %u authmode %d — waiting for IP (DHCP)",
-                     s_sta_ssid, c ? (unsigned)c->channel : 0u, c ? (int)c->authmode : -1);
+            bool statically = (s_join_idx >= 0 && s_join_idx < s_known_count)
+                              ? s_known[s_join_idx].ip.use_static : false;
+            /* Say which addressing is actually in use — this used to read
+             * "waiting for IP (DHCP)" even for a static network, which sends
+             * anyone reading the log after a failure down the wrong path. */
+            ESP_LOGI(TAG, "event: STA_CONNECTED to '%s' ch %u authmode %d — waiting for IP (%s)",
+                     s_sta_ssid, c ? (unsigned)c->channel : 0u, c ? (int)c->authmode : -1,
+                     statically ? "static" : "DHCP");
+            arm_ip_timeout();
             break;
         }
         case WIFI_EVENT_STA_DISCONNECTED: {
+            cancel_ip_timeout();
             /* Paused for provisioning (deliberate disconnect to allow a
              * scan) — don't fight it with a reconnect. */
             if (s_provisioning) break;
@@ -523,19 +632,15 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         s_sta_ip      = ev->ip_info.ip;
         s_sta_netmask = ev->ip_info.netmask;
         s_sta_gw      = ev->ip_info.gw;
+        cancel_ip_timeout();
         set_state(NET_STA_UP, "got IP");
         s_retry = 0;
         s_pass_fail = 0;
         s_established = true;
         ESP_LOGI(TAG, "event: STA_GOT_IP — connected to '%s' — http://%s/", s_sta_ssid, s_ip_str);
 
-        if (!s_mdns_up && mdns_init() == ESP_OK) {
-            mdns_hostname_set(s_mdns_host);
-            mdns_instance_name_set(s_mdns_instance);
-            mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
-            s_mdns_up = true;
-            ESP_LOGI(TAG, "mDNS: http://%s.local/", s_mdns_host);
-        }
+        start_mdns();
+        start_sntp();
     }
 }
 
@@ -720,6 +825,18 @@ bool net_mgr_ip_in_use(uint32_t ip, uint32_t timeout_ms)
     return false;
 }
 
+void net_mgr_restart_soon(uint32_t delay_ms)
+{
+    const esp_timer_create_args_t targs = {
+        .callback = reboot_timer_cb, .name = "net_restart",
+    };
+    esp_timer_handle_t t;
+    if (esp_timer_create(&targs, &t) == ESP_OK)
+        esp_timer_start_once(t, (uint64_t)delay_ms * 1000);
+    else
+        esp_restart();   /* no timer to be had: go now rather than never */
+}
+
 esp_err_t net_mgr_save_credentials(const char *ssid, const char *pass)
 {
     esp_err_t err = net_mgr_add_network(ssid, pass);
@@ -782,6 +899,11 @@ esp_err_t net_mgr_init(void)
     };
     esp_timer_create(&rc_args, &s_reconnect_timer);   /* non-fatal: falls back to immediate reconnect */
 
+    const esp_timer_create_args_t ip_args = {
+        .callback = ip_timeout_cb, .name = "net_ip_to",
+    };
+    esp_timer_create(&ip_args, &s_ip_timeout_timer);   /* non-fatal: no fallback if it fails */
+
     const esp_timer_create_args_t st_args = {
         .callback = scan_timeout_cb, .name = "wifi_scan_to",
     };
@@ -819,13 +941,20 @@ esp_err_t net_mgr_init(void)
     esp_log_level_set("transport", ESP_LOG_DEBUG);
 #endif
 
+    load_mode();
     load_known();   /* blob or one-time legacy migration */
 
     for (int i = 0; i < s_known_count; i++)
         ESP_LOGI(TAG, "known[%d]: '%s' (pw %d chars)",
                  i, s_known[i].ssid, (int)strlen(s_known[i].pass));
 
-    if (s_known_count > 0) {
+    if (s_mode == NET_MODE_AP) {
+        /* Deliberate access-point mode: never enter the join loop. Still
+         * APSTA, so the provisioning UI can scan and the user can switch back
+         * to a network from the touchscreen or the browser. */
+        ESP_LOGI(TAG, "network mode: access point (no join attempted)");
+        start_setup_ap();
+    } else if (s_known_count > 0) {
         /* Configure the first (most-recent) known network; the actual
          * connect fires from the WIFI_EVENT_STA_START handler. */
         s_join_idx  = 0;
@@ -838,12 +967,24 @@ esp_err_t net_mgr_init(void)
          * mismatch makes RPC calls slow, so an all-channel pre-association
          * scan noticeably delayed the join. Fast scan associates with the
          * first matching AP found — quicker, which is what matters here. */
+        /* Apply this network's addressing BEFORE the link comes up.
+         *
+         * This path duplicates connect_current_known() (it cannot call it —
+         * esp_wifi_start() has not run yet, so the esp_wifi_connect() at the
+         * end would fail; the connect is fired from the STA_START handler
+         * instead), and the copy was missing this call. The effect was that a
+         * network saved with a static IP came up on DHCP on the first join
+         * after every boot, and only got its static address if the link later
+         * dropped and reconnected through connect_current_known(). */
+        apply_ip_config(&s_known[0].ip);
+
         esp_wifi_set_mode(WIFI_MODE_STA);
         esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
         set_state(NET_JOINING, "boot join");
         s_retry = 0;
-        ESP_LOGI(TAG, "joining '%s' (1/%d), pw %d chars...",
-                 s_sta_ssid, s_known_count, (int)strlen(s_known[0].pass));
+        ESP_LOGI(TAG, "joining '%s' (1/%d), pw %d chars, %s...",
+                 s_sta_ssid, s_known_count, (int)strlen(s_known[0].pass),
+                 s_known[0].ip.use_static ? "static IP" : "DHCP");
     } else {
         start_setup_ap();
     }
@@ -857,11 +998,126 @@ bool net_mgr_is_sta_connected(void)
     return s_state == NET_STA_UP;
 }
 
+/* ── wall-clock time ──────────────────────────────────────────── */
+
+bool net_mgr_time_is_valid(void)
+{
+    return (int64_t)time(NULL) >= TIME_VALID_EPOCH;
+}
+
+net_time_source_t net_mgr_get_time_source(void)
+{
+    /* An SNTP sync that has landed since we last looked still counts, even
+     * though nothing calls back into here to say so. */
+    if (s_time_src == NET_TIME_NONE && net_mgr_time_is_valid() && s_sntp_up)
+        s_time_src = NET_TIME_SNTP;
+    return s_time_src;
+}
+
+esp_err_t net_mgr_set_time(int64_t epoch, net_time_source_t src)
+{
+    if (epoch < TIME_VALID_EPOCH) return ESP_ERR_INVALID_ARG;
+
+    /* SNTP outranks a browser: only accept a browser's clock while we have
+     * none of our own, so a machine with a skewed clock cannot degrade a
+     * good sync. */
+    if (src == NET_TIME_BROWSER && net_mgr_get_time_source() == NET_TIME_SNTP)
+        return ESP_ERR_INVALID_STATE;
+
+    struct timeval tv = { .tv_sec = (time_t)epoch, .tv_usec = 0 };
+    if (settimeofday(&tv, NULL) != 0) return ESP_FAIL;
+    s_time_src = src;
+
+    char buf[32];
+    time_t t = (time_t)epoch;
+    struct tm tm_local;
+    localtime_r(&t, &tm_local);
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_local);
+    ESP_LOGI(TAG, "clock set to %s (%s)", buf,
+             src == NET_TIME_SNTP ? "SNTP" : "browser");
+    return ESP_OK;
+}
+
+void net_mgr_apply_timezone(const char *tz)
+{
+    /* FAT stores local time, so this decides what future files are stamped
+     * with — not just how existing ones are rendered. */
+    setenv("TZ", (tz && tz[0]) ? tz : "UTC0", 1);
+    tzset();
+    ESP_LOGI(TAG, "timezone: %s", (tz && tz[0]) ? tz : "UTC0");
+}
+
+/* Advertise over mDNS. Called for BOTH the station and the setup AP: it used
+ * to run only on STA_GOT_IP, so <host>.local did not resolve in AP mode and
+ * the only way in was to know the literal 192.168.4.1. Idempotent. */
+static void start_mdns(void)
+{
+    if (s_mdns_up) return;
+    if (mdns_init() != ESP_OK) return;
+    mdns_hostname_set(s_mdns_host);
+    mdns_instance_name_set(s_mdns_instance);
+    mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+    s_mdns_up = true;
+    ESP_LOGI(TAG, "mDNS: http://%s.local/", s_mdns_host);
+}
+
+/* Kick SNTP once the station has an address. Never blocks: the sync lands on
+ * its own thread and the clock simply becomes valid at some point after. */
+static void start_sntp(void)
+{
+    if (s_sntp_up) return;
+
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG(CONFIG_NET_MGR_NTP_SERVER);
+    cfg.start                 = true;
+    cfg.server_from_dhcp      = true;   /* a router-advertised server first */
+    cfg.renew_servers_after_new_IP = true;
+    cfg.index_of_first_server = 1;      /* DHCP server takes slot 0 */
+    cfg.ip_event_to_renew     = IP_EVENT_STA_GOT_IP;
+    cfg.sync_cb               = NULL;
+
+    esp_err_t err = esp_netif_sntp_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "SNTP init failed: %s — timestamps stay unknown until a "
+                      "browser supplies the time", esp_err_to_name(err));
+        return;
+    }
+    s_sntp_up = true;
+    ESP_LOGI(TAG, "SNTP started (DHCP-provided server, then %s)",
+             CONFIG_NET_MGR_NTP_SERVER);
+}
+
+net_link_state_t net_mgr_get_link_state(char *ssid_out, size_t ssid_len)
+{
+    if (ssid_out && ssid_len) {
+        /* AP mode reports the setup-AP name: that is the network the user is
+         * actually attached to at that moment, and the one printed on screen. */
+        const char *s = (s_state == NET_AP_UP) ? s_ap_ssid
+                      : (s_state == NET_OFF)   ? ""
+                                               : s_sta_ssid;
+        strlcpy(ssid_out, s, ssid_len);
+    }
+    switch (s_state) {
+    case NET_JOINING: return NET_LINK_JOINING;
+    case NET_STA_UP:  return NET_LINK_STA_UP;
+    case NET_AP_UP:   return NET_LINK_AP_UP;
+    default:          return NET_LINK_OFF;
+    }
+}
+
+const char *net_mgr_get_mdns_host(void)
+{
+    return s_mdns_host;
+}
+
 void net_mgr_get_status(char *buf, size_t len)
 {
     if (!buf || len == 0) return;
     switch (s_state) {
     case NET_STA_UP:
+        /* Deliberately does NOT include the mDNS URL: three consumers share
+         * this one-liner and none has the width for it. The browser entry
+         * point is shown separately — see screen_wifi's hostname panel and
+         * the hostname/url fields in GET /api/status. */
         snprintf(buf, len, "WiFi: %s  %s  (%d saved)", s_sta_ssid, s_ip_str, s_known_count);
         break;
     case NET_JOINING:

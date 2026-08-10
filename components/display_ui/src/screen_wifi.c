@@ -20,11 +20,15 @@
 #include "agc.h"
 #include "audio_source.h"
 #include "display_ui.h"
+#include <time.h>
 #include "net_mgr.h"
 #include "panel_button.h"
 #include "qr_scan.h"
 #include "screen_settings.h"
 #include "screen_wifi.h"
+#include "ui_theme.h"
+#include "ui_widgets.h"
+#include "screen_spectrum.h"
 
 static const char *TAG = "scr_wifi";
 
@@ -45,6 +49,10 @@ static const char *TAG = "scr_wifi";
 
 static lv_obj_t   *s_screen;
 static lv_obj_t   *s_status;
+static lv_obj_t   *s_lbl_entry;   /* "http://<host>.local" + raw IP hint */
+static lv_obj_t   *s_btn_mode;
+static lv_obj_t   *s_lbl_mode_btn;
+static bool        s_mode_armed;  /* two-tap confirm, like Forget */
 static lv_obj_t   *s_list;
 static lv_timer_t *s_poll_timer;
 static char        s_sel_ssid[NET_SSID_MAX];
@@ -272,7 +280,6 @@ static void list_refresh(bool scanning)
     for (int i = 0; i < n; i++) {
         lv_obj_t *btn = lv_list_add_button(s_list, LV_SYMBOL_WIFI, names[i]);
         lv_obj_add_event_cb(btn, ssid_item_cb, LV_EVENT_CLICKED, NULL);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x2A4A7A), LV_PART_MAIN | LV_STATE_CHECKED);
         lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_CHECKED);
         if (s_sel_ssid[0] && strcmp(names[i], s_sel_ssid) == 0)
             lv_obj_add_state(btn, LV_STATE_CHECKED);
@@ -319,6 +326,17 @@ static void back_cb(lv_event_t *e)
     screen_settings_load();
 }
 
+/* Home leaves for the analyzer directly. It has to do the same teardown as
+ * back_cb: leaving provisioning without resuming the join loop would strand
+ * the station idle until the next reboot. */
+static void wifi_home_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    stop_poll();
+    net_mgr_exit_provisioning();
+    screen_spectrum_load();
+}
+
 static void restart_confirm_cb(lv_event_t *e)
 {
     lv_msgbox_close((lv_obj_t *)lv_event_get_user_data(e));
@@ -353,26 +371,69 @@ static void saved_cb(lv_event_t *e)
     saved_open();
 }
 
+static void update_mode_button(void)
+{
+    if (!s_lbl_mode_btn) return;
+    s_mode_armed = false;
+    lv_label_set_text(s_lbl_mode_btn,
+                      net_mgr_get_mode() == NET_MODE_AP
+                          ? LV_SYMBOL_WIFI "  Mode: Access Point"
+                          : LV_SYMBOL_WIFI "  Mode: Join Network");
+}
+
+/* Switching mode changes how the analyzer comes up, so it reboots — and in AP
+ * mode it leaves the LAN entirely, which is why this takes two taps. */
+static void mode_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+
+    bool to_ap = (net_mgr_get_mode() != NET_MODE_AP);
+    if (!s_mode_armed) {
+        s_mode_armed = true;
+        lv_label_set_text(s_lbl_mode_btn,
+                          to_ap ? "Tap again: become an AP"
+                                : "Tap again: join networks");
+        return;
+    }
+    s_mode_armed = false;
+
+    if (net_mgr_set_mode(to_ap ? NET_MODE_AP : NET_MODE_AUTO) != ESP_OK) {
+        lv_label_set_text(s_status, "Could not save the network mode.");
+        update_mode_button();
+        return;
+    }
+    lv_label_set_text(s_status, to_ap
+        ? "Access-point mode saved — restarting. Join the SpectraLab-P4 network."
+        : "Join mode saved — restarting.");
+    lv_label_set_text(s_lbl_mode_btn, "Restarting...");
+    /* An esp_timer, not the IP screen's lv_timer: that one is created when the
+     * IP-settings screen opens, so scheduling through it from here would never
+     * fire and the board would sit at "Restarting..." forever. */
+    net_mgr_restart_soon(1200);
+}
+
 static void list_create(void)
 {
     s_screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_screen, lv_color_hex(0x0D1B2A), 0);
+    ui_theme_style_screen(s_screen);
     lv_obj_set_style_pad_all(s_screen, 0, 0);
 
     lv_obj_t *title = lv_label_create(s_screen);
     lv_label_set_text(title, LV_SYMBOL_WIFI "  Wi-Fi Setup");
-    lv_obj_set_style_text_color(title, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
     lv_obj_set_pos(title, 20, 14);
 
     s_status = lv_label_create(s_screen);
     lv_label_set_text(s_status, "");
-    lv_obj_set_style_text_color(s_status, lv_color_hex(0x88AACC), 0);
+    ui_theme_style_label_dim(s_status);
     lv_obj_set_style_text_font(s_status, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(s_status, 20, 44);
 
+    /* Shorter than the full column: the entry-point panel moves underneath it
+     * so the button strip on the right gains an eighth slot for the network
+     * mode, which otherwise had nowhere to go. */
     s_list = lv_list_create(s_screen);
-    lv_obj_set_size(s_list, 640, 508);
+    lv_obj_set_size(s_list, 640, 428);
     lv_obj_set_pos(s_list, 20, 72);
 
 #define MAKE_WIFI_BTN(label_str, cb, y_pos) do {          \
@@ -391,7 +452,30 @@ static void list_create(void)
     MAKE_WIFI_BTN(LV_SYMBOL_IMAGE "  Scan QR",   scan_qr_cb, 252);
     MAKE_WIFI_BTN(LV_SYMBOL_SAVE "  Saved Nets", saved_cb,   312);
     MAKE_WIFI_BTN(LV_SYMBOL_POWER "  Restart",   restart_cb, 372);
-    MAKE_WIFI_BTN(LV_SYMBOL_LEFT "  Back",       back_cb,    432);
+
+    ui_nav_home_create(s_screen, wifi_home_cb);
+    ui_nav_back_create(s_screen, back_cb);
+
+    /* Network mode. Two taps, like Forget on the detail screen: switching to
+     * access-point mode drops the analyzer off the LAN, and recovering means
+     * walking to the unit. */
+    s_btn_mode = lv_button_create(s_screen);
+    lv_obj_set_size(s_btn_mode, 300, 48);
+    lv_obj_set_pos(s_btn_mode, 690, 492);
+    lv_obj_add_event_cb(s_btn_mode, mode_cb, LV_EVENT_CLICKED, NULL);
+    s_lbl_mode_btn = lv_label_create(s_btn_mode);
+    lv_obj_center(s_lbl_mode_btn);
+    update_mode_button();
+
+    /* Browser entry point, in the gap under the button column. Both forms are
+     * shown on purpose: the mDNS name survives a DHCP lease change, and the
+     * raw address still works on networks where mDNS resolution does not. */
+    s_lbl_entry = lv_label_create(s_screen);
+    lv_obj_set_width(s_lbl_entry, 640);
+    lv_label_set_long_mode(s_lbl_entry, LV_LABEL_LONG_WRAP);
+    ui_theme_style_label_dim(s_lbl_entry);
+    lv_obj_set_style_text_font(s_lbl_entry, &lv_font_montserrat_12, 0);
+    lv_obj_set_pos(s_lbl_entry, 20, 508);
 
 #undef MAKE_WIFI_BTN
 
@@ -459,12 +543,11 @@ static void entry_show_pw_cb(lv_event_t *e)
 static void entry_create(void)
 {
     s_entry_screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_entry_screen, lv_color_hex(0x0D1B2A), 0);
+    ui_theme_style_screen(s_entry_screen);
     lv_obj_set_style_pad_all(s_entry_screen, 0, 0);
 
     s_entry_title = lv_label_create(s_entry_screen);
     lv_label_set_text(s_entry_title, "Password");
-    lv_obj_set_style_text_color(s_entry_title, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(s_entry_title, &lv_font_montserrat_16, 0);
     lv_obj_align(s_entry_title, LV_ALIGN_TOP_MID, 0, 24);
 
@@ -492,7 +575,6 @@ static void entry_create(void)
     /* "Show password" checkbox — shown only in password mode (see entry_open). */
     s_entry_show_cb = lv_checkbox_create(s_entry_screen);
     lv_checkbox_set_text(s_entry_show_cb, "Show password");
-    lv_obj_set_style_text_color(s_entry_show_cb, lv_color_hex(0xCCDDEE), 0);
     lv_obj_align_to(s_entry_show_cb, s_entry_ta, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
     lv_obj_add_event_cb(s_entry_show_cb, entry_show_pw_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
@@ -501,6 +583,9 @@ static void entry_create(void)
     lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_keyboard_set_textarea(kb, s_entry_ta);
     lv_obj_add_event_cb(kb, entry_kb_event_cb, LV_EVENT_ALL, NULL);
+
+    ui_nav_home_create(s_entry_screen, wifi_home_cb);
+    ui_nav_back_create(s_entry_screen, entry_cancel_btn_cb);
 
     ESP_LOGI(TAG, "wifi entry screen created");
 }
@@ -789,18 +874,16 @@ static void qr_create(void)
     lv_obj_t *s_qr_last_btn_label = NULL;
 
     s_qr_screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_qr_screen, lv_color_hex(0x0D1B2A), 0);
+    ui_theme_style_screen(s_qr_screen);
     lv_obj_set_style_pad_all(s_qr_screen, 0, 0);
 
     lv_obj_t *title = lv_label_create(s_qr_screen);
     lv_label_set_text(title, LV_SYMBOL_IMAGE "  Scan Wi-Fi QR");
-    lv_obj_set_style_text_color(title, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
     lv_obj_set_pos(title, 20, 14);
 
     s_qr_status = lv_label_create(s_qr_screen);
     lv_label_set_text(s_qr_status, "Opening camera...");
-    lv_obj_set_style_text_color(s_qr_status, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(s_qr_status, &lv_font_montserrat_16, 0);
     lv_obj_set_pos(s_qr_status, 20, 56);
 
@@ -811,7 +894,7 @@ static void qr_create(void)
     lv_label_set_text(s_qr_payload, "Point the camera at your router's Wi-Fi QR code.");
     lv_label_set_long_mode(s_qr_payload, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(s_qr_payload, QR_PREVIEW_W);
-    lv_obj_set_style_text_color(s_qr_payload, lv_color_hex(0x88AACC), 0);
+    ui_theme_style_label_dim(s_qr_payload);
     lv_obj_set_style_text_font(s_qr_payload, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(s_qr_payload, QR_PREVIEW_X, 88);
 
@@ -853,9 +936,12 @@ static void qr_create(void)
     s_qr_rescan_label = s_qr_last_btn_label;
 
     MAKE_QR_BTN(LV_SYMBOL_KEYBOARD "  Manual", qr_manual_cb, 152);
-    MAKE_QR_BTN(LV_SYMBOL_LEFT "  Back",       qr_back_cb,   232);
 
 #undef MAKE_QR_BTN
+
+    /* No Home here: a running scan owns the shared I2C pads and touch is
+     * suspended, so leaving must go through qr_back_cb's abort path. */
+    ui_nav_back_create(s_qr_screen, qr_back_cb);
 
     if (!s_qr_mutex) {
         s_qr_mutex = xSemaphoreCreateMutex();
@@ -990,18 +1076,17 @@ static void saved_back_cb(lv_event_t *e)
 static void saved_create(void)
 {
     s_saved_screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_saved_screen, lv_color_hex(0x0D1B2A), 0);
+    ui_theme_style_screen(s_saved_screen);
     lv_obj_set_style_pad_all(s_saved_screen, 0, 0);
 
     lv_obj_t *title = lv_label_create(s_saved_screen);
     lv_label_set_text(title, LV_SYMBOL_SAVE "  Saved Networks");
-    lv_obj_set_style_text_color(title, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
     lv_obj_set_pos(title, 20, 14);
 
     s_saved_status = lv_label_create(s_saved_screen);
     lv_label_set_text(s_saved_status, "");
-    lv_obj_set_style_text_color(s_saved_status, lv_color_hex(0x88AACC), 0);
+    ui_theme_style_label_dim(s_saved_status);
     lv_obj_set_style_text_font(s_saved_status, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(s_saved_status, 20, 44);
 
@@ -1009,13 +1094,8 @@ static void saved_create(void)
     lv_obj_set_size(s_saved_list, 640, 508);
     lv_obj_set_pos(s_saved_list, 20, 72);
 
-    lv_obj_t *b = lv_button_create(s_saved_screen);
-    lv_obj_set_size(b, 300, 48);
-    lv_obj_set_pos(b, 690, 72);
-    lv_obj_add_event_cb(b, saved_back_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *l = lv_label_create(b);
-    lv_label_set_text(l, LV_SYMBOL_LEFT "  Back");
-    lv_obj_center(l);
+    ui_nav_home_create(s_saved_screen, wifi_home_cb);
+    ui_nav_back_create(s_saved_screen, saved_back_cb);
 
     ESP_LOGI(TAG, "saved networks screen created");
 }
@@ -1103,49 +1183,45 @@ static void detail_back_cb(lv_event_t *e)
 static void detail_create(void)
 {
     s_detail_screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_detail_screen, lv_color_hex(0x0D1B2A), 0);
+    ui_theme_style_screen(s_detail_screen);
     lv_obj_set_style_pad_all(s_detail_screen, 0, 0);
 
     s_detail_title = lv_label_create(s_detail_screen);
-    lv_obj_set_style_text_color(s_detail_title, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(s_detail_title, &lv_font_montserrat_16, 0);
     lv_obj_set_pos(s_detail_title, 20, 14);
 
     lv_obj_t *pw_cap = lv_label_create(s_detail_screen);
     lv_label_set_text(pw_cap, "Password");
-    lv_obj_set_style_text_color(pw_cap, lv_color_hex(0x88AACC), 0);
+    ui_theme_style_label_dim(pw_cap);
     lv_obj_set_style_text_font(pw_cap, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(pw_cap, 20, 64);
 
     s_detail_pass_lbl = lv_label_create(s_detail_screen);
     lv_label_set_text(s_detail_pass_lbl, "••••••••");
-    lv_obj_set_style_text_color(s_detail_pass_lbl, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(s_detail_pass_lbl, &lv_font_montserrat_16, 0);
     lv_obj_set_pos(s_detail_pass_lbl, 20, 88);
 
     s_detail_show_cb = lv_checkbox_create(s_detail_screen);
     lv_checkbox_set_text(s_detail_show_cb, "Show password");
-    lv_obj_set_style_text_color(s_detail_show_cb, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_pos(s_detail_show_cb, 20, 124);
     lv_obj_add_event_cb(s_detail_show_cb, detail_show_pw_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     lv_obj_t *ip_cap = lv_label_create(s_detail_screen);
     lv_label_set_text(ip_cap, "Addressing");
-    lv_obj_set_style_text_color(ip_cap, lv_color_hex(0x88AACC), 0);
+    ui_theme_style_label_dim(ip_cap);
     lv_obj_set_style_text_font(ip_cap, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(ip_cap, 20, 174);
 
     s_detail_ip_lbl = lv_label_create(s_detail_screen);
     lv_label_set_long_mode(s_detail_ip_lbl, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(s_detail_ip_lbl, 620);
-    lv_obj_set_style_text_color(s_detail_ip_lbl, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(s_detail_ip_lbl, &lv_font_montserrat_16, 0);
     lv_obj_set_pos(s_detail_ip_lbl, 20, 198);
 
     s_detail_status = lv_label_create(s_detail_screen);
     lv_label_set_long_mode(s_detail_status, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(s_detail_status, 620);
-    lv_obj_set_style_text_color(s_detail_status, lv_color_hex(0x88AACC), 0);
+    ui_theme_style_label_dim(s_detail_status);
     lv_obj_set_style_text_font(s_detail_status, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(s_detail_status, 20, 300);
 
@@ -1165,13 +1241,8 @@ static void detail_create(void)
     lv_label_set_text(s_detail_forget_lbl, LV_SYMBOL_TRASH "  Forget Network");
     lv_obj_center(s_detail_forget_lbl);
 
-    lv_obj_t *b_back = lv_button_create(s_detail_screen);
-    lv_obj_set_size(b_back, 300, 48);
-    lv_obj_set_pos(b_back, 690, 192);
-    lv_obj_add_event_cb(b_back, detail_back_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *l_back = lv_label_create(b_back);
-    lv_label_set_text(l_back, LV_SYMBOL_LEFT "  Back");
-    lv_obj_center(l_back);
+    ui_nav_home_create(s_detail_screen, wifi_home_cb);
+    ui_nav_back_create(s_detail_screen, detail_back_cb);
 
     ESP_LOGI(TAG, "network detail screen created");
 }
@@ -1374,17 +1445,16 @@ static void ipcfg_cancel_cb(lv_event_t *e)
 static void ipcfg_create(void)
 {
     s_ipcfg_screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_ipcfg_screen, lv_color_hex(0x0D1B2A), 0);
+    ui_theme_style_screen(s_ipcfg_screen);
     lv_obj_set_style_pad_all(s_ipcfg_screen, 0, 0);
 
     s_ipcfg_title = lv_label_create(s_ipcfg_screen);
-    lv_obj_set_style_text_color(s_ipcfg_title, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(s_ipcfg_title, &lv_font_montserrat_16, 0);
     lv_obj_set_pos(s_ipcfg_title, 20, 14);
 
     lv_obj_t *mode_cap = lv_label_create(s_ipcfg_screen);
     lv_label_set_text(mode_cap, "Addressing");
-    lv_obj_set_style_text_color(mode_cap, lv_color_hex(0x88AACC), 0);
+    ui_theme_style_label_dim(mode_cap);
     lv_obj_set_style_text_font(mode_cap, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(mode_cap, 20, 48);
 
@@ -1401,8 +1471,8 @@ static void ipcfg_create(void)
 
         lv_obj_t *cap = lv_label_create(s_ipcfg_screen);
         lv_label_set_text(cap, caps[i]);
-        lv_obj_set_style_text_color(cap, lv_color_hex(0x88AACC), 0);
-        lv_obj_set_style_text_font(cap, &lv_font_montserrat_14, 0);
+        ui_theme_style_label_dim(cap);
+    lv_obj_set_style_text_font(cap, &lv_font_montserrat_14, 0);
         lv_obj_set_pos(cap, 20, y);
 
         s_ipcfg_ta[i] = lv_textarea_create(s_ipcfg_screen);
@@ -1416,7 +1486,7 @@ static void ipcfg_create(void)
     s_ipcfg_status = lv_label_create(s_ipcfg_screen);
     lv_label_set_long_mode(s_ipcfg_status, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(s_ipcfg_status, 620);
-    lv_obj_set_style_text_color(s_ipcfg_status, lv_color_hex(0x88AACC), 0);
+    ui_theme_style_label_dim(s_ipcfg_status);
     lv_obj_set_style_text_font(s_ipcfg_status, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(s_ipcfg_status, 20, 360);
 
@@ -1428,13 +1498,8 @@ static void ipcfg_create(void)
     lv_label_set_text(l_save, LV_SYMBOL_OK "  Check & Save");
     lv_obj_center(l_save);
 
-    lv_obj_t *b_cancel = lv_button_create(s_ipcfg_screen);
-    lv_obj_set_size(b_cancel, 300, 48);
-    lv_obj_set_pos(b_cancel, 690, 132);
-    lv_obj_add_event_cb(b_cancel, ipcfg_cancel_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *l_cancel = lv_label_create(b_cancel);
-    lv_label_set_text(l_cancel, LV_SYMBOL_LEFT "  Cancel");
-    lv_obj_center(l_cancel);
+    ui_nav_home_create(s_ipcfg_screen, wifi_home_cb);
+    ui_nav_back_create(s_ipcfg_screen, ipcfg_cancel_cb);
 
     s_ipcfg_kb = lv_keyboard_create(s_ipcfg_screen);
     lv_keyboard_set_mode(s_ipcfg_kb, LV_KEYBOARD_MODE_NUMBER);
@@ -1498,6 +1563,40 @@ void screen_wifi_show(void)
     char status[96];
     net_mgr_get_status(status, sizeof(status));
     lv_label_set_text(s_status, status);
+
+    if (s_lbl_entry) {
+        uint32_t ip = net_mgr_get_sta_ip();
+        if (net_mgr_is_sta_connected() && ip) {
+            lv_label_set_text_fmt(s_lbl_entry,
+                                  "Open in a browser:\nhttp://%s.local\nhttp://%u.%u.%u.%u",
+                                  net_mgr_get_mdns_host(),
+                                  (unsigned)((ip >> 24) & 0xFF), (unsigned)((ip >> 16) & 0xFF),
+                                  (unsigned)((ip >> 8) & 0xFF),  (unsigned)(ip & 0xFF));
+        } else {
+            /* The setup AP always serves the portal at a fixed address; mDNS
+             * is not running until the station joins. */
+            lv_label_set_text(s_lbl_entry, "Open in a browser:\nhttp://192.168.4.1");
+        }
+
+        /* The clock, because a wrong file date is otherwise unexplainable
+         * without a serial cable. There is no RTC: the time arrives from SNTP
+         * once the network is up, or from a browser opening a page. */
+        char clk[64];
+        if (net_mgr_time_is_valid()) {
+            time_t    now = time(NULL);
+            struct tm tm_local;
+            char      when[32];
+            localtime_r(&now, &tm_local);
+            strftime(when, sizeof(when), "%Y-%m-%d %H:%M", &tm_local);
+            net_time_source_t src = net_mgr_get_time_source();
+            snprintf(clk, sizeof(clk), "\nClock: %s (%s)", when,
+                     src == NET_TIME_SNTP ? "NTP" : "browser");
+        } else {
+            strlcpy(clk, "\nClock: not set - file dates unknown", sizeof(clk));
+        }
+        /* Appended rather than replacing, so the URL stays visible. */
+        lv_label_ins_text(s_lbl_entry, LV_LABEL_POS_LAST, clk);
+    }
 
     /* Pause the auto-join loop so the STA is idle and scannable (otherwise
      * a scan started mid-connect fails with ESP_ERR_WIFI_STATE). */

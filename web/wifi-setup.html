@@ -5,25 +5,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="/style.css">
+    <script src="/app.js"></script>
     <script>
-        function applyTheme(dark) {
-            document.body.classList.toggle("dark-mode", dark);
-            document.documentElement.style.colorScheme = dark ? "dark" : "light";
-            var b = document.getElementById("themeToggle");
-            if (b) b.textContent = dark ? "☀️ Light Mode" : "🌙 Dark Mode";
-        }
-        function toggleTheme() {
-            var dark = !document.body.classList.contains("dark-mode");
-            try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch (e) {}
-            applyTheme(dark);
-        }
-        (function () {
-            var saved = null;
-            try { saved = localStorage.getItem("theme"); } catch (e) {}
-            var dark = saved ? (saved === "dark")
-                : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
-            document.addEventListener("DOMContentLoaded", function () { applyTheme(dark); });
-        })();
 
         const statusElId = "wifiStatusMsg";
         function setStatus(message, isError = false) {
@@ -144,13 +127,137 @@
             // Kick off a fresh scan on load (not just read stale results),
             // otherwise the list stays empty until the user hits Rescan.
             rescanWiFi();
+            loadNetworks();
+            document.getElementById("ipMode").addEventListener("change", updateIpMode);
+            document.getElementById("ipSsid").addEventListener("change", fillFromSaved);
         });
+
+        // ── per-network IP configuration ──────────────────────────
+        // Addressing is stored per saved network, so a fixed address at one
+        // site and DHCP everywhere else both work. Saved passwords are never
+        // sent here — this portal is plain HTTP with no authentication.
+        var savedNets = [];
+
+        function setIpStatus(message, isError) {
+            var el = document.getElementById("ipStatusMsg");
+            el.textContent = message || "";
+            el.style.color = isError ? "#ff4b4b" : "";
+        }
+
+        function updateIpMode() {
+            var isStatic = document.getElementById("ipMode").value === "static";
+            document.getElementById("staticFields").style.display = isStatic ? "" : "none";
+        }
+
+        function fillFromSaved() {
+            var ssid = document.getElementById("ipSsid").value;
+            var n = savedNets.filter(function (x) { return x.ssid === ssid; })[0];
+            if (!n) return;
+            document.getElementById("ipMode").value = n["static"] ? "static" : "dhcp";
+            document.getElementById("ipAddr").value = n.ip || "";
+            document.getElementById("ipMask").value = n.netmask || "";
+            document.getElementById("ipGw").value   = n.gateway || "";
+            document.getElementById("ipDns").value  = n.dns || "";
+            updateIpMode();
+        }
+
+        function loadNetworks() {
+            fetch("/api/network")
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    savedNets = d.saved || [];
+                    if (d.mode) document.getElementById("netMode").value = d.mode;
+                    var sel = document.getElementById("ipSsid");
+                    sel.innerHTML = "";
+                    if (!savedNets.length) {
+                        sel.innerHTML = '<option value="">-- no saved networks --</option>';
+                        return;
+                    }
+                    savedNets.forEach(function (n) {
+                        var o = document.createElement("option");
+                        o.value = n.ssid;
+                        o.textContent = n.ssid + (n["static"] ? " (static)" : " (DHCP)");
+                        sel.appendChild(o);
+                    });
+                    // Default to the network in use, so the form opens on the
+                    // one the user most likely means.
+                    if (d.connected && d.ssid) sel.value = d.ssid;
+                    fillFromSaved();
+                    // Pre-fill blank static fields from the live lease: it is
+                    // already in the right subnet, which is most of the work.
+                    if (d.connected && !document.getElementById("ipAddr").value) {
+                        document.getElementById("ipAddr").value = d.ip || "";
+                        document.getElementById("ipMask").value = d.netmask || "";
+                        document.getElementById("ipGw").value   = d.gateway || "";
+                    }
+                })
+                .catch(function () { setIpStatus("Could not read the network configuration.", true); });
+        }
+
+        // ── network mode ──────────────────────────────────────────
+        function saveMode() {
+            var mode = document.getElementById("netMode").value;
+            var msg = mode === "ap"
+                ? "Switch to access-point mode?\n\nThe analyzer will stop joining your network and become its own Wi-Fi access point. You will need to join that network to reach it again — its name and password are shown on the analyzer's Wi-Fi screen."
+                : "Switch back to automatic mode?\n\nThe analyzer will rejoin a saved network on restart.";
+            if (!confirm(msg)) { loadNetworks(); return; }
+
+            setIpStatus("Saving mode...");
+            fetch("/api/network/mode", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ mode: mode })
+            })
+                .then(function (r) { return r.text().then(function (t) {
+                    if (!r.ok) throw new Error(t || ("HTTP " + r.status));
+                    return t;
+                }); })
+                .then(function (t) { setIpStatus(t); })
+                .catch(function (e) { setIpStatus(e.message, true); });
+        }
+
+        function saveIpConfig() {
+            var ssid = document.getElementById("ipSsid").value;
+            if (!ssid) { setIpStatus("No saved network selected.", true); return; }
+
+            var isStatic = document.getElementById("ipMode").value === "static";
+            var body = { ssid: ssid, "static": isStatic };
+            if (isStatic) {
+                body.ip      = document.getElementById("ipAddr").value.trim();
+                body.netmask = document.getElementById("ipMask").value.trim();
+                body.gateway = document.getElementById("ipGw").value.trim();
+                body.dns     = document.getElementById("ipDns").value.trim();
+            }
+
+            setIpStatus(isStatic ? "Checking whether that address is already in use..." : "Saving...");
+            fetch("/api/network/ip", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body)
+            })
+                .then(function (r) {
+                    return r.text().then(function (t) {
+                        if (r.status === 409) throw new Error(t || "That address is already in use");
+                        if (!r.ok) throw new Error(t || ("HTTP " + r.status));
+                        return t;
+                    });
+                })
+                .then(function (t) {
+                    setIpStatus(t);
+                    // The device reboots ~1.2 s after replying, and on a static
+                    // change it may come back on a different address — so do not
+                    // auto-reload, just say what happened.
+                })
+                .catch(function (e) { setIpStatus(e.message, true); });
+        }
+
     </script>
 </head>
 <body>
     <button class="button theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark / light mode">🌙 Dark Mode</button>
     <div class="wifi-setup-container">
-        <h1>🎵 SpectraLab-P4 Wi-Fi Setup</h1>
+        <h1>📶 Network Setup</h1>
+        <nav class="sl-nav" id="slNav"></nav>
         <p>Connect the analyzer to your local WiFi network</p>
         
         <label><strong>Select Network:</strong></label>
@@ -167,12 +274,56 @@
         <button class="button btn-save" title="Save WiFi credentials and reboot into STA mode." onclick="connectWiFi()">💾 Save & Connect</button>
         <button class="button btn-info" title="Refresh the list of available WiFi networks." onclick="rescanWiFi()">🔄 Rescan WiFi</button>
         <button class="button btn-test" title="Reboot the analyzer. Keeps saved WiFi and settings; can help when a rejoin is stuck." onclick="restartDevice()" style="margin-top:10px;">🔁 Restart Device</button>
-        <a class="button btn-nav" href="/" title="Return to the home page." style="display:block; margin-top:10px;">🏠 Home</a>
 
         <div class="flash-stats" id="wifiStatusMsg" style="margin-top: 12px;"></div>
 
+        <hr style="margin: 24px 0;">
+
+        <h2>📡 Network Mode</h2>
+        <p>Normally the analyzer joins one of your saved networks. In access-point mode it becomes its own Wi-Fi network instead, so it can be used where there is none — the whole web interface still works.</p>
+        <select id="netMode">
+            <option value="auto">Join a saved network (normal)</option>
+            <option value="ap">Always be an access point</option>
+        </select>
+        <button class="button btn-test" onclick="saveMode()" title="Save the network mode and restart">📡 Apply Mode &amp; Restart</button>
+
+        <hr style="margin: 24px 0;">
+
+        <h2>🔧 IP Configuration</h2>
+        <p>Addressing is stored per network, so the analyzer can hold a fixed address at one site and use DHCP everywhere else.</p>
+
+        <label><strong>Saved Network:</strong></label>
+        <select id="ipSsid">
+            <option value="">-- loading --</option>
+        </select>
+
+        <label><strong>Addressing:</strong></label>
+        <select id="ipMode">
+            <option value="dhcp">Automatic (DHCP)</option>
+            <option value="static">Manual (Static IP)</option>
+        </select>
+
+        <div id="staticFields" style="display:none;">
+            <label><strong>IP Address:</strong></label>
+            <input type="text" id="ipAddr" placeholder="192.168.1.50" autocomplete="off" spellcheck="false">
+
+            <label><strong>Subnet Mask:</strong></label>
+            <input type="text" id="ipMask" placeholder="255.255.255.0" autocomplete="off" spellcheck="false">
+
+            <label><strong>Gateway:</strong></label>
+            <input type="text" id="ipGw" placeholder="192.168.1.1" autocomplete="off" spellcheck="false">
+
+            <label><strong>DNS Server (optional):</strong></label>
+            <input type="text" id="ipDns" placeholder="leave blank to use the gateway" autocomplete="off" spellcheck="false">
+        </div>
+
+        <button class="button btn-save" title="Check the address is free, save it for this network, and restart to apply." onclick="saveIpConfig()">💾 Check &amp; Save IP Settings</button>
+
+        <div class="flash-stats" id="ipStatusMsg" style="margin-top: 12px;"></div>
+        <p class="disclaimer">A static address is checked with an ARP probe before saving. A device that is powered off still owns its address but will not answer, so a successful check is not proof the address is free.</p>
+
         <footer>
-            <p class="disclaimer">SpectraLab-P4 — made by JFG3rd</p>
+            <p class="disclaimer"><span data-board>SpectraLab-P4</span> — made by JFG3rd</p>
             <p class="disclaimer">
                 <a href="https://github.com/JFG3rd/SpectraLab-P4" target="_blank" rel="noopener">GitHub</a>
                 &middot; Licensed under Apache&nbsp;2.0

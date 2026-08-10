@@ -43,6 +43,8 @@ typedef enum {
     AGC_SPEED_COUNT,
 } settings_agc_speed_t;
 
+#define SETTINGS_NAME_MAX 32   /* max preset name length incl. NUL */
+
 /* Complete application settings — everything that the user can adjust at
  * runtime and that should survive a power cycle.
  *
@@ -68,10 +70,51 @@ typedef struct {
     bool           agc_enabled;         /* automatic gain control (software AGC)       */
     int            agc_target_dbfs;     /* AGC target display level: -6/-9/-12/-18/-24 */
     int            agc_speed;           /* settings_agc_speed_t: slow/medium/fast      */
+    /* Name of the preset this configuration was last loaded from or saved to,
+     * "" for none. A LABEL ONLY: live edits always auto-save to the working
+     * configuration (settings.json + NVS), never back to the named file. A
+     * profile changes only when the user explicitly saves it, so a preset stays
+     * the snapshot it was taken as. */
+    char           active_profile[SETTINGS_NAME_MAX];
+    /* POSIX TZ string, e.g. "CET-1CEST,M3.5.0,M10.5.0/3". FAT stores LOCAL
+     * time, so this decides what timestamp a file is written with, not merely
+     * how it is displayed. "" means UTC. */
+    char           timezone[40];
+    /* Boot splash duration in seconds; 0 skips the splash entirely. */
+    int            splash_seconds;
 } settings_t;
 
+/* Everything this project writes lives under one root, so the web file
+ * browser has exactly one directory to be confined to. */
+#define SETTINGS_ROOT_DIR "/sdcard/spectrum"
 /* Directory for microphone calibration files on the SD card */
-#define SETTINGS_CAL_DIR "/sdcard/spectrum/cal"
+#define SETTINGS_CAL_DIR  SETTINGS_ROOT_DIR "/cal"
+/* Screen captures (screenshot.c) */
+#define SETTINGS_SHOT_DIR SETTINGS_ROOT_DIR "/screenshots"
+
+/* Longest absolute path this project builds: root + a subdirectory + a name. */
+#define SETTINGS_PATH_MAX 96
+
+/* ── timezones ────────────────────────────────────────────────────
+ * One table, shared by the on-device dropdown and the web selector, so the
+ * two cannot offer different lists. Values are POSIX TZ strings with full
+ * daylight-saving rules, which is why they look cryptic: "CET-1CEST,M3.5.0,
+ * M10.5.0/3" means CET, one hour east, switching on the last Sunday of March
+ * and October. */
+typedef struct {
+    const char *label;   /* shown to the user */
+    const char *tz;      /* POSIX TZ string   */
+} settings_tz_t;
+
+extern const settings_tz_t SETTINGS_TZ_TABLE[];
+extern const int           SETTINGS_TZ_COUNT;
+
+/* Enough for every label joined by newlines (LVGL dropdown options). */
+#define SETTINGS_TZ_MAX_OPTS_LEN 320
+
+/* Central European, matching where this board is used. Changeable at runtime
+ * on the device and from the browser. */
+#define SETTINGS_TZ_DEFAULT "CET-1CEST,M3.5.0,M10.5.0/3"
 
 /**
  * @brief Initialise the settings manager and mount the SD card if present.
@@ -119,9 +162,9 @@ void settings_mgr_sanitize(settings_t *s);
 
 /* ── Named presets on SD card (/sdcard/spectrum/<name>.json) ──────
  * Separate from the auto-save flow: settings_mgr_save()/load() still use
- * the default settings.json + NVS. Named files are explicit user presets. */
-
-#define SETTINGS_NAME_MAX 32   /* max preset name length incl. NUL */
+ * the default settings.json + NVS. Named files are explicit user presets:
+ * a preset is only ever written by an explicit save, so ordinary tweaking
+ * cannot silently rewrite one. See settings_t.active_profile. */
 
 /** @brief Save settings as a named preset. Name is sanitized (no path chars). */
 esp_err_t settings_mgr_save_named(const settings_t *cfg, const char *name);
@@ -152,6 +195,62 @@ int settings_mgr_list_named(char names[][SETTINGS_NAME_MAX], int max_count);
  *        SETTINGS_CAL_DIR. Returns count filled, 0 if none/no SD.
  */
 int settings_mgr_list_cal_files(char names[][SETTINGS_NAME_MAX], int max_count);
+
+/* ── generic browsing, for the web file browser ────────────────────
+ *
+ * The browser is confined to SETTINGS_ROOT_DIR and its two subdirectories.
+ * Naming a directory by enum rather than by string is the point: a caller
+ * cannot express a path outside the tree, so there is no traversal to
+ * validate away later. Filenames are always plain basenames.
+ */
+typedef enum {
+    SETTINGS_DIR_ROOT = 0,   /* settings.json, <preset>.json, <preset>.nfbin */
+    SETTINGS_DIR_CAL,        /* microphone calibration files                 */
+    SETTINGS_DIR_SHOTS,      /* screen captures                              */
+    SETTINGS_DIR_COUNT,
+} settings_dir_t;
+
+typedef struct {
+    char     name[SETTINGS_NAME_MAX];
+    long     size;                  /* bytes, -1 if stat() failed              */
+    int64_t  mtime;                 /* Unix seconds, 0 if the FS has no usable
+                                     * timestamp — this board has no RTC, so a
+                                     * file written before the clock is set
+                                     * carries whatever FAT recorded          */
+} settings_file_t;
+
+/**
+ * @brief List regular files in one of the managed directories, newest-first
+ *        ordering NOT guaranteed (readdir order).
+ * @return count filled, 0 if empty/no SD, -1 on bad arguments.
+ */
+int settings_mgr_list_dir(settings_dir_t dir, settings_file_t *out, int max_count);
+
+/**
+ * @brief Build an absolute path for `name` inside `dir`, rejecting anything
+ *        that is not a plain filename.
+ *
+ * Rejects an empty name, any '/' or '\\', any "..", a leading '.', and names
+ * that do not fit. This is the single gate every file-serving path goes
+ * through, so traversal cannot be reintroduced by a careless caller.
+ *
+ * @return ESP_OK, or ESP_ERR_INVALID_ARG if the name is not acceptable.
+ */
+esp_err_t settings_mgr_resolve_path(settings_dir_t dir, const char *name,
+                                    char *out, size_t out_len);
+
+/**
+ * @brief Delete a screen capture by filename.
+ *
+ * Screenshots only, and deliberately so: presets, calibration files and
+ * settings.json represent work that cannot be regenerated, whereas a capture
+ * can simply be retaken. Enforces both the directory and a ".png" extension,
+ * so a hand-crafted request cannot reach anything else.
+ *
+ * @return ESP_OK, ESP_ERR_INVALID_ARG for a bad name, ESP_ERR_NOT_FOUND if
+ *         absent or no SD card.
+ */
+esp_err_t settings_mgr_delete_screenshot(const char *name);
 
 /**
  * @brief Re-attempt SD card mount (e.g. after inserting a card post-boot).

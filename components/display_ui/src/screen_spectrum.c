@@ -29,8 +29,12 @@
 #include "lvgl.h"
 #include "src/indev/lv_indev_private.h"
 #include "dsp_engine.h"
+#include "net_mgr.h"
 #include "screen_spectrum.h"
 #include "screen_settings.h"
+#include "ui_widgets.h"
+#include "ui_theme.h"
+#include "display_ui.h"
 
 static const char *TAG = "scr_spectrum";
 
@@ -51,6 +55,12 @@ static const char *TAG = "scr_spectrum";
 #define FREQ_ZOOM_MAX 20000.0f
 #define DB_ZOOM_MAX        0.0f
 
+/* Status row 2 free band: the DSP info line ends near x310 and the USB-mic
+ * indicator's text starts near x600. The SSID lives between them. */
+#define STATUS_WIFI_X    320
+#define STATUS_WIFI_W    270
+#define STATUS_WIFI_MS  1000   /* SSID poll period */
+
 /* ── oscilloscope view ────────────────────────────────────────────
  * WAVE_N: waveform ring buffer length (PSRAM, alloc'd in create()).
  * At 48 kHz the buffer holds ~341 ms; the visible window is
@@ -61,28 +71,15 @@ static const char *TAG = "scr_spectrum";
 #define SCOPE_GAIN_MIN   0.25f
 #define SCOPE_GAIN_MAX 512.0f
 
-/* ── colour palettes ──────────────────────────────────────────── */
-typedef struct {
-    uint32_t bg, grid, status_bar, text, bar_lo, bar_mid, bar_hi, max_hold;
-} color_palette_t;
-
-static const color_palette_t s_palettes[] = {
-    /* DARK (default) */
-    { 0x080C18, 0x1E2D3D, 0x111928, 0xBBCCDD, 0x00CC55, 0xFFAA00, 0xFF3333, 0xFFFFFF },
-    /* CLASSIC — green phosphor */
-    { 0x000000, 0x1A2A1A, 0x0A0F0A, 0x44FF44, 0x00BB00, 0x00EE44, 0x00FF00, 0xFFFFFF },
-    /* HIGH CONTRAST — light background: max-hold must be dark, not white */
-    { 0xE8EEF4, 0xA0B8CC, 0xC8D8E8, 0x102030, 0x0066CC, 0xDD6600, 0xCC0000, 0x000000 },
-    /* AMBER — warm amber phosphor CRT */
-    { 0x100800, 0x2A1800, 0x180C00, 0xFFCC44, 0xCC6600, 0xFF9900, 0xFFCC00, 0xFFFFFF },
-    /* BLUE NEON — electric blue on near-black */
-    { 0x00080F, 0x001830, 0x000C1E, 0x66CCFF, 0x0055BB, 0x0099EE, 0x00CCFF, 0xFFFFFF },
-    /* MATRIX — deep green on black */
-    { 0x000800, 0x001800, 0x000C00, 0x33FF33, 0x006600, 0x009900, 0x00FF00, 0xFFFFFF },
-    /* RED NEON — hot red on near-black */
-    { 0x0F0004, 0x30000A, 0x1E0006, 0xFF6688, 0x990022, 0xDD1133, 0xFF3355, 0xFFFFFF },
-};
-static const color_palette_t *s_pal = &s_palettes[0];  /* active palette */
+/* ── colour palette ───────────────────────────────────────────────
+ * The table now lives in ui_theme.c, shared with every other screen — keeping
+ * it private here is precisely why the spectrum view used to be the only
+ * screen that followed the user's colour choice.
+ *
+ * Deliberately a macro rather than a cached pointer: the draw code reads it on
+ * every frame, and this way it cannot go stale if the theme is switched through
+ * a path that does not pass through screen_spectrum_set_color_scheme(). */
+#define s_pal (ui_theme_palette())
 
 /* ── shared data ──────────────────────────────────────────────── */
 #define MAX_BINS (16384 / 2)
@@ -138,6 +135,8 @@ static lv_obj_t *s_lbl_dsp_info;
 static lv_obj_t *s_lbl_mode;            /* display-mode title, top-right under the gear */
 static lv_obj_t *s_lbl_ambient_status;
 static lv_obj_t *s_lbl_source_status;   /* "USB MIC" when the UAC1 mic is live */
+static lv_obj_t *s_lbl_wifi;            /* active SSID / AP name, row 2 centre  */
+static lv_obj_t *s_lbl_title;           /* "SPECTRALAB-P4", row 1 left          */
 
 /* Display-mode names, indexed by display_mode_t — matches the settings
  * dropdown labels (screen_settings.c disp_mode_opts). */
@@ -157,6 +156,15 @@ static lv_obj_t *s_lbl_vu_peak;        /* VU mode: big peak readout */
 static lv_obj_t *s_lbl_scope_hud;      /* SCOPE mode: pinch axis + window/gain readout */
 
 static lv_obj_t *s_freq_ticks[FREQ_TICK_COUNT];
+
+/* ── peak readout cursor ──────────────────────────────────────────
+ * Long-press a peak to freeze a readout of its exact frequency, level,
+ * nearest 1/3-octave band and nearest musical note. Long press rather than
+ * tap so an ordinary touch — or a pinch that happens to land on a bar —
+ * never plants a cursor by accident. */
+static bool  s_cursor_active;
+static int   s_cursor_bin;      /* FFT bin index */
+static float s_cursor_x_frac;   /* where it sits horizontally, 0..1 of the view */
 
 static float clampf_local(float v, float lo, float hi)
 {
@@ -262,6 +270,244 @@ static void update_mode_label(void)
     int m = (int)s_mode;
     if (m < 0 || m >= (int)(sizeof(g_mode_names) / sizeof(g_mode_names[0]))) m = 0;
     lv_label_set_text(s_lbl_mode, g_mode_names[m]);
+}
+
+/* Repaint every themed label in the status bar.
+ *
+ * Called from screen_spectrum_create() and from
+ * screen_spectrum_set_color_scheme(); it is the only place status-line text
+ * colours are set. Before this existed the accents were hardcoded at create
+ * time, so switching to HIGH CONTRAST left bright-on-light text, and
+ * s_lbl_mode kept whichever theme's colour happened to be active when the
+ * screen was built. */
+static void apply_status_colors(void)
+{
+    if (s_lbl_title)          lv_obj_set_style_text_color(s_lbl_title,          lv_color_hex(s_pal->text),  0);
+    if (s_lbl_mode)           lv_obj_set_style_text_color(s_lbl_mode,           lv_color_hex(s_pal->text),  0);
+    if (s_lbl_spl)            lv_obj_set_style_text_color(s_lbl_spl,            lv_color_hex(s_pal->spl),   0);
+    if (s_lbl_peak)           lv_obj_set_style_text_color(s_lbl_peak,           lv_color_hex(s_pal->peak),  0);
+    if (s_lbl_dsp_info)       lv_obj_set_style_text_color(s_lbl_dsp_info,       lv_color_hex(s_pal->info),  0);
+    if (s_lbl_ambient_status) lv_obj_set_style_text_color(s_lbl_ambient_status, lv_color_hex(s_pal->alert), 0);
+    if (s_lbl_source_status)  lv_obj_set_style_text_color(s_lbl_source_status,  lv_color_hex(s_pal->alert), 0);
+    if (s_lbl_wifi)           lv_obj_set_style_text_color(s_lbl_wifi,           lv_color_hex(s_pal->net),   0);
+
+    /* The status-row buttons were the only part of this bar that ignored the
+     * palette — they inherited LVGL's stock theme and stayed the same grey in
+     * all seven schemes. */
+    ui_status_btn_apply_theme(s_pal->grid, s_pal->text, s_pal->status_bar);
+}
+
+/* Refresh the SSID label. Runs on its own lv_timer rather than out of
+ * screen_spectrum_update(), which early-returns while the display is frozen
+ * or when no DSP frame is pending — the network state changes regardless. */
+static void wifi_label_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_lbl_wifi == NULL) return;
+
+    char txt[NET_SSID_MAX + 16];
+    char ssid[NET_SSID_MAX];
+
+    switch (net_mgr_get_link_state(ssid, sizeof(ssid))) {
+    case NET_LINK_STA_UP:   snprintf(txt, sizeof(txt), LV_SYMBOL_WIFI " %s", ssid);        break;
+    case NET_LINK_JOINING:  snprintf(txt, sizeof(txt), LV_SYMBOL_WIFI " joining %s...", ssid); break;
+    case NET_LINK_AP_UP:    snprintf(txt, sizeof(txt), LV_SYMBOL_WIFI " AP %s", ssid);     break;
+    default:                txt[0] = '\0';                                                 break;
+    }
+
+    if (strcmp(txt, lv_label_get_text(s_lbl_wifi)) != 0)
+        lv_label_set_text(s_lbl_wifi, txt);
+}
+
+/* ── peak cursor helpers ──────────────────────────────────────── */
+
+/* Nearest ISO 266 / IEC 61260 third-octave centre frequency. */
+static float nearest_third_octave(float hz)
+{
+    static const float centres[] = {
+        20, 25, 31.5f, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500,
+        630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000,
+        10000, 12500, 16000, 20000,
+    };
+    float best = centres[0], bestd = 1e9f;
+    for (size_t i = 0; i < sizeof(centres) / sizeof(centres[0]); i++) {
+        /* Compare in log space — band spacing is proportional, not linear. */
+        float d = fabsf(logf(hz / centres[i]));
+        if (d < bestd) { bestd = d; best = centres[i]; }
+    }
+    return best;
+}
+
+/* Nearest equal-tempered note name, A4 = 440 Hz, plus the cents error. */
+static void nearest_note(float hz, char *out, size_t len)
+{
+    static const char *names[12] = { "C","C#","D","D#","E","F","F#","G","G#","A","A#","B" };
+    if (hz <= 0.0f) { strlcpy(out, "-", len); return; }
+
+    float  semis = 12.0f * log2f(hz / 440.0f);      /* relative to A4 */
+    int    n     = (int)lroundf(semis);
+    float  cents = (semis - (float)n) * 100.0f;
+
+    /* A4 is MIDI 69; octave numbering rolls over at C. */
+    int midi   = n + 69;
+    int idx    = ((midi % 12) + 12) % 12;
+    int octave = midi / 12 - 1;
+
+    /* "ct" spelled out, not the ¢ sign: Montserrat has no glyph for it and it
+     * would render as a tofu box (CLAUDE.md gotcha 8). */
+    snprintf(out, len, "%s%d %+.0fct", names[idx], octave, (double)cents);
+}
+
+/* Map a horizontal fraction of the view to an FFT bin, then snap to the
+ * strongest bin nearby so a slightly-off press still lands on the peak. */
+static int bin_at_frac(float frac)
+{
+    if (s_bin_count == 0 || s_sample_rate == 0) return -1;
+
+    float bin_hz = (float)s_sample_rate / 2.0f / (float)s_bin_count;
+    if (bin_hz <= 0.0f) return -1;
+
+    int centre = (int)lroundf(x_to_freq_frac(frac) / bin_hz);
+    if (centre < 1) centre = 1;
+    if (centre >= (int)s_bin_count) centre = (int)s_bin_count - 1;
+
+    /* Search window scaled to the zoom: at full span one pixel covers many
+     * bins, zoomed in it covers a fraction of one, so a fixed bin count would
+     * be far too wide when zoomed and too narrow when not. */
+    float span_per_px = (x_to_freq_frac(1.0f) - x_to_freq_frac(0.0f)) / (float)SCREEN_W;
+    int   window      = (int)(span_per_px * 12.0f / bin_hz);
+    if (window < 2)  window = 2;
+    if (window > 64) window = 64;
+
+    int lo = centre - window, hi = centre + window;
+    if (lo < 1) lo = 1;
+    if (hi >= (int)s_bin_count) hi = (int)s_bin_count - 1;
+
+    int   best = centre;
+    float bestv = -1e9f;
+    for (int i = lo; i <= hi; i++) {
+        if (s_mag_db[i] > bestv) { bestv = s_mag_db[i]; best = i; }
+    }
+    return best;
+}
+
+/* Where a bin sits horizontally in the current (possibly zoomed) view.
+ * Returns <0 or >1 when the bin has been zoomed off-screen. */
+static float bin_to_frac(int bin)
+{
+    if (s_sample_rate == 0 || s_bin_count == 0) return -1.0f;
+    if (s_freq_view_min <= 0.0f || s_freq_view_max <= s_freq_view_min) return -1.0f;
+
+    float hz = (float)bin * ((float)s_sample_rate / 2.0f / (float)s_bin_count);
+    if (hz <= 0.0f) return -1.0f;
+    return logf(hz / s_freq_view_min) / logf(s_freq_view_max / s_freq_view_min);
+}
+
+static void spectrum_long_press_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_LONG_PRESSED) return;
+
+    /* A held pinch can also cross LVGL's long-press threshold. */
+    if (s_zoom_active) return;
+
+    /* FFT modes only — Scope plots time and VU has no frequency axis. */
+    if (s_mode == DISPLAY_MODE_SCOPE || s_mode == DISPLAY_MODE_VU) return;
+    if (!s_data_valid) return;
+
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return;
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+
+    lv_area_t a;
+    lv_obj_get_coords(lv_event_get_target(e), &a);
+    int32_t w = lv_area_get_width(&a);
+    if (w <= 0) return;
+
+    float frac = (float)(p.x - a.x1) / (float)w;
+    if (frac < 0.0f || frac > 1.0f) return;
+
+    /* Long-pressing on or near an existing cursor clears it. */
+    if (s_cursor_active && fabsf(frac - s_cursor_x_frac) * (float)w < 24.0f) {
+        s_cursor_active = false;
+        lv_obj_invalidate(s_spectrum_obj);
+        return;
+    }
+
+    if (xSemaphoreTake(s_data_mutex, pdMS_TO_TICKS(20)) != pdTRUE) return;
+    int bin = bin_at_frac(frac);
+    xSemaphoreGive(s_data_mutex);
+    if (bin < 0) return;
+
+    s_cursor_bin    = bin;
+    s_cursor_x_frac = frac;
+    s_cursor_active = true;
+    lv_obj_invalidate(s_spectrum_obj);
+}
+
+/* Vertical marker plus a readout box, drawn over the spectrum. */
+static void draw_peak_cursor(lv_layer_t *layer, const lv_area_t *oa,
+                             int32_t w, int32_t h)
+{
+    if (!s_cursor_active || s_bin_count == 0 || s_sample_rate == 0) return;
+    if (s_cursor_bin < 1 || s_cursor_bin >= (int)s_bin_count) return;
+
+    float frac = bin_to_frac(s_cursor_bin);
+    if (frac < 0.0f || frac > 1.0f) return;   /* zoomed out of view */
+    s_cursor_x_frac = frac;                   /* keep the clear-zone in step */
+
+    int32_t x = oa->x1 + (int32_t)(frac * (float)w);
+
+    lv_draw_line_dsc_t ldsc;
+    lv_draw_line_dsc_init(&ldsc);
+    ldsc.color = lv_color_hex(s_pal->peak);
+    ldsc.width = 1;
+    ldsc.p1.x = x; ldsc.p1.y = oa->y1;
+    ldsc.p2.x = x; ldsc.p2.y = oa->y1 + h;
+    lv_draw_line(layer, &ldsc);
+
+    float hz  = (float)s_cursor_bin * ((float)s_sample_rate / 2.0f / (float)s_bin_count);
+    float db  = s_mag_db[s_cursor_bin];
+    float iso = nearest_third_octave(hz);
+    char  note[16];
+    nearest_note(hz, note, sizeof(note));
+
+    char l1[40], l2[40];
+    if (hz >= 1000.0f) snprintf(l1, sizeof(l1), "%.2f kHz  %.1f dB", (double)(hz / 1000.0f), (double)db);
+    else               snprintf(l1, sizeof(l1), "%.1f Hz  %.1f dB",  (double)hz, (double)db);
+    if (iso >= 1000.0f) snprintf(l2, sizeof(l2), "band %.1fk  note %s", (double)(iso / 1000.0f), note);
+    else                snprintf(l2, sizeof(l2), "band %.0f Hz  note %s", (double)iso, note);
+
+    /* Flip the box to the other side of the line when it would run off the
+     * right edge, so a peak near 20 kHz is still readable. */
+    const int32_t bw = 190, bh = 40, gap = 6;
+    int32_t bx = (x + gap + bw <= oa->x2) ? x + gap : x - gap - bw;
+    int32_t by = oa->y1 + 8;
+
+    lv_area_t box = { bx, by, bx + bw, by + bh };
+    lv_draw_rect_dsc_t rdsc;
+    lv_draw_rect_dsc_init(&rdsc);
+    rdsc.bg_color   = lv_color_hex(s_pal->status_bar);
+    rdsc.bg_opa     = LV_OPA_90;
+    rdsc.border_color = lv_color_hex(s_pal->peak);
+    rdsc.border_width = 1;
+    rdsc.radius     = 4;
+    lv_draw_rect(layer, &rdsc, &box);
+
+    lv_draw_label_dsc_t tdsc;
+    lv_draw_label_dsc_init(&tdsc);
+    tdsc.color = lv_color_hex(s_pal->text);
+    tdsc.font  = &lv_font_montserrat_14;
+
+    lv_area_t t1 = { bx + 6, by + 3,  bx + bw - 4, by + 20 };
+    tdsc.text = l1;
+    lv_draw_label(layer, &tdsc, &t1);
+
+    lv_area_t t2 = { bx + 6, by + 21, bx + bw - 4, by + 38 };
+    tdsc.font  = &lv_font_montserrat_12;
+    tdsc.color = lv_color_hex(s_pal->info);
+    tdsc.text  = l2;
+    lv_draw_label(layer, &tdsc, &t2);
 }
 
 static void apply_zoom_axis(zoom_axis_t axis, float scale, lv_point_t center)
@@ -1163,6 +1409,7 @@ static void spectrum_draw_cb(lv_event_t *e)
         draw_grid_lines(layer, &oa, w, h);
         draw_db_legend(layer, &oa, h);
     }
+    if (band_mode) draw_peak_cursor(layer, &oa, w, h);
 }
 
 /* Vertical frequency gridlines for the waterfall, drawn live ON TOP of
@@ -1267,101 +1514,54 @@ esp_err_t screen_spectrum_create(void)
     /* Status bar row 1 (y≈7-33): title / SPL / peak on left+center,
      * four buttons (RST MX PK ⚙) top-right-aligned so they stay in the
      * upper half of the 70 px bar and never bleed into the DSP info row. */
-    lv_obj_t *title = lv_label_create(status);
-    lv_label_set_text(title, "SPECTRALAB-P4");
-    lv_obj_set_style_text_color(title, lv_color_hex(s_pal->text), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 4, 9);
+    s_lbl_title = lv_label_create(status);
+    /* Names the board it is actually running on — the P4X (rev-3 silicon) and
+     * the older P4 used to be indistinguishable once booted. */
+    lv_label_set_text(s_lbl_title, display_ui_board_name());
+    lv_obj_set_style_text_font(s_lbl_title, &lv_font_montserrat_16, 0);
+    lv_obj_align(s_lbl_title, LV_ALIGN_TOP_LEFT, 4, 9);
 
     s_lbl_spl = lv_label_create(status);
     lv_label_set_text(s_lbl_spl, "SPL: --- dB");
-    lv_obj_set_style_text_color(s_lbl_spl, lv_color_hex(0x00FF88), 0);
     lv_obj_set_style_text_font(s_lbl_spl, &lv_font_montserrat_16, 0);
     lv_obj_align(s_lbl_spl, LV_ALIGN_TOP_LEFT, 230, 9);
 
     s_lbl_peak = lv_label_create(status);
     lv_label_set_text(s_lbl_peak, "Peak: --- dBFS");
-    lv_obj_set_style_text_color(s_lbl_peak, lv_color_hex(0xFFAA00), 0);
     lv_obj_set_style_text_font(s_lbl_peak, &lv_font_montserrat_16, 0);
-    lv_obj_align(s_lbl_peak, LV_ALIGN_TOP_LEFT, 410, 9);
+    lv_obj_align(s_lbl_peak, LV_ALIGN_TOP_LEFT, 360, 9);
 
-    /* GRD — toggles grid + dB legend */
-    lv_obj_t *btn_grid = lv_button_create(status);
-    lv_obj_set_size(btn_grid, 56, 30);
-    lv_obj_align(btn_grid, LV_ALIGN_TOP_RIGHT, -312, 3);
-    lv_obj_add_event_cb(btn_grid, grid_btn_cb, LV_EVENT_CLICKED, NULL);
-    s_btn_grid_lbl = lv_label_create(btn_grid);
-    lv_label_set_text(s_btn_grid_lbl, s_grid_enabled ? "GRD " LV_SYMBOL_OK : "GRD");
-    lv_obj_set_style_text_font(s_btn_grid_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(s_btn_grid_lbl);
+    /* Status row — every button comes from ui_status_btn_create(), which owns
+     * size, slot geometry and colour. Slot 0 is rightmost; slot 1 is skipped
+     * because it belongs to the screenshot button, which lives on the LVGL top
+     * layer so it appears on every screen (built in display_ui.c with the same
+     * factory). Before this was shared, the two hand-rolled layouts drifted and
+     * the screenshot button ended up stacked on the settings gear.
+     *
+     *   slot 7      6      5      4      3      2      1      0
+     *       [AGC ][GRD ][ ||  ][RST ][ PK ][ MX ][shot][gear]
+     *
+     * Slot 7 puts AGC's left edge at x=528, which is why the Peak readout sits
+     * at 360 (it ends near 517). */
+    ui_status_btn_create(status, 0, true, LV_SYMBOL_SETTINGS, settings_btn_cb, NULL);
+    ui_status_btn_create(status, 2, true, "MX", max_hold_btn_cb,  &s_btn_mx_lbl);
+    ui_status_btn_create(status, 3, true, "PK", peak_hold_btn_cb, &s_btn_pk_lbl);
 
-    /* AGC — software auto-gain toggle (left of GRD) */
-    lv_obj_t *btn_agc = lv_button_create(status);
-    lv_obj_set_size(btn_agc, 56, 30);
-    lv_obj_align(btn_agc, LV_ALIGN_TOP_RIGHT, -374, 3);
-    lv_obj_add_event_cb(btn_agc, agc_btn_cb, LV_EVENT_CLICKED, NULL);
-    s_btn_agc_lbl = lv_label_create(btn_agc);
-    lv_label_set_text(s_btn_agc_lbl, s_agc_enabled ? "AGC " LV_SYMBOL_OK : "AGC");
-    lv_obj_set_style_text_font(s_btn_agc_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(s_btn_agc_lbl);
-
-    /* STOP/PLAY — freezes the display on the current frame */
-    lv_obj_t *btn_stop = lv_button_create(status);
-    lv_obj_set_size(btn_stop, 56, 30);
-    lv_obj_align(btn_stop, LV_ALIGN_TOP_RIGHT, -250, 3);
-    lv_obj_add_event_cb(btn_stop, stop_btn_cb, LV_EVENT_CLICKED, NULL);
-    s_btn_stop_lbl = lv_label_create(btn_stop);
-    lv_label_set_text(s_btn_stop_lbl, LV_SYMBOL_PAUSE);
-    lv_obj_set_style_text_font(s_btn_stop_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(s_btn_stop_lbl);
-
-    /* RST — resets MAX hold (disabled until MX is active).
-     * Layout from right: ⚙@-2  MX@-64  PK@-126  RST@-188  ⏸@-250  GRD@-312;
-     * all 56×30 at y=3. */
-    s_btn_rst = lv_button_create(status);
-    lv_obj_set_size(s_btn_rst, 56, 30);
-    lv_obj_align(s_btn_rst, LV_ALIGN_TOP_RIGHT, -188, 3);
-    lv_obj_add_event_cb(s_btn_rst, rst_btn_cb, LV_EVENT_CLICKED, NULL);
+    /* RST — resets MAX hold; disabled until MX is active. */
+    s_btn_rst = ui_status_btn_create(status, 4, true, "RST", rst_btn_cb, NULL);
     lv_obj_add_state(s_btn_rst, LV_STATE_DISABLED);
-    lv_obj_t *btn_rst_lbl = lv_label_create(s_btn_rst);
-    lv_label_set_text(btn_rst_lbl, "RST");
-    lv_obj_set_style_text_font(btn_rst_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(btn_rst_lbl);
 
-    /* PK — peak hold with configurable decay */
-    lv_obj_t *btn_pk = lv_button_create(status);
-    lv_obj_set_size(btn_pk, 56, 30);
-    lv_obj_align(btn_pk, LV_ALIGN_TOP_RIGHT, -126, 3);
-    lv_obj_add_event_cb(btn_pk, peak_hold_btn_cb, LV_EVENT_CLICKED, NULL);
-    s_btn_pk_lbl = lv_label_create(btn_pk);
-    lv_label_set_text(s_btn_pk_lbl, "PK");
-    lv_obj_set_style_text_font(s_btn_pk_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(s_btn_pk_lbl);
-
-    /* MX — max hold (only grows) */
-    lv_obj_t *btn_mx = lv_button_create(status);
-    lv_obj_set_size(btn_mx, 56, 30);
-    lv_obj_align(btn_mx, LV_ALIGN_TOP_RIGHT, -64, 3);
-    lv_obj_add_event_cb(btn_mx, max_hold_btn_cb, LV_EVENT_CLICKED, NULL);
-    s_btn_mx_lbl = lv_label_create(btn_mx);
-    lv_label_set_text(s_btn_mx_lbl, "MX");
-    lv_obj_set_style_text_font(s_btn_mx_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(s_btn_mx_lbl);
-
-    /* Settings gear */
-    lv_obj_t *btn_settings = lv_button_create(status);
-    lv_obj_set_size(btn_settings, 56, 30);
-    lv_obj_align(btn_settings, LV_ALIGN_TOP_RIGHT, -2, 3);
-    lv_obj_add_event_cb(btn_settings, settings_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *btn_settings_lbl = lv_label_create(btn_settings);
-    lv_label_set_text(btn_settings_lbl, LV_SYMBOL_SETTINGS);
-    lv_obj_set_style_text_font(btn_settings_lbl, &lv_font_montserrat_16, 0);
-    lv_obj_center(btn_settings_lbl);
+    ui_status_btn_create(status, 5, true, LV_SYMBOL_PAUSE, stop_btn_cb, &s_btn_stop_lbl);
+    ui_status_btn_create(status, 6, true,
+                         s_grid_enabled ? "GRD " LV_SYMBOL_OK : "GRD",
+                         grid_btn_cb, &s_btn_grid_lbl);
+    ui_status_btn_create(status, 7, true,
+                         s_agc_enabled ? "AGC " LV_SYMBOL_OK : "AGC",
+                         agc_btn_cb, &s_btn_agc_lbl);
 
     /* Display-mode title — second line of the status bar, right-aligned
      * under the gear (right edge tracks the gear's -2 inset) */
     s_lbl_mode = lv_label_create(status);
-    lv_obj_set_style_text_color(s_lbl_mode, lv_color_hex(s_pal->text), 0);
     lv_obj_set_style_text_font(s_lbl_mode, &lv_font_montserrat_14, 0);
     lv_obj_align(s_lbl_mode, LV_ALIGN_BOTTOM_RIGHT, -4, -2);
     update_mode_label();
@@ -1369,14 +1569,22 @@ esp_err_t screen_spectrum_create(void)
     /* DSP info row — second line of status bar showing active config */
     s_lbl_dsp_info = lv_label_create(status);
     lv_label_set_text(s_lbl_dsp_info, "FFT:4096 | Hann | Exp | 50% OVL | 6dB");
-    lv_obj_set_style_text_color(s_lbl_dsp_info, lv_color_hex(0x7799BB), 0);
     lv_obj_set_style_text_font(s_lbl_dsp_info, &lv_font_montserrat_12, 0);
     lv_obj_align(s_lbl_dsp_info, LV_ALIGN_BOTTOM_LEFT, 4, -2);
+
+    /* Wi-Fi SSID — row 2, in the gap between the DSP info line (ends ≈ x310)
+     * and the USB-mic indicator (starts ≈ x600). Width-capped with an
+     * ellipsis so a 32-char SSID cannot run into either neighbour. */
+    s_lbl_wifi = lv_label_create(status);
+    lv_label_set_text(s_lbl_wifi, "");
+    lv_obj_set_style_text_font(s_lbl_wifi, &lv_font_montserrat_12, 0);
+    lv_obj_set_width(s_lbl_wifi, STATUS_WIFI_W);
+    lv_label_set_long_mode(s_lbl_wifi, LV_LABEL_LONG_DOT);
+    lv_obj_align(s_lbl_wifi, LV_ALIGN_BOTTOM_LEFT, STATUS_WIFI_X, -2);
 
     /* Live ambient noise indicator — shown right-aligned in the DSP info row */
     s_lbl_ambient_status = lv_label_create(status);
     lv_label_set_text(s_lbl_ambient_status, "");  /* hidden until active */
-    lv_obj_set_style_text_color(s_lbl_ambient_status, lv_color_hex(0x00DDFF), 0);
     lv_obj_set_style_text_font(s_lbl_ambient_status, &lv_font_montserrat_12, 0);
     lv_obj_align(s_lbl_ambient_status, LV_ALIGN_BOTTOM_RIGHT, -200, -2);
 
@@ -1384,9 +1592,10 @@ esp_err_t screen_spectrum_create(void)
      * USB microphone takes over from the onboard I2S codec */
     s_lbl_source_status = lv_label_create(status);
     lv_label_set_text(s_lbl_source_status, "");
-    lv_obj_set_style_text_color(s_lbl_source_status, lv_color_hex(0xFFAA00), 0);
     lv_obj_set_style_text_font(s_lbl_source_status, &lv_font_montserrat_12, 0);
     lv_obj_align(s_lbl_source_status, LV_ALIGN_BOTTOM_RIGHT, -340, -2);
+
+    apply_status_colors();   /* single source of truth for every label colour */
 
     /* ── spectrum area (custom draw) ── */
     s_spectrum_obj = lv_obj_create(s_screen);
@@ -1401,6 +1610,7 @@ esp_err_t screen_spectrum_create(void)
     lv_obj_clear_flag(s_spectrum_obj, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_spectrum_obj, spectrum_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
     lv_obj_add_event_cb(s_spectrum_obj, spectrum_gesture_cb, LV_EVENT_GESTURE, NULL);
+    lv_obj_add_event_cb(s_spectrum_obj, spectrum_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
 
     /* VU mode big readouts (children of spectrum area, hidden by default).
      * The needle gauge pivot sits at ~72% height; the big SPL number goes
@@ -1438,6 +1648,9 @@ esp_err_t screen_spectrum_create(void)
     lv_obj_set_style_text_font(s_btn_wf_speed_lbl, &lv_font_montserrat_14, 0);
     lv_obj_center(s_btn_wf_speed_lbl);
     lv_obj_add_flag(s_btn_wf_speed, LV_OBJ_FLAG_HIDDEN);
+    /* Positions itself (it overlays the spectrum area, not the status row)
+     * but should still recolour with everything else. */
+    ui_status_btn_register(s_btn_wf_speed);
 
     /* ── info bar (frequency axis labels) ──
      * Each label is positioned individually (see update_axis_ticks(), which
@@ -1453,6 +1666,10 @@ esp_err_t screen_spectrum_create(void)
         s_freq_ticks[i] = lbl;
     }
     update_axis_ticks();
+
+    /* Own timer so the SSID keeps updating while the display is frozen. */
+    lv_timer_create(wifi_label_timer_cb, STATUS_WIFI_MS, NULL);
+    wifi_label_timer_cb(NULL);
 
     ESP_LOGI(TAG, "spectrum screen created");
     return ESP_OK;
@@ -1552,6 +1769,7 @@ void screen_spectrum_set_mode(int mode)
     s_mode = (display_mode_t)mode;
     reset_view_ranges();
     update_axis_ticks();
+    s_cursor_active = false;   /* the marked peak belongs to the old view */
 
     /* reset per-mode state so stale data doesn't flash */
     for (int i = 0; i < NUM_BARS; i++) {
@@ -1637,9 +1855,10 @@ void screen_spectrum_load(void)
 
 void screen_spectrum_set_color_scheme(color_scheme_t scheme)
 {
-    if ((unsigned)scheme >= (sizeof(s_palettes) / sizeof(s_palettes[0])))
-        scheme = COLOR_SCHEME_DARK;
-    s_pal = &s_palettes[scheme];
+    /* Re-points the shared palette and re-tints every widget on every screen
+     * that uses the shared styles; what follows is the spectrum screen's own
+     * share of the work — objects painted with explicit colours. */
+    ui_theme_apply(scheme);
 
     if (!s_screen) return;  /* called before screen_spectrum_create() */
 
@@ -1651,18 +1870,15 @@ void screen_spectrum_set_color_scheme(color_scheme_t scheme)
     lv_obj_t *status = lv_obj_get_child(s_screen, 0);
     if (status) lv_obj_set_style_bg_color(status, lv_color_hex(s_pal->status_bar), 0);
 
-    /* Title label (first child of status bar) */
-    if (status) {
-        lv_obj_t *title = lv_obj_get_child(status, 0);
-        if (title) lv_obj_set_style_text_color(title, lv_color_hex(s_pal->text), 0);
-    }
+    apply_status_colors();
 
-    /* Frequency axis labels — direct children of s_screen at index 2+
-     * (0 = status bar, 1 = spectrum_obj, 2..N = freq tick labels) */
-    uint32_t child_cnt = lv_obj_get_child_count(s_screen);
-    for (uint32_t ci = 2; ci < child_cnt; ci++) {
-        lv_obj_t *child = lv_obj_get_child(s_screen, ci);
-        if (child) lv_obj_set_style_text_color(child, lv_color_hex(s_pal->text), 0);
+    /* Frequency axis labels. Addressed through s_freq_ticks[] rather than by
+     * child index: the old "every child from index 2" walk silently claimed
+     * anything later added to the screen, and would have recoloured the toast
+     * overlay's text out from under it. */
+    for (size_t i = 0; i < FREQ_TICK_COUNT; i++) {
+        if (s_freq_ticks[i])
+            lv_obj_set_style_text_color(s_freq_ticks[i], lv_color_hex(s_pal->text), 0);
     }
 
     /* VU readouts + scope HUD follow the theme text color */

@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SD Card Files</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/style.css">
+    <style>
+        /* Wide content scrolls inside its own box so the page never does. */
+        .table-wrap { overflow-x: auto; margin-bottom: 18px; }
+        .file-table { width: 100%; border-collapse: collapse; font-size: 0.95em; }
+        .file-table th, .file-table td {
+            padding: 6px 8px; text-align: left; white-space: nowrap;
+            border-bottom: 1px solid rgba(128,128,128,0.35);
+        }
+        .file-table th { font-weight: 600; opacity: 0.75; }
+        .file-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        .file-table td.actions { text-align: right; white-space: nowrap; }
+        .file-table .row-btn {
+            display: inline-block; width: auto; margin: 0 0 0 6px;
+            padding: 3px 10px; font-size: 0.95em; line-height: 1.4;
+        }
+    </style>
+    <script src="/app.js"></script>
+    <script>
+
+        function setStatus(message, isError) {
+            var el = document.getElementById("filesStatusMsg");
+            el.textContent = message || "";
+            el.style.color = isError ? "#ff4b4b" : "";
+        }
+
+        function humanSize(n) {
+            if (n < 0) return "?";
+            if (n < 1024) return n + " B";
+            if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+            return (n / (1024 * 1024)).toFixed(2) + " MB";
+        }
+
+        // The board has no RTC, so a file written before the clock was set
+        // carries no usable timestamp. Say so rather than invent a date.
+        function humanDate(sec) {
+            if (!sec) return "—";
+            var d = new Date(sec * 1000);
+            var p = function (n) { return (n < 10 ? "0" : "") + n; };
+            return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) +
+                   " " + p(d.getHours()) + ":" + p(d.getMinutes());
+        }
+
+        // Downloads are plain links: the filename is in the URL, so the browser
+        // handles the transfer natively. The previous fetch-into-a-Blob approach
+        // needed a synthesised click, which Safari blocks once the user gesture
+        // has ended — and with an async fetch it always has.
+        function downloadUrl(dir, name) {
+            return "/api/download/" + encodeURIComponent(dir) + "/" + encodeURIComponent(name);
+        }
+
+        // Two-step confirm, same as Forget on the device's Wi-Fi screen: the
+        // first click only arms the button.
+        var armed = null;
+        function resetArmed() {
+            if (armed && armed.dataset.label) armed.textContent = armed.dataset.label;
+            armed = null;
+        }
+        function delClick(btn, name) {
+            if (armed && armed !== btn) resetArmed();
+            if (armed !== btn) {
+                armed = btn;
+                btn.dataset.label = btn.textContent;
+                btn.textContent = "Sure?";
+                return;
+            }
+            resetArmed();
+            setStatus("Deleting " + name + "...");
+            fetch("/api/delete", {
+                method: "POST",
+                headers: { "X-Dir": "screenshots", "X-Filename": encodeURIComponent(name) }
+            })
+                .then(function (r) {
+                    if (!r.ok) throw new Error("HTTP " + r.status);
+                    setStatus("Deleted " + name);
+                    refresh();
+                })
+                .catch(function (e) { setStatus("Delete failed: " + e.message, true); });
+        }
+
+        function deleteAllShots(names) {
+            if (!names.length) return;
+            if (!confirm("Delete all " + names.length + " screenshot(s)? This cannot be undone.")) return;
+            setStatus("Deleting " + names.length + " screenshot(s)...");
+            var chain = Promise.resolve();
+            names.forEach(function (n) {
+                chain = chain.then(function () {
+                    return fetch("/api/delete", {
+                        method: "POST",
+                        headers: { "X-Dir": "screenshots", "X-Filename": encodeURIComponent(n) }
+                    });
+                });
+            });
+            chain.then(function () { setStatus("Deleted " + names.length + " screenshot(s)"); refresh(); })
+                 .catch(function (e) { setStatus("Delete failed: " + e.message, true); });
+        }
+
+        function cell(row, text, cls) {
+            var td = document.createElement("td");
+            td.textContent = text;
+            if (cls) td.className = cls;
+            row.appendChild(td);
+            return td;
+        }
+
+        function renderSection(container, title, dir, entries, deletable) {
+            var h = document.createElement("h2");
+            h.textContent = title + " (" + entries.length + ")";
+            container.appendChild(h);
+
+            if (!entries.length) {
+                var none = document.createElement("p");
+                none.className = "disclaimer";
+                none.textContent = "Nothing here yet.";
+                container.appendChild(none);
+                return;
+            }
+
+            // Newest first where a timestamp exists, otherwise by name — the
+            // most recent capture is what you almost always came for.
+            entries.sort(function (a, b) {
+                if (a.mtime && b.mtime && a.mtime !== b.mtime) return b.mtime - a.mtime;
+                return b.name.localeCompare(a.name);
+            });
+
+            var wrap = document.createElement("div");
+            wrap.className = "table-wrap";
+            var t = document.createElement("table");
+            t.className = "file-table";
+
+            var thead = document.createElement("thead");
+            var hr = document.createElement("tr");
+            ["Name", "Size", "Recorded", ""].forEach(function (label) {
+                var th = document.createElement("th");
+                th.textContent = label;
+                hr.appendChild(th);
+            });
+            thead.appendChild(hr);
+            t.appendChild(thead);
+
+            var tb = document.createElement("tbody");
+            entries.forEach(function (f) {
+                var row = document.createElement("tr");
+                cell(row, f.name);
+                cell(row, humanSize(f.size), "num");
+                cell(row, humanDate(f.mtime), "num");
+
+                var act = document.createElement("td");
+                act.className = "actions";
+
+                var url = downloadUrl(dir, f.name);
+                var dl = document.createElement("a");
+                dl.className = "button btn-info row-btn";
+                dl.href = url;
+                // No "download" attribute on purpose: the server already sends
+                // Content-Disposition: attachment, which forces a save in every
+                // browser and does not depend on the attribute being honoured.
+                dl.textContent = "⬇ Download";
+                dl.title = "Download " + f.name;
+                // Navigate explicitly as well, so the transfer starts through
+                // one defined path instead of relying on the anchor's default
+                // action surviving whatever the table layout does to it — and
+                // so a click that does nothing is visibly distinguishable from
+                // a request that started and failed.
+                dl.onclick = function (ev) {
+                    ev.preventDefault();
+                    setStatus("Downloading " + f.name + "...");
+                    window.location.assign(url);
+                    return false;
+                };
+                act.appendChild(dl);
+
+                if (deletable) {
+                    var del = document.createElement("button");
+                    del.className = "button btn-test row-btn";
+                    del.textContent = "🗑";
+                    del.title = "Delete " + f.name;
+                    del.onclick = function () { delClick(del, f.name); };
+                    act.appendChild(del);
+                }
+                row.appendChild(act);
+                tb.appendChild(row);
+            });
+            t.appendChild(tb);
+            wrap.appendChild(t);
+            container.appendChild(wrap);
+        }
+
+        function refresh() {
+            resetArmed();
+            var out = document.getElementById("fileList");
+            out.textContent = "Loading...";
+            fetch("/api/files")
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    out.textContent = "";
+                    if (!d.sd) {
+                        setStatus("No SD card is mounted.", true);
+                        return;
+                    }
+                    renderSection(out, "📸 Screenshots", "screenshots", d.screenshots || [], true);
+                    renderSection(out, "🎚 Presets & settings", "root", d.root || [], false);
+                    renderSection(out, "🎤 Microphone calibration", "cal", d.cal || [], false);
+
+                    var shots = (d.screenshots || []).map(function (f) { return f.name; });
+                    var b = document.getElementById("delAllBtn");
+                    b.style.display = shots.length ? "" : "none";
+                    b.onclick = function () { deleteAllShots(shots); };
+                })
+                .catch(function (e) { out.textContent = ""; setStatus("Could not list files: " + e.message, true); });
+        }
+
+        function capture() {
+            setStatus("Capturing...");
+            fetch("/api/screenshot", { method: "POST" })
+                .then(function (r) {
+                    if (!r.ok) return r.text().then(function (t) { throw new Error(t || ("HTTP " + r.status)); });
+                    return r.json();
+                })
+                .then(function (d) {
+                    // The device answers as soon as the framebuffer is snapshotted;
+                    // the PNG is still being encoded and written for a moment after.
+                    setStatus("Captured " + d.file + " — writing to card...");
+                    setTimeout(refresh, 2500);
+                })
+                .catch(function (e) { setStatus("Capture failed: " + e.message, true); });
+        }
+
+        document.addEventListener("DOMContentLoaded", refresh);
+
+    </script>
+</head>
+<body>
+    <button class="button theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark / light mode">🌙 Dark Mode</button>
+    <div class="wifi-setup-container" style="max-width: 760px;">
+        <h1>💾 SD Card Files</h1>
+        <nav class="sl-nav" id="slNav"></nav>
+        <p>Browse and download files SpectraLab-P4 has written to the SD card. Screenshots can also be deleted here; presets and calibration files are read-only.</p>
+
+        <button class="button btn-save" onclick="capture()" title="Take a screenshot of the analyzer display now">📸 Take Screenshot</button>
+        <button class="button btn-info" onclick="refresh()" title="Reload the file list">🔄 Refresh</button>
+        <button class="button btn-test" id="delAllBtn" style="display:none" title="Delete every screenshot on the card">🗑 Delete All Screenshots</button>
+
+        <hr style="margin: 20px 0;">
+
+        <div class="flash-stats" id="filesStatusMsg"></div>
+        <div id="fileList"></div>
+
+        <footer>
+            <p class="disclaimer"><span data-board>SpectraLab-P4</span> — made by JFG3rd</p>
+        </footer>
+    </div>
+</body>
+</html>
