@@ -5,25 +5,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="/style.css">
+    <script src="/app.js"></script>
     <script>
-        function applyTheme(dark) {
-            document.body.classList.toggle("dark-mode", dark);
-            document.documentElement.style.colorScheme = dark ? "dark" : "light";
-            var b = document.getElementById("themeToggle");
-            if (b) b.textContent = dark ? "☀️ Light Mode" : "🌙 Dark Mode";
-        }
-        function toggleTheme() {
-            var dark = !document.body.classList.contains("dark-mode");
-            try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch (e) {}
-            applyTheme(dark);
-        }
-        (function () {
-            var saved = null;
-            try { saved = localStorage.getItem("theme"); } catch (e) {}
-            var dark = saved ? (saved === "dark")
-                : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
-            document.addEventListener("DOMContentLoaded", function () { applyTheme(dark); });
-        })();
 
         function setStatus(message, isError = false) {
             const el = document.getElementById("calStatusMsg");
@@ -70,23 +53,13 @@
             });
         }
 
-        // Tell the device what time it is. The board has no RTC and may have no
-        // route to an NTP server; the firmware ignores this once SNTP has
-        // supplied a clock, so a skewed browser cannot degrade a good sync.
-        function postBrowserClock() {
-            fetch("/api/time", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ epoch: Math.floor(Date.now() / 1000) })
-            }).catch(function () { /* offline or busy: not worth reporting */ });
-        }
-        document.addEventListener("DOMContentLoaded", postBrowserClock);
     </script>
 </head>
 <body>
     <button class="button theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark / light mode">🌙 Dark Mode</button>
     <div class="wifi-setup-container">
         <h1>🎤 Mic Calibration Upload</h1>
+        <nav class="sl-nav" id="slNav"></nav>
         <p>Upload your microphone's calibration file. For a miniDSP UMIK-1,
            download the unique file for your mic from
            <strong>minidsp.com</strong> by entering its serial number —
@@ -98,12 +71,11 @@
 
         <button class="button btn-save" title="Upload, validate and apply the calibration."
                 onclick="uploadCal()">⬆️ Upload &amp; Apply</button>
-        <a class="button btn-nav" href="/" title="Return to the home page." style="display:block; margin-top:10px;">🏠 Home</a>
 
         <div class="flash-stats" id="calStatusMsg" style="margin-top: 12px;"></div>
 
         <footer>
-            <p class="disclaimer">SpectraLab-P4 — made by JFG3rd</p>
+            <p class="disclaimer"><span data-board>SpectraLab-P4</span> — made by JFG3rd</p>
             <p class="disclaimer">
                 <a href="https://github.com/JFG3rd/SpectraLab-P4" target="_blank" rel="noopener">GitHub</a>
                 &middot; Licensed under Apache&nbsp;2.0

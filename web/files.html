@@ -21,25 +21,8 @@
             padding: 3px 10px; font-size: 0.95em; line-height: 1.4;
         }
     </style>
+    <script src="/app.js"></script>
     <script>
-        function applyTheme(dark) {
-            document.body.classList.toggle("dark-mode", dark);
-            document.documentElement.style.colorScheme = dark ? "dark" : "light";
-            var b = document.getElementById("themeToggle");
-            if (b) b.textContent = dark ? "☀️ Light Mode" : "🌙 Dark Mode";
-        }
-        function toggleTheme() {
-            var dark = !document.body.classList.contains("dark-mode");
-            try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch (e) {}
-            applyTheme(dark);
-        }
-        (function () {
-            var saved = null;
-            try { saved = localStorage.getItem("theme"); } catch (e) {}
-            var dark = saved ? (saved === "dark")
-                : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
-            document.addEventListener("DOMContentLoaded", function () { applyTheme(dark); });
-        })();
 
         function setStatus(message, isError) {
             var el = document.getElementById("filesStatusMsg");
@@ -209,52 +192,6 @@
             container.appendChild(wrap);
         }
 
-        // ── clock / timezone ──────────────────────────────────────
-        // The zone list comes from the firmware, so this selector can never
-        // offer something the device's own dropdown does not.
-        function loadClock() {
-            fetch("/api/status")
-                .then(function (r) { return r.json(); })
-                .then(function (s) {
-                    var sel = document.getElementById("tzSel");
-                    sel.innerHTML = "";
-                    (s.timezones || []).forEach(function (z) {
-                        var o = document.createElement("option");
-                        o.value = z.tz;
-                        o.textContent = z.label;
-                        sel.appendChild(o);
-                    });
-                    if (s.timezone) sel.value = s.timezone;
-
-                    var when = s.time
-                        ? new Date(s.time * 1000).toLocaleString()
-                        : "not set";
-                    var src = s.time_source === "sntp"    ? "from an NTP server"
-                            : s.time_source === "browser" ? "from a browser"
-                            : "never set \u2014 file dates will show as \u2014";
-                    document.getElementById("clockInfo").textContent =
-                        "Device clock: " + when + " (" + src + ")";
-                })
-                .catch(function () {});
-        }
-
-        function saveTz() {
-            var tz = document.getElementById("tzSel").value;
-            setStatus("Applying timezone...");
-            fetch("/api/time", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ tz: tz })
-            })
-                .then(function (r) { return r.text(); })
-                .then(function (t) {
-                    setStatus(t + " Existing files keep the date they were written with.");
-                    loadClock();
-                    refresh();
-                })
-                .catch(function (e) { setStatus("Failed: " + e.message, true); });
-        }
-
         function refresh() {
             resetArmed();
             var out = document.getElementById("fileList");
@@ -296,39 +233,19 @@
         }
 
         document.addEventListener("DOMContentLoaded", refresh);
-        document.addEventListener("DOMContentLoaded", loadClock);
 
-        // Tell the device what time it is. The board has no RTC and may have no
-        // route to an NTP server; the firmware ignores this once SNTP has
-        // supplied a clock, so a skewed browser cannot degrade a good sync.
-        function postBrowserClock() {
-            fetch("/api/time", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ epoch: Math.floor(Date.now() / 1000) })
-            }).catch(function () { /* offline or busy: not worth reporting */ });
-        }
-        document.addEventListener("DOMContentLoaded", postBrowserClock);
     </script>
 </head>
 <body>
     <button class="button theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark / light mode">🌙 Dark Mode</button>
     <div class="wifi-setup-container" style="max-width: 760px;">
         <h1>💾 SD Card Files</h1>
+        <nav class="sl-nav" id="slNav"></nav>
         <p>Browse and download files SpectraLab-P4 has written to the SD card. Screenshots can also be deleted here; presets and calibration files are read-only.</p>
 
         <button class="button btn-save" onclick="capture()" title="Take a screenshot of the analyzer display now">📸 Take Screenshot</button>
         <button class="button btn-info" onclick="refresh()" title="Reload the file list">🔄 Refresh</button>
         <button class="button btn-test" id="delAllBtn" style="display:none" title="Delete every screenshot on the card">🗑 Delete All Screenshots</button>
-        <a class="button btn-nav" href="/" title="Back to the main page">🏠 Home</a>
-
-        <hr style="margin: 20px 0;">
-        <h2>🕒 Clock</h2>
-        <p class="disclaimer" id="clockInfo"></p>
-        <p>The board has no battery-backed clock. It syncs from an NTP server when it can reach one, and otherwise takes the time from whichever browser last opened a page. Files written before the clock is known show no date.</p>
-        <label><strong>Timezone:</strong></label>
-        <select id="tzSel"></select>
-        <button class="button btn-save" onclick="saveTz()" title="Apply this timezone to the analyzer">💾 Apply Timezone</button>
 
         <hr style="margin: 20px 0;">
 
@@ -336,7 +253,7 @@
         <div id="fileList"></div>
 
         <footer>
-            <p class="disclaimer">SpectraLab-P4 — made by JFG3rd</p>
+            <p class="disclaimer"><span data-board>SpectraLab-P4</span> — made by JFG3rd</p>
         </footer>
     </div>
 </body>

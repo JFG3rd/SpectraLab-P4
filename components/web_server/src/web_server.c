@@ -75,8 +75,12 @@ static esp_err_t files_page_get(httpd_req_t *req)
 
 static esp_err_t cal_upload_get(httpd_req_t *req)
 { return send_asset(req, "text/html", cal_upload_html, cal_upload_html_len); }
+static esp_err_t settings_page_get(httpd_req_t *req)
+{ return send_asset(req, "text/html", settings_html, settings_html_len); }
 static esp_err_t style_get(httpd_req_t *req)
 { return send_asset(req, "text/css", style_css, style_css_len); }
+static esp_err_t app_js_get(httpd_req_t *req)
+{ return send_asset(req, "application/javascript", app_js, app_js_len); }
 
 /* ── WiFi endpoints (contract of wifi-setup.html) ─────────────── */
 
@@ -288,6 +292,10 @@ static esp_err_t status_get(httpd_req_t *req)
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "version", esp_app_get_description()->version);
+    /* Which board this firmware is running on, read from the silicon revision.
+     * The pages title themselves from it, so a P4X does not present itself as
+     * a P4. */
+    cJSON_AddStringToObject(root, "board", display_ui_board_name());
     cJSON_AddStringToObject(root, "network", net);
     cJSON_AddStringToObject(root, "hostname", net_mgr_get_mdns_host());
     cJSON_AddStringToObject(root, "url", url);
@@ -1042,7 +1050,9 @@ esp_err_t web_server_start(void)
         { .uri = "/index.html",      .method = HTTP_GET,  .handler = index_get },
         { .uri = "/wifi-setup.html", .method = HTTP_GET,  .handler = wifi_setup_get },
         { .uri = "/cal-upload.html", .method = HTTP_GET,  .handler = cal_upload_get },
+        { .uri = "/settings.html",   .method = HTTP_GET,  .handler = settings_page_get },
         { .uri = "/style.css",       .method = HTTP_GET,  .handler = style_get },
+        { .uri = "/app.js",          .method = HTTP_GET,  .handler = app_js_get },
         { .uri = "/scanWifi",        .method = HTTP_GET,  .handler = scan_wifi_get },
         { .uri = "/wifiScanResults", .method = HTTP_GET,  .handler = scan_results_get },
         { .uri = "/saveWiFi",        .method = HTTP_POST, .handler = save_wifi_post },

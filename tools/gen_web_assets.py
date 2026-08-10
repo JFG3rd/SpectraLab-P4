@@ -15,7 +15,9 @@ ASSETS = [
     ("wifi_setup_html", ROOT / "web/wifi-setup.html"),
     ("cal_upload_html", ROOT / "web/cal-upload.html"),
     ("files_html",      ROOT / "web/files.html"),
+    ("settings_html",   ROOT / "web/settings.html"),
     ("style_css",       ROOT / "web/style.css"),
+    ("app_js",          ROOT / "web/app.js"),
 ]
 OUT_C = ROOT / "components/web_server/src/web_assets.c"
 OUT_H = ROOT / "components/web_server/src/web_assets.h"

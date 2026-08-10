@@ -1367,3 +1367,91 @@ footer a:hover {
         padding-right: 90px;
     }
 }
+
+/* ── SpectraLab-P4 shared navigation ──────────────────────────────
+ * Added for v1.3.1. Before this the pages had no way to reach each other:
+ * every one carried a single link back to the dashboard, so moving between
+ * Files and Network meant two hops. Rendered by renderNav() in app.js. */
+.sl-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+    margin: 0 auto 18px auto;
+    padding: 6px;
+    border-radius: 10px;
+    background: var(--info-item-bg, #f8f9fa);
+}
+
+.sl-nav-link {
+    padding: 7px 14px;
+    border-radius: 7px;
+    font-size: var(--button-font-size, 14px);
+    font-weight: 500;
+    text-decoration: none;
+    color: var(--card-text, #1f2a3a);
+    white-space: nowrap;
+}
+
+.sl-nav-link:hover { background: rgba(0, 123, 255, 0.12); }
+
+.sl-nav-link.active {
+    background: var(--primary-color, #007bff);
+    color: #ffffff;
+}
+
+body.dark-mode .sl-nav      { background: #2b2b2b; }
+body.dark-mode .sl-nav-link { color: var(--dark-text, #eee); }
+
+/* ── settings form grid ───────────────────────────────────────────
+ * Used by settings.html, which builds its controls from one descriptor
+ * array rather than hand-written markup. */
+.sl-group { margin: 0 0 22px 0; }
+
+.sl-group h2 {
+    font-size: 16px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 0 0 10px 0;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+}
+
+.sl-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 0;
+}
+
+.sl-field label { font-size: var(--label-font-size, 14px); }
+
+.sl-field select,
+.sl-field input {
+    min-width: 170px;
+    max-width: 60%;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid rgba(128, 128, 128, 0.45);
+    background: var(--card-bg, #fff);
+    color: var(--card-text, #1f2a3a);
+    font-size: var(--button-font-size, 14px);
+}
+
+body.dark-mode .sl-field select,
+body.dark-mode .sl-field input {
+    background: #333;
+    color: var(--dark-text, #eee);
+}
+
+.sl-field .sl-hint {
+    display: block;
+    font-size: 12px;
+    opacity: 0.75;
+}
+
+@media screen and (max-width: 520px) {
+    .sl-field { flex-direction: column; align-items: stretch; }
+    .sl-field select, .sl-field input { max-width: 100%; }
+}

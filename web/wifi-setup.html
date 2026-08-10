@@ -5,25 +5,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="/style.css">
+    <script src="/app.js"></script>
     <script>
-        function applyTheme(dark) {
-            document.body.classList.toggle("dark-mode", dark);
-            document.documentElement.style.colorScheme = dark ? "dark" : "light";
-            var b = document.getElementById("themeToggle");
-            if (b) b.textContent = dark ? "☀️ Light Mode" : "🌙 Dark Mode";
-        }
-        function toggleTheme() {
-            var dark = !document.body.classList.contains("dark-mode");
-            try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch (e) {}
-            applyTheme(dark);
-        }
-        (function () {
-            var saved = null;
-            try { saved = localStorage.getItem("theme"); } catch (e) {}
-            var dark = saved ? (saved === "dark")
-                : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
-            document.addEventListener("DOMContentLoaded", function () { applyTheme(dark); });
-        })();
 
         const statusElId = "wifiStatusMsg";
         function setStatus(message, isError = false) {
@@ -268,23 +251,13 @@
                 .catch(function (e) { setIpStatus(e.message, true); });
         }
 
-        // Tell the device what time it is. The board has no RTC and may have no
-        // route to an NTP server; the firmware ignores this once SNTP has
-        // supplied a clock, so a skewed browser cannot degrade a good sync.
-        function postBrowserClock() {
-            fetch("/api/time", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ epoch: Math.floor(Date.now() / 1000) })
-            }).catch(function () { /* offline or busy: not worth reporting */ });
-        }
-        document.addEventListener("DOMContentLoaded", postBrowserClock);
     </script>
 </head>
 <body>
     <button class="button theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark / light mode">🌙 Dark Mode</button>
     <div class="wifi-setup-container">
-        <h1>🎵 SpectraLab-P4 Wi-Fi Setup</h1>
+        <h1>📶 Network Setup</h1>
+        <nav class="sl-nav" id="slNav"></nav>
         <p>Connect the analyzer to your local WiFi network</p>
         
         <label><strong>Select Network:</strong></label>
@@ -301,7 +274,6 @@
         <button class="button btn-save" title="Save WiFi credentials and reboot into STA mode." onclick="connectWiFi()">💾 Save & Connect</button>
         <button class="button btn-info" title="Refresh the list of available WiFi networks." onclick="rescanWiFi()">🔄 Rescan WiFi</button>
         <button class="button btn-test" title="Reboot the analyzer. Keeps saved WiFi and settings; can help when a rejoin is stuck." onclick="restartDevice()" style="margin-top:10px;">🔁 Restart Device</button>
-        <a class="button btn-nav" href="/" title="Return to the home page." style="display:block; margin-top:10px;">🏠 Home</a>
 
         <div class="flash-stats" id="wifiStatusMsg" style="margin-top: 12px;"></div>
 
@@ -351,7 +323,7 @@
         <p class="disclaimer">A static address is checked with an ARP probe before saving. A device that is powered off still owns its address but will not answer, so a successful check is not proof the address is free.</p>
 
         <footer>
-            <p class="disclaimer">SpectraLab-P4 — made by JFG3rd</p>
+            <p class="disclaimer"><span data-board>SpectraLab-P4</span> — made by JFG3rd</p>
             <p class="disclaimer">
                 <a href="https://github.com/JFG3rd/SpectraLab-P4" target="_blank" rel="noopener">GitHub</a>
                 &middot; Licensed under Apache&nbsp;2.0

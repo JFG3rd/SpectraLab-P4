@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Settings — SpectraLab-P4</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/style.css">
+    <script src="/app.js"></script>
+</head>
+<body>
+    <button class="button theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark / light mode">🌙 Dark Mode</button>
+    <div class="wifi-setup-container">
+        <h1>⚙️ Device Settings</h1>
+        <nav class="sl-nav" id="slNav"></nav>
+
+        <p class="disclaimer">
+            Changes apply to the analyzer as soon as you save, and are persisted
+            to the SD card. They are the same settings as the on-device Settings
+            screen — this is the same configuration, not a copy.
+        </p>
+
+        <form id="settingsForm" onsubmit="return false;"></form>
+
+        <div class="button-row" style="display:flex; gap:10px; margin-top:14px;">
+            <button class="button btn-save" style="flex:1;" onclick="saveSettings()">💾 Save</button>
+            <button class="button btn-nav"  style="flex:1;" onclick="loadSettings()">↺ Reload</button>
+        </div>
+
+        <div class="flash-stats" id="settingsStatus" style="margin-top: 14px;"></div>
+
+        <footer>
+            <p class="disclaimer"><span data-board>SpectraLab-P4</span> — made by JFG3rd</p>
+            <p class="disclaimer">
+                <a href="https://github.com/JFG3rd/SpectraLab-P4" target="_blank" rel="noopener">GitHub</a>
+                &middot; Licensed under Apache&nbsp;2.0
+            </p>
+        </footer>
+    </div>
+
+<script>
+/* One descriptor array drives the whole form.
+ *
+ * The firmware has no settings registry — every field is hand-written in the
+ * JSON writer, the JSON reader, the sanitizer, the defaults and the on-device
+ * dropdown. This array is the closest thing to a schema the project has, and
+ * writing the page any other way would have meant 25 near-identical blocks of
+ * markup. The keys are exactly those accepted by GET/PUT /api/config, which
+ * are in turn exactly the keys of settings.json.
+ *
+ * `sel` = fixed choice list, `num` = numeric range. Values that are enums on
+ * the device side are sent as their integer index, which is what the firmware
+ * clamps and stores. */
+var FIELDS = [
+  { g:"Audio / DSP", k:"fft_size",   l:"FFT size",  t:"sel",
+    o:[[512,"512"],[1024,"1024"],[2048,"2048"],[4096,"4096"],[8192,"8192"],[16384,"16384"]] },
+  { g:"Audio / DSP", k:"window",     l:"Window",    t:"sel",
+    o:[[0,"Rectangular"],[1,"Hann"],[2,"Hamming"],[3,"Blackman"],[4,"Blackman-Harris"],[5,"Flat Top"],[6,"Kaiser"]] },
+  { g:"Audio / DSP", k:"averaging",  l:"Averaging", t:"sel",
+    o:[[0,"Exponential"],[1,"RMS"],[2,"Peak Hold"],[3,"Max Hold"]] },
+  { g:"Audio / DSP", k:"overlap_pct",l:"Overlap",   t:"sel",
+    o:[[0,"0%"],[25,"25%"],[50,"50%"],[75,"75%"]] },
+  { g:"Audio / DSP", k:"mic_gain_db",l:"Mic gain",  t:"sel",
+    o:[[0,"0 dB"],[6,"6 dB"],[12,"12 dB"],[18,"18 dB"],[24,"24 dB"],[30,"30 dB"],[36,"36 dB"],[42,"42 dB"]] },
+  { g:"Audio / DSP", k:"usb_stereo_policy", l:"USB mono mix", t:"sel",
+    o:[[0,"Average L+R"],[1,"Left only"],[2,"Right only"]] },
+
+  { g:"Display", k:"display_mode",  l:"Display mode", t:"sel",
+    o:[[0,"Bars"],[1,"Line"],[2,"1/3 Octave"],[3,"Persistence"],[4,"Waterfall"],[5,"Scope"],[6,"VU Meter"],[7,"Mirror"]] },
+  { g:"Display", k:"color_scheme",  l:"Colour theme", t:"sel",
+    o:[[0,"Dark"],[1,"Classic"],[2,"High Contrast"],[3,"Amber"],[4,"Blue Neon"],[5,"Matrix"],[6,"Red Neon"]] },
+  { g:"Display", k:"db_range",      l:"Display range", t:"sel",
+    o:[[120,"120 dB"],[100,"100 dB"],[80,"80 dB"],[60,"60 dB"]] },
+  { g:"Display", k:"screen_brightness", l:"Brightness (%)", t:"num", min:10, max:100, step:1 },
+  { g:"Display", k:"bar_decay_db_per_frame",  l:"Bar decay (dB/frame)",  t:"num", min:0,    max:20, step:0.1 },
+  { g:"Display", k:"peak_decay_db_per_frame", l:"Peak decay (dB/frame)", t:"num", min:0.05, max:5,  step:0.05 },
+
+  { g:"Noise Reduction", k:"noise_floor_enabled",   l:"Noise floor subtraction", t:"bool" },
+  { g:"Noise Reduction", k:"ambient_noise_enabled", l:"Subtract ambient noise",  t:"bool" },
+  { g:"Noise Reduction", k:"ambient_margin",        l:"Ambient strength",        t:"sel",
+    o:[[1.1,"Gentle"],[1.5,"Medium"],[2.5,"Strong"]] },
+
+  { g:"SPL Calibration", k:"a_weighting", l:"A-weighting", t:"bool" },
+  { g:"SPL Calibration", k:"mic_sensitivity_dbv", l:"Mic sensitivity (dBV/Pa)", t:"num",
+    min:-120, max:20, step:0.5, hint:"From the microphone datasheet, typically -38." },
+  { g:"SPL Calibration", k:"cal_enabled", l:"Apply mic calibration file", t:"bool" },
+
+  { g:"Auto Gain", k:"agc_enabled",     l:"Auto gain", t:"bool" },
+  { g:"Auto Gain", k:"agc_target_dbfs", l:"Target level", t:"sel",
+    o:[[-6,"-6 dBFS"],[-9,"-9 dBFS"],[-12,"-12 dBFS"],[-18,"-18 dBFS"],[-24,"-24 dBFS"]] },
+  { g:"Auto Gain", k:"agc_speed", l:"Speed", t:"sel", o:[[0,"Slow"],[1,"Medium"],[2,"Fast"]] },
+
+  { g:"Startup", k:"splash_seconds", l:"Splash screen", t:"sel",
+    o:[[0,"Off"],[2,"2 seconds"],[3,"3 seconds"],[5,"5 seconds"],[8,"8 seconds"],[10,"10 seconds"],[15,"15 seconds"]],
+    hint:"How long the boot splash stays up. Applies on the next restart." }
+];
+
+/* The DSP fields live in a nested object in settings.json but are flat in the
+ * JSON the API exchanges, so nothing special is needed here — this list just
+ * records which keys the firmware clamps as floats. */
+var FLOAT_KEYS = ["ambient_margin", "mic_sensitivity_dbv",
+                  "bar_decay_db_per_frame", "peak_decay_db_per_frame"];
+
+function buildForm() {
+    var form = document.getElementById("settingsForm");
+    form.innerHTML = "";
+    var groups = {};
+    FIELDS.forEach(function (f) { (groups[f.g] = groups[f.g] || []).push(f); });
+
+    Object.keys(groups).forEach(function (name) {
+        var sec = document.createElement("section");
+        sec.className = "sl-group";
+        var h = document.createElement("h2");
+        h.textContent = name;
+        sec.appendChild(h);
+
+        groups[name].forEach(function (f) {
+            var row = document.createElement("div");
+            row.className = "sl-field";
+
+            var lab = document.createElement("label");
+            lab.setAttribute("for", "f_" + f.k);
+            lab.textContent = f.l;
+            if (f.hint) {
+                var hint = document.createElement("span");
+                hint.className = "sl-hint";
+                hint.textContent = f.hint;
+                lab.appendChild(hint);
+            }
+            row.appendChild(lab);
+
+            var ctl;
+            if (f.t === "sel" || f.t === "bool") {
+                ctl = document.createElement("select");
+                var opts = (f.t === "bool") ? [[0, "Off"], [1, "On"]] : f.o;
+                opts.forEach(function (o) {
+                    var e = document.createElement("option");
+                    e.value = o[0];
+                    e.textContent = o[1];
+                    ctl.appendChild(e);
+                });
+            } else {
+                ctl = document.createElement("input");
+                ctl.type = "number";
+                ctl.min = f.min; ctl.max = f.max; ctl.step = f.step;
+            }
+            ctl.id = "f_" + f.k;
+            row.appendChild(ctl);
+            sec.appendChild(row);
+        });
+        form.appendChild(sec);
+    });
+
+    /* Clock and timezone. Moved here from the file browser, where a
+     * device-wide setting had no business living. */
+    var sec = document.createElement("section");
+    sec.className = "sl-group";
+    sec.innerHTML =
+        '<h2>Clock &amp; Timezone</h2>' +
+        '<div class="sl-field"><label for="f_timezone">Timezone' +
+        '<span class="sl-hint">FAT stores local time, so this decides what timestamp a capture is written with.</span>' +
+        '</label><select id="f_timezone"></select></div>' +
+        '<div class="sl-field"><label>Device clock<span class="sl-hint" id="clockSrc"></span></label>' +
+        '<span id="clockNow">—</span></div>';
+    form.appendChild(sec);
+}
+
+function loadSettings() {
+    slStatus("settingsStatus", "Loading…");
+    fetch("/api/config").then(function (r) { return r.json(); }).then(function (cfg) {
+        FIELDS.forEach(function (f) {
+            var el = document.getElementById("f_" + f.k);
+            if (!el || !(f.k in cfg)) return;
+            var v = cfg[f.k];
+            if (f.t === "bool") el.value = v ? 1 : 0;
+            else if (f.t === "sel") {
+                /* Float-valued options (ambient strength) will not match a
+                 * string compare, so pick the nearest offered value. */
+                if (FLOAT_KEYS.indexOf(f.k) >= 0) {
+                    var best = f.o[0][0], bd = Infinity;
+                    f.o.forEach(function (o) {
+                        var d = Math.abs(o[0] - v);
+                        if (d < bd) { bd = d; best = o[0]; }
+                    });
+                    el.value = best;
+                } else {
+                    el.value = v;
+                }
+            } else {
+                el.value = v;
+            }
+        });
+        slStatus("settingsStatus", "Loaded current settings.", "ok");
+    }).catch(function () {
+        slStatus("settingsStatus", "Could not read settings from the device.", "err");
+    });
+
+    /* The timezone list comes from the firmware so the browser cannot offer a
+     * different set of zones than the device's own dropdown. */
+    slFetchStatus(function (s) {
+        var tz = document.getElementById("f_timezone");
+        if (tz && s.timezones) {
+            tz.innerHTML = "";
+            s.timezones.forEach(function (z) {
+                var o = document.createElement("option");
+                o.value = z.tz; o.textContent = z.label;
+                tz.appendChild(o);
+            });
+            if (s.timezone) tz.value = s.timezone;
+        }
+        var now = document.getElementById("clockNow");
+        var src = document.getElementById("clockSrc");
+        if (now) now.textContent = s.time ? new Date(s.time * 1000).toLocaleString() : "not set";
+        if (src) src.textContent =
+            s.time_source === "sntp"    ? "synchronised from an NTP server" :
+            s.time_source === "browser" ? "set from a browser" :
+                                          "no clock yet — file dates will be wrong";
+    });
+}
+
+function saveSettings() {
+    var body = {};
+    FIELDS.forEach(function (f) {
+        var el = document.getElementById("f_" + f.k);
+        if (!el) return;
+        if (f.t === "bool")      body[f.k] = (el.value === "1");
+        else                     body[f.k] = parseFloat(el.value);
+    });
+
+    slStatus("settingsStatus", "Saving…");
+    fetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+    }).then(function (r) {
+        if (!r.ok) throw new Error(r.status);
+        return r.json();
+    }).then(function () {
+        /* The timezone is not part of /api/config's apply path on the device
+         * side — it goes through /api/time, which also owns the clock. */
+        var tz = document.getElementById("f_timezone");
+        if (!tz || !tz.value) return null;
+        return fetch("/api/time", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tz: tz.value })
+        });
+    }).then(function () {
+        slStatus("settingsStatus", "Saved. The analyzer has applied the changes.", "ok");
+    }).catch(function () {
+        slStatus("settingsStatus", "Save failed — the device rejected the request.", "err");
+    });
+}
+
+document.addEventListener("DOMContentLoaded", function () {
+    buildForm();
+    loadSettings();
+});
+</script>
+</body>
+</html>
