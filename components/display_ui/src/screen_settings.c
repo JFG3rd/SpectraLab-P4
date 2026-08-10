@@ -17,6 +17,8 @@
 #include "screen_spectrum.h"
 #include "screen_file_dialog.h"
 #include "screen_wifi.h"
+#include "ui_theme.h"
+#include "ui_widgets.h"
 
 static const char *TAG = "scr_settings";
 
@@ -51,6 +53,9 @@ static const char *agc_enable_opts = "Off\nOn";
 static const char *agc_target_opts = "-6 dBFS\n-9 dBFS\n-12 dBFS\n-18 dBFS\n-24 dBFS";
 static const char *agc_speed_opts  = "Slow\nMedium\nFast";
 static const char *a_weight_opts   = "Off (Z)\nOn (A)";
+static const char *splash_opts     = "Off\n2 s\n3 s\n5 s\n8 s\n10 s\n15 s";
+static const int   splash_values[] = { 0, 2, 3, 5, 8, 10, 15 };
+#define SPLASH_OPT_COUNT ((int)(sizeof(splash_values) / sizeof(splash_values[0])))
 
 static lv_obj_t *s_dd_color_scheme;
 static lv_obj_t *s_dd_bar_decay;
@@ -90,7 +95,26 @@ static int       s_profile_count;
 static lv_obj_t *s_slider_mic_sens;
 static lv_obj_t *s_lbl_mic_sens_val;
 static lv_obj_t *s_lbl_sd_status;
+static lv_obj_t *s_dd_splash;
 static bool      s_format_armed = false;
+
+static int splash_index_to_seconds(uint16_t idx)
+{
+    return (idx < SPLASH_OPT_COUNT) ? splash_values[idx] : 5;
+}
+
+static uint16_t splash_seconds_to_index(int seconds)
+{
+    /* Nearest match rather than exact: a value set through the REST API or a
+     * hand-edited settings.json need not be one of the offered steps. */
+    int best = 0, best_d = 1000;
+    for (int i = 0; i < SPLASH_OPT_COUNT; i++) {
+        int d = seconds - splash_values[i];
+        if (d < 0) d = -d;
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    return (uint16_t)best;
+}
 
 static uint32_t fft_index_to_size(uint16_t idx)
 {
@@ -476,6 +500,12 @@ static void apply_settings(void)
      * settings file. */
     display_ui_set_timezone(timezone_index_to_tz(lv_dropdown_get_selected(s_dd_timezone)));
 
+    /* Splash duration is only read at boot, but it still has to be recorded
+     * now — save_current_settings() snapshots display_ui's s_last_* fields, so
+     * a value that never reaches display_ui would be written back as the old
+     * one on the next auto-save. */
+    display_ui_set_splash_seconds(splash_index_to_seconds(lv_dropdown_get_selected(s_dd_splash)));
+
     if (s_agc_cb) {
         bool agc_on   = (lv_dropdown_get_selected(s_dd_agc_enable) == 1);
         int  agc_tgt  = agc_target_index_to_dbfs(lv_dropdown_get_selected(s_dd_agc_target));
@@ -643,46 +673,179 @@ static void sd_format_btn_cb(lv_event_t *e)
         r == ESP_OK ? "SD: Formatted " LV_SYMBOL_OK : "SD: Format failed");
 }
 
-/* Labeled dropdown at arbitrary column position.
- * Left column: lbl_x=20,  dd_x=160, dd_w=220
- * Right column: lbl_x=540, dd_x=700, dd_w=200 */
-static lv_obj_t *make_labeled_dropdown_at(lv_obj_t *parent, const char *label_txt,
-                                          const char *opts, int32_t lbl_x,
-                                          int32_t dd_x, int32_t dd_w, int32_t y)
-{
-    lv_obj_t *lbl = lv_label_create(parent);
-    lv_label_set_text(lbl, label_txt);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(0xCCDDEE), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-    lv_obj_set_pos(lbl, lbl_x, y);
+/* ── layout ───────────────────────────────────────────────────────
+ *
+ * Three flex columns rather than the old two absolutely-positioned ones. The
+ * two-column layout wasted 160 px of dead space down the middle, gave a 220 px
+ * dropdown to text like "50%", and pushed three whole groups (SPL Calibration,
+ * Settings Profile, Auto Gain) below the 600 px fold where they were easy to
+ * miss entirely.
+ *
+ * Flex, not coordinates: every row then fills its column's width by itself, so
+ * adding a control cannot silently overlap the one after it — which is exactly
+ * how the profile hint came to wrap into the timezone dropdown.
+ *
+ * One region is reserved: the screenshot button is drawn from lv_layer_top()
+ * at roughly x 894-962, y 0-40 (see ui_widgets.h). The title row occupies that
+ * band, so the columns start below it. */
+#define PAD_X          16
+#define COL_GAP        20
+#define COL_W         317   /* (1024 - 2*PAD_X - 2*COL_GAP) / 3 */
+#define COL_TOP        52   /* clears the title row and the screenshot button */
+#define CTRL_W        165   /* fits every option string at font 14 */
+#define ROW_H          30   /* column 1 is the tallest; 32 pushed it past 600 */
+#define ROW_PAD_Y       3
+#define VAL_W          64   /* slider readout: "-38.0 dBV" must not wrap */
 
-    lv_obj_t *dd = lv_dropdown_create(parent);
+/* A row: label on the left taking whatever width is left, control on the
+ * right at a fixed width. Returns the row so the caller can add the control. */
+static lv_obj_t *make_row(lv_obj_t *col, const char *label_txt, int32_t h)
+{
+    lv_obj_t *row = lv_obj_create(col);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, LV_PCT(100), h);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 6, 0);
+    lv_obj_set_style_pad_ver(row, ROW_PAD_Y, 0);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    if (label_txt) {
+        lv_obj_t *lbl = lv_label_create(row);
+        lv_label_set_text(lbl, label_txt);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_flex_grow(lbl, 1);
+        ui_theme_style_label(lbl);
+    }
+    return row;
+}
+
+static lv_obj_t *row_dropdown(lv_obj_t *col, const char *label_txt, const char *opts)
+{
+    lv_obj_t *row = make_row(col, label_txt, ROW_H + 2 * ROW_PAD_Y);
+    lv_obj_t *dd  = lv_dropdown_create(row);
     lv_dropdown_set_options(dd, opts);
-    lv_obj_set_size(dd, dd_w, 36);
-    lv_obj_set_pos(dd, dd_x, y - 6);
+    lv_obj_set_size(dd, CTRL_W, ROW_H);
+    lv_obj_set_style_text_font(dd, &lv_font_montserrat_14, 0);
+    ui_theme_style_dropdown(dd);
     return dd;
 }
 
-static lv_obj_t *make_labeled_dropdown(lv_obj_t *parent, const char *label_txt,
-                                        const char *opts, int32_t y)
+/* Full-width dropdown with the label above it, for values too long to sit in
+ * the 165 px control cell (the timezone names run to "Europe/Berlin (CET)"). */
+static lv_obj_t *row_dropdown_wide(lv_obj_t *col, const char *label_txt, const char *opts)
 {
-    return make_labeled_dropdown_at(parent, label_txt, opts, 20, 160, 220, y);
+    lv_obj_t *lbl = lv_label_create(col);
+    lv_label_set_text(lbl, label_txt);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    ui_theme_style_label(lbl);
+
+    lv_obj_t *dd = lv_dropdown_create(col);
+    lv_dropdown_set_options(dd, opts);
+    lv_obj_set_size(dd, LV_PCT(100), ROW_H);
+    lv_obj_set_style_text_font(dd, &lv_font_montserrat_14, 0);
+    ui_theme_style_dropdown(dd);
+    return dd;
 }
 
-static lv_obj_t *make_labeled_dropdown_r(lv_obj_t *parent, const char *label_txt,
-                                          const char *opts, int32_t y)
+/* Slider row: label, then the slider filling the middle, then a value readout
+ * pinned right. `out_val` receives the readout label. */
+static lv_obj_t *row_slider(lv_obj_t *col, const char *label_txt, lv_obj_t **out_val)
 {
-    return make_labeled_dropdown_at(parent, label_txt, opts, 540, 700, 200, y);
+    lv_obj_t *row = make_row(col, label_txt, ROW_H + 2 * ROW_PAD_Y);
+
+    lv_obj_t *sl = lv_slider_create(row);
+    lv_obj_set_size(sl, CTRL_W - VAL_W - 6, 10);
+    ui_theme_style_slider(sl);
+
+    lv_obj_t *val = lv_label_create(row);
+    lv_label_set_text(val, "");
+    lv_obj_set_style_text_font(val, &lv_font_montserrat_14, 0);
+    lv_obj_set_width(val, VAL_W);
+    lv_obj_set_style_text_align(val, LV_TEXT_ALIGN_RIGHT, 0);
+    ui_theme_style_label(val);
+    if (out_val) *out_val = val;
+    return sl;
 }
 
-/* Section header in accent color */
-static void make_group_header(lv_obj_t *parent, const char *txt, int32_t x, int32_t y)
+static lv_obj_t *row_switch(lv_obj_t *col, const char *label_txt)
 {
-    lv_obj_t *hdr = lv_label_create(parent);
+    lv_obj_t *row = make_row(col, label_txt, ROW_H + 2 * ROW_PAD_Y);
+    lv_obj_t *sw  = lv_switch_create(row);
+    lv_obj_set_size(sw, 50, 25);
+    ui_theme_style_switch(sw);
+    return sw;
+}
+
+/* One row of equal-width buttons filling the column. Returns the row, so a
+ * caller that needs a handle to one of them (the noise-floor capture button is
+ * disabled while a capture runs) can reach it by index. */
+static lv_obj_t *row_buttons(lv_obj_t *col, const char **labels,
+                             const lv_event_cb_t *cbs, int n)
+{
+    lv_obj_t *row = make_row(col, NULL, 34);
+    for (int i = 0; i < n; i++) {
+        lv_obj_t *b = lv_button_create(row);
+        lv_obj_set_height(b, 28);
+        lv_obj_set_flex_grow(b, 1);
+        lv_obj_add_event_cb(b, cbs[i], LV_EVENT_CLICKED, NULL);
+        ui_theme_style_button(b);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, labels[i]);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+        lv_obj_center(l);
+    }
+    return row;
+}
+
+/* Single full-width button. */
+static lv_obj_t *row_button(lv_obj_t *col, const char *text, lv_event_cb_t cb, int32_t h)
+{
+    lv_obj_t *b = lv_button_create(col);
+    lv_obj_set_size(b, LV_PCT(100), h);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
+    ui_theme_style_button(b);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+    lv_obj_center(l);
+    return b;
+}
+
+/* Status / hint text in the secondary colour. */
+static lv_obj_t *make_note(lv_obj_t *col, const char *txt, const lv_font_t *font)
+{
+    lv_obj_t *l = lv_label_create(col);
+    lv_label_set_text(l, txt);
+    lv_obj_set_width(l, LV_PCT(100));
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(l, font, 0);
+    ui_theme_style_label_dim(l);
+    return l;
+}
+
+/* Section header — a little space above, so groups read as groups. */
+static void make_group_header(lv_obj_t *col, const char *txt)
+{
+    lv_obj_t *hdr = lv_label_create(col);
     lv_label_set_text(hdr, txt);
-    lv_obj_set_style_text_color(hdr, lv_color_hex(0x88AACC), 0);
     lv_obj_set_style_text_font(hdr, &lv_font_montserrat_14, 0);
-    lv_obj_set_pos(hdr, x, y);
+    lv_obj_set_style_pad_top(hdr, 6, 0);
+    ui_theme_style_header(hdr);
+}
+
+/* One of the three columns. */
+static lv_obj_t *make_column(lv_obj_t *parent, int index)
+{
+    lv_obj_t *col = lv_obj_create(parent);
+    lv_obj_remove_style_all(col);
+    lv_obj_set_size(col, COL_W, LV_SIZE_CONTENT);
+    lv_obj_set_pos(col, PAD_X + index * (COL_W + COL_GAP), COL_TOP);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(col, 2, 0);
+    lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+    return col;
 }
 
 esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
@@ -701,179 +864,148 @@ esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
     s_cur_cfg     = dsp_config_default;
 
     s_screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_screen, lv_color_hex(0x0D1B2A), 0);
+    ui_theme_style_screen(s_screen);
     lv_obj_set_style_pad_all(s_screen, 0, 0);
-    /* The AUTO GAIN group sits just below the 600 px fold — allow vertical
-     * scroll to reveal it while keeping the tuned one-screen layout intact. */
+    /* The three columns are sized to fit, but keep vertical scrolling as a
+     * safety net: font metrics differ slightly between builds and a clipped
+     * Back button would be unrecoverable by touch. */
     lv_obj_set_scroll_dir(s_screen, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_screen, LV_SCROLLBAR_MODE_AUTO);
 
     lv_obj_t *title = lv_label_create(s_screen);
     lv_label_set_text(title, "Settings");
-    lv_obj_set_style_text_color(title, lv_color_hex(0xCCDDEE), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 20, 12);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, PAD_X, 14);
+    ui_theme_style_label(title);
 
-    /* ══ LEFT COLUMN — audio pipeline ═══════════════════════════ */
+    lv_obj_t *col1 = make_column(s_screen, 0);
+    lv_obj_t *col2 = make_column(s_screen, 1);
+    lv_obj_t *col3 = make_column(s_screen, 2);
 
-    make_group_header(s_screen, "AUDIO / DSP", 20, 38);
-    s_dd_fft       = make_labeled_dropdown(s_screen, "FFT size:",  fft_size_opts,  64);
-    s_dd_window    = make_labeled_dropdown(s_screen, "Window:",    window_opts,   109);
-    s_dd_avg       = make_labeled_dropdown(s_screen, "Averaging:", avg_opts,      154);
-    s_dd_overlap   = make_labeled_dropdown(s_screen, "Overlap:",   overlap_opts,  199);
-    s_dd_gain      = make_labeled_dropdown(s_screen, "Mic gain:",  gain_opts,     244);
+    /* ══ COLUMN 1 — the audio pipeline, in signal order ═════════ */
 
-    make_group_header(s_screen, "NOISE REDUCTION", 20, 292);
-    s_dd_nf_enable = make_labeled_dropdown(s_screen, "Noise Floor:", "Off\nOn",   318);
+    make_group_header(col1, "AUDIO / DSP");
+    s_dd_fft     = row_dropdown(col1, "FFT size:",  fft_size_opts);
+    s_dd_window  = row_dropdown(col1, "Window:",    window_opts);
+    s_dd_avg     = row_dropdown(col1, "Averaging:", avg_opts);
+    s_dd_overlap = row_dropdown(col1, "Overlap:",   overlap_opts);
+    s_dd_gain    = row_dropdown(col1, "Mic gain:",  gain_opts);
 
-    /* Noise floor status label */
-    s_lbl_nf_status = lv_label_create(s_screen);
-    lv_label_set_text(s_lbl_nf_status,
-                      dsp_engine_has_noise_floor() ? "Calibrated " LV_SYMBOL_OK : "Not calibrated");
-    lv_obj_set_style_text_color(s_lbl_nf_status, lv_color_hex(0x88AACC), 0);
-    lv_obj_set_style_text_font(s_lbl_nf_status, &lv_font_montserrat_14, 0);
-    lv_obj_set_pos(s_lbl_nf_status, 20, 363);
+    /* SPL CALIBRATION — the engine has computed A-weighted SPL and honoured
+     * mic sensitivity since Phase 2 M2; both were persisted and REST-settable
+     * but had no control here until v1.3.0. */
+    make_group_header(col1, "SPL CALIBRATION");
+    s_dd_a_weight = row_dropdown(col1, "Weighting:", a_weight_opts);
 
-    /* Noise floor capture button */
-    s_btn_nf_capture = lv_button_create(s_screen);
-    lv_obj_set_size(s_btn_nf_capture, 160, 38);
-    lv_obj_set_pos(s_btn_nf_capture, 20, 384);
-    lv_obj_add_event_cb(s_btn_nf_capture, capture_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *cap_lbl = lv_label_create(s_btn_nf_capture);
-    lv_label_set_text(cap_lbl, "Capture Noise Floor");
-    lv_obj_center(cap_lbl);
-
-    /* Noise floor clear button */
-    lv_obj_t *clr_btn = lv_button_create(s_screen);
-    lv_obj_set_size(clr_btn, 120, 38);
-    lv_obj_set_pos(clr_btn, 192, 384);
-    lv_obj_add_event_cb(clr_btn, clear_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *clr_lbl = lv_label_create(clr_btn);
-    lv_label_set_text(clr_lbl, "Clear");
-    lv_obj_center(clr_lbl);
-
-    /* Live ambient noise subtraction toggle + strength */
-    lv_obj_t *ambient_lbl = lv_label_create(s_screen);
-    lv_label_set_text(ambient_lbl, "Subtract Ambient Noise:");
-    lv_obj_set_style_text_color(ambient_lbl, lv_color_hex(0xCCDDEE), 0);
-    lv_obj_set_style_text_font(ambient_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_set_pos(ambient_lbl, 20, 434);
-
-    s_sw_ambient = lv_switch_create(s_screen);
-    lv_obj_set_pos(s_sw_ambient, 300, 431);
-    lv_obj_add_event_cb(s_sw_ambient, ambient_switch_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    /* Initialise switch state from DSP engine */
-    if (dsp_engine_ambient_noise_active())
-        lv_obj_add_state(s_sw_ambient, LV_STATE_CHECKED);
-
-    s_dd_amb_strength = make_labeled_dropdown(s_screen, "Ambient Strength:",
-                                              amb_strength_opts, 478);
-
-    /* ══ RIGHT COLUMN — display + storage ═══════════════════════ */
-
-    make_group_header(s_screen, "DISPLAY", 540, 38);
-    s_dd_disp_mode    = make_labeled_dropdown_r(s_screen, "Display Mode:",  disp_mode_opts,    64);
-    s_dd_color_scheme = make_labeled_dropdown_r(s_screen, "Color Theme:",   color_scheme_opts, 109);
-    s_dd_db_range     = make_labeled_dropdown_r(s_screen, "Display Range:", db_range_opts,     154);
-    s_dd_bar_decay    = make_labeled_dropdown_r(s_screen, "Bar Decay:",     bar_decay_opts,    199);
-    s_dd_peak_decay   = make_labeled_dropdown_r(s_screen, "PK Decay:",      peak_decay_opts,   244);
-    s_dd_usb_policy   = make_labeled_dropdown_r(s_screen, "USB Mono:",      usb_mono_opts,     289);
-
-    /* Screen brightness — live slider, persisted on release */
-    lv_obj_t *br_lbl = lv_label_create(s_screen);
-    lv_label_set_text(br_lbl, "Brightness:");
-    lv_obj_set_style_text_color(br_lbl, lv_color_hex(0xCCDDEE), 0);
-    lv_obj_set_style_text_font(br_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_set_pos(br_lbl, 540, 334);
-
-    s_slider_brightness = lv_slider_create(s_screen);
-    lv_slider_set_range(s_slider_brightness, 10, 100);
-    lv_slider_set_value(s_slider_brightness, 100, LV_ANIM_OFF);
-    lv_obj_set_size(s_slider_brightness, 160, 12);
-    lv_obj_set_pos(s_slider_brightness, 700, 338);
-    lv_obj_add_event_cb(s_slider_brightness, brightness_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_obj_add_event_cb(s_slider_brightness, brightness_slider_cb, LV_EVENT_RELEASED, NULL);
-
-    s_lbl_brightness_val = lv_label_create(s_screen);
-    lv_label_set_text(s_lbl_brightness_val, "100%");
-    lv_obj_set_style_text_color(s_lbl_brightness_val, lv_color_hex(0xCCDDEE), 0);
-    lv_obj_set_style_text_font(s_lbl_brightness_val, &lv_font_montserrat_14, 0);
-    lv_obj_set_pos(s_lbl_brightness_val, 875, 334);
-
-    /* ── SPL CALIBRATION (left column, below the 600 px fold) ──
-     * The engine has computed A-weighted SPL and honoured mic sensitivity
-     * since Phase 2 M2; both were persisted and REST-settable but had no
-     * control here, so the SPL readout could only be trimmed by hand-editing
-     * settings.json. This group is that missing UI. */
-    make_group_header(s_screen, "SPL CALIBRATION", 20, 605);
-
-    s_dd_a_weight = make_labeled_dropdown(s_screen, "Weighting:", a_weight_opts, 631);
-
-    lv_obj_t *ms_lbl = lv_label_create(s_screen);
-    lv_label_set_text(ms_lbl, "Mic Sensitivity:");
-    lv_obj_set_style_text_color(ms_lbl, lv_color_hex(0xCCDDEE), 0);
-    lv_obj_set_style_text_font(ms_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_set_pos(ms_lbl, 20, 676);
-
-    s_slider_mic_sens = lv_slider_create(s_screen);
+    s_slider_mic_sens = row_slider(col1, "Mic Sens:", &s_lbl_mic_sens_val);
     lv_slider_set_range(s_slider_mic_sens, mic_sens_db_to_slider(-60.0f),
                                            mic_sens_db_to_slider(0.0f));
     lv_slider_set_value(s_slider_mic_sens, mic_sens_db_to_slider(-38.0f), LV_ANIM_OFF);
-    lv_obj_set_size(s_slider_mic_sens, 160, 12);
-    lv_obj_set_pos(s_slider_mic_sens, 160, 680);
     lv_obj_add_event_cb(s_slider_mic_sens, mic_sens_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(s_slider_mic_sens, mic_sens_slider_cb, LV_EVENT_RELEASED, NULL);
-
-    s_lbl_mic_sens_val = lv_label_create(s_screen);
-    lv_obj_set_style_text_color(s_lbl_mic_sens_val, lv_color_hex(0xCCDDEE), 0);
-    lv_obj_set_style_text_font(s_lbl_mic_sens_val, &lv_font_montserrat_14, 0);
-    lv_obj_set_pos(s_lbl_mic_sens_val, 335, 676);
     update_mic_sens_label(mic_sens_db_to_slider(-38.0f));
 
-    lv_obj_t *ms_hint = lv_label_create(s_screen);
-    lv_label_set_text(ms_hint, "From the microphone datasheet (typ. -38 dBV/Pa)");
-    lv_obj_set_style_text_color(ms_hint, lv_color_hex(0x88AACC), 0);
-    lv_obj_set_style_text_font(ms_hint, &lv_font_montserrat_12, 0);
-    lv_obj_set_pos(ms_hint, 20, 706);
+    make_note(col1, "From the mic datasheet (typ. -38 dBV/Pa)", &lv_font_montserrat_12);
 
-    /* ── SETTINGS PROFILE (left column, below SPL CALIBRATION) ──
-     * Selecting a profile LOADS it. The PRESETS group in the right column is
-     * where saving lives, and there is no room next to it — but its status
-     * label echoes the active profile name, so the two stay connected. */
-    make_group_header(s_screen, "SETTINGS PROFILE", 20, 750);
-    s_dd_profile = make_labeled_dropdown(s_screen, "Load Profile:", "(none)", 776);
+    make_group_header(col1, "NOISE REDUCTION");
+    s_dd_nf_enable = row_dropdown(col1, "Noise Floor:", "Off\nOn");
+
+    s_lbl_nf_status = make_note(col1,
+        dsp_engine_has_noise_floor() ? "Calibrated " LV_SYMBOL_OK : "Not calibrated",
+        &lv_font_montserrat_14);
+
+    {
+        static const char        *nf_labels[] = { "Capture Noise Floor", "Clear" };
+        static const lv_event_cb_t nf_cbs[]   = { capture_btn_cb, clear_btn_cb };
+        lv_obj_t *row = row_buttons(col1, nf_labels, nf_cbs, 2);
+        s_btn_nf_capture = lv_obj_get_child(row, 0);
+    }
+
+    /* "Subtract Ambient Noise:" no longer fits the label cell at font 14. */
+    s_sw_ambient = row_switch(col1, "Subtract Ambient:");
+    lv_obj_add_event_cb(s_sw_ambient, ambient_switch_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    if (dsp_engine_ambient_noise_active())
+        lv_obj_add_state(s_sw_ambient, LV_STATE_CHECKED);
+
+    s_dd_amb_strength = row_dropdown(col1, "Ambient Strength:", amb_strength_opts);
+
+    /* ══ COLUMN 2 — everything about how it looks ═══════════════ */
+
+    make_group_header(col2, "DISPLAY");
+    s_dd_disp_mode    = row_dropdown(col2, "Display Mode:",  disp_mode_opts);
+    s_dd_color_scheme = row_dropdown(col2, "Color Theme:",   color_scheme_opts);
+    s_dd_db_range     = row_dropdown(col2, "Display Range:", db_range_opts);
+    s_dd_bar_decay    = row_dropdown(col2, "Bar Decay:",     bar_decay_opts);
+    s_dd_peak_decay   = row_dropdown(col2, "PK Decay:",      peak_decay_opts);
+    s_dd_usb_policy   = row_dropdown(col2, "USB Mono:",      usb_mono_opts);
+
+    s_slider_brightness = row_slider(col2, "Brightness:", &s_lbl_brightness_val);
+    lv_slider_set_range(s_slider_brightness, 10, 100);
+    lv_slider_set_value(s_slider_brightness, 100, LV_ANIM_OFF);
+    lv_label_set_text(s_lbl_brightness_val, "100%");
+    lv_obj_add_event_cb(s_slider_brightness, brightness_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(s_slider_brightness, brightness_slider_cb, LV_EVENT_RELEASED, NULL);
+
+    make_group_header(col2, "AUTO GAIN (AGC)");
+    s_dd_agc_enable = row_dropdown(col2, "Auto Gain:",  agc_enable_opts);
+    s_dd_agc_target = row_dropdown(col2, "AGC Target:", agc_target_opts);
+    s_dd_agc_speed  = row_dropdown(col2, "AGC Speed:",  agc_speed_opts);
+
+    make_group_header(col2, "STARTUP");
+    s_dd_splash = row_dropdown(col2, "Splash Screen:", splash_opts);
+    make_note(col2, "Applies on the next restart.", &lv_font_montserrat_12);
+
+    /* ══ COLUMN 3 — storage, calibration files, the network ═════ */
+
+    make_group_header(col3, "PRESETS / SD CARD");
+    s_lbl_sd_status = make_note(col3,
+        settings_mgr_sd_available() ? "SD: Ready" : "SD: Not found (NVS backup)",
+        &lv_font_montserrat_12);
+
+    /* Selecting a profile LOADS it; Save As is right below, because this is
+     * where you are when you decide the current setup is worth keeping. */
+    s_dd_profile = row_dropdown(col3, "Load Profile:", "(none)");
     lv_obj_add_event_cb(s_dd_profile, profile_dd_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    row_button(col3, LV_SYMBOL_SAVE "  Save As...", sd_save_btn_cb, 30);
 
-    /* Save As, right next to the selector. Saving already existed under
-     * PRESETS > Save, but a group offering only "Load Profile" reads as though
-     * profiles cannot be created from here — and this is where you are when
-     * you decide the current setup is worth keeping. Same handler, so there is
-     * only one save path. */
-    lv_obj_t *btn_prof_save = lv_button_create(s_screen);
-    lv_obj_set_size(btn_prof_save, 130, 36);
-    lv_obj_set_pos(btn_prof_save, 390, 770);
-    lv_obj_add_event_cb(btn_prof_save, sd_save_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *btn_prof_save_lbl = lv_label_create(btn_prof_save);
-    lv_label_set_text(btn_prof_save_lbl, LV_SYMBOL_SAVE "  Save As...");
-    lv_obj_set_style_text_font(btn_prof_save_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_center(btn_prof_save_lbl);
+    {
+        static const char        *sd_labels[] = { "Save", "Load", "Retry", "Format" };
+        static const lv_event_cb_t sd_cbs[]   = { sd_save_btn_cb, sd_load_btn_cb,
+                                                  sd_retry_btn_cb, sd_format_btn_cb };
+        row_buttons(col3, sd_labels, sd_cbs, 4);
+    }
 
-    /* Timezone sits with the profile group because both are "how the device
-     * labels things" rather than measurement settings. FAT stores local time,
-     * so this changes what timestamp a screenshot is written with. */
-    s_dd_timezone = make_labeled_dropdown(s_screen, "Timezone:", "UTC", 836);
+    s_lbl_profile_hint = make_note(col3, "", &lv_font_montserrat_12);
+    update_profile_hint();
+
+    make_group_header(col3, "MIC CALIBRATION");
+    s_dd_cal_enable  = row_dropdown(col3, "Mic Cal:", "Off\nOn");
+    s_lbl_cal_status = make_note(col3, "No calibration loaded", &lv_font_montserrat_12);
+    {
+        static const char        *cal_labels[] = { "Load File", "Clear" };
+        static const lv_event_cb_t cal_cbs[]   = { cal_load_btn_cb, cal_clear_btn_cb };
+        row_buttons(col3, cal_labels, cal_cbs, 2);
+    }
+
+    /* NETWORK. The Wi-Fi Setup button used to sit inside the calibration band
+     * despite being unrelated to it. */
+    make_group_header(col3, "NETWORK");
+    s_lbl_wifi_status = make_note(col3, "WiFi: ...", &lv_font_montserrat_12);
+    row_button(col3, LV_SYMBOL_WIFI "  Wi-Fi Setup", wifi_setup_btn_cb, 30);
+
+    /* Timezone gets the full column width: the labels run to "Europe/Berlin
+     * (CET)". FAT stores local time, so this changes what timestamp a
+     * screenshot is written with, not merely how dates are rendered. */
+    s_dd_timezone = row_dropdown_wide(col3, "Timezone:", "UTC");
     timezone_fill_options();
     lv_dropdown_set_selected(s_dd_timezone, timezone_tz_to_index(SETTINGS_TZ_DEFAULT));
 
-    s_lbl_profile_hint = lv_label_create(s_screen);
-    lv_obj_set_width(s_lbl_profile_hint, 480);
-    lv_label_set_long_mode(s_lbl_profile_hint, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(s_lbl_profile_hint, lv_color_hex(0x88AACC), 0);
-    lv_obj_set_style_text_font(s_lbl_profile_hint, &lv_font_montserrat_12, 0);
-    lv_obj_set_pos(s_lbl_profile_hint, 20, 806);
-    update_profile_hint();
+    /* Back applies all pending changes. It sits in the top-right button row
+     * rather than at the bottom of a column, so it is in the same place on
+     * every screen and never moves when a group grows. */
+    ui_nav_back_create(s_screen, back_btn_cb);
 
-    /* Set initial selection to match default config */
+    /* Initial selections matching the default config */
     lv_dropdown_set_selected(s_dd_color_scheme, COLOR_SCHEME_DARK);
     lv_dropdown_set_selected(s_dd_bar_decay,    0);  /* Instant = no decay (default) */
     lv_dropdown_set_selected(s_dd_peak_decay,   2);  /* Medium = 0.25 dB/frame */
@@ -887,91 +1019,10 @@ esp_err_t screen_settings_create(settings_changed_cb_t cb, void *ctx,
     lv_dropdown_set_selected(s_dd_overlap,      overlap_pct_to_index(s_cur_cfg.overlap_pct));
     lv_dropdown_set_selected(s_dd_gain,         gain_db_to_index(s_cur_gain_db));
     lv_dropdown_set_selected(s_dd_nf_enable,    s_cur_cfg.noise_floor_enabled ? 1 : 0);
-
-    /* Presets / SD card — status + Save / Load / Retry / Format */
-    make_group_header(s_screen, "PRESETS / SD CARD", 540, 385);
-    s_lbl_sd_status = lv_label_create(s_screen);
-    lv_label_set_text(s_lbl_sd_status,
-                      settings_mgr_sd_available() ? "SD: Ready" : "SD: Not found (NVS backup)");
-    lv_obj_set_style_text_color(s_lbl_sd_status, lv_color_hex(0x88AACC), 0);
-    lv_obj_set_style_text_font(s_lbl_sd_status, &lv_font_montserrat_12, 0);
-    lv_obj_set_pos(s_lbl_sd_status, 540, 411);
-
-#define MAKE_SD_BTN(label_str, cb, x_pos, y_pos, w_px) do { \
-    lv_obj_t *_b = lv_button_create(s_screen);        \
-    lv_obj_set_size(_b, w_px, 28);                    \
-    lv_obj_set_pos(_b, x_pos, y_pos);                 \
-    lv_obj_add_event_cb(_b, cb, LV_EVENT_CLICKED, NULL); \
-    lv_obj_t *_l = lv_label_create(_b);               \
-    lv_label_set_text(_l, label_str);                  \
-    lv_obj_center(_l);                                 \
-} while(0)
-
-    MAKE_SD_BTN("Save",   sd_save_btn_cb,  540, 435, 95);
-    MAKE_SD_BTN("Load",   sd_load_btn_cb,  637, 435, 95);
-    MAKE_SD_BTN("Retry",  sd_retry_btn_cb, 734, 435, 80);
-    MAKE_SD_BTN("Format", sd_format_btn_cb,816, 435, 80);
-
-#undef MAKE_SD_BTN
-
-    /* Mic calibration — file from /sdcard/spectrum/cal, applied per-bin */
-    make_group_header(s_screen, "MIC CALIBRATION", 540, 475);
-    s_dd_cal_enable = make_labeled_dropdown_r(s_screen, "Mic Cal:", "Off\nOn", 501);
-
-    s_lbl_cal_status = lv_label_create(s_screen);
-    lv_label_set_text(s_lbl_cal_status, "No calibration loaded");
-    lv_obj_set_style_text_color(s_lbl_cal_status, lv_color_hex(0x88AACC), 0);
-    lv_obj_set_style_text_font(s_lbl_cal_status, &lv_font_montserrat_12, 0);
-    lv_obj_set_pos(s_lbl_cal_status, 540, 545);
-
-#define MAKE_CAL_BTN(label_str, cb, x_pos, y_pos, w_px) do { \
-    lv_obj_t *_b = lv_button_create(s_screen);        \
-    lv_obj_set_size(_b, w_px, 28);                    \
-    lv_obj_set_pos(_b, x_pos, y_pos);                 \
-    lv_obj_add_event_cb(_b, cb, LV_EVENT_CLICKED, NULL); \
-    lv_obj_t *_l = lv_label_create(_b);               \
-    lv_label_set_text(_l, label_str);                  \
-    lv_obj_center(_l);                                 \
-} while(0)
-
-    MAKE_CAL_BTN("Load File", cal_load_btn_cb, 540, 567, 110);
-    MAKE_CAL_BTN("Clear",     cal_clear_btn_cb, 658, 567, 80);
-
-#undef MAKE_CAL_BTN
-
-    /* ══ AUTO GAIN (AGC) — below the fold, reachable by scrolling ═══ */
-    make_group_header(s_screen, "AUTO GAIN (AGC)", 540, 605);
-    s_dd_agc_enable = make_labeled_dropdown_r(s_screen, "Auto Gain:",  agc_enable_opts, 631);
-    s_dd_agc_target = make_labeled_dropdown_r(s_screen, "AGC Target:", agc_target_opts, 676);
-    s_dd_agc_speed  = make_labeled_dropdown_r(s_screen, "AGC Speed:",  agc_speed_opts,  721);
-    lv_dropdown_set_selected(s_dd_agc_enable, 0);   /* Off */
-    lv_dropdown_set_selected(s_dd_agc_target, agc_target_dbfs_to_index(-12));
-    lv_dropdown_set_selected(s_dd_agc_speed,  AGC_SPEED_SLOW);
-
-    /* WiFi status — AP name+password while provisioning, SSID+IP when joined */
-    s_lbl_wifi_status = lv_label_create(s_screen);
-    lv_label_set_text(s_lbl_wifi_status, "WiFi: ...");
-    lv_obj_set_style_text_color(s_lbl_wifi_status, lv_color_hex(0x88AACC), 0);
-    lv_obj_set_style_text_font(s_lbl_wifi_status, &lv_font_montserrat_12, 0);
-    lv_obj_set_pos(s_lbl_wifi_status, 20, 518);
-
-    /* Wi-Fi setup button — opens the on-device scan/join screen */
-    lv_obj_t *wifi_btn = lv_button_create(s_screen);
-    lv_obj_set_size(wifi_btn, 256, 28);
-    lv_obj_set_pos(wifi_btn, 748, 567);
-    lv_obj_add_event_cb(wifi_btn, wifi_setup_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *wifi_btn_lbl = lv_label_create(wifi_btn);
-    lv_label_set_text(wifi_btn_lbl, LV_SYMBOL_WIFI "  Wi-Fi Setup");
-    lv_obj_center(wifi_btn_lbl);
-
-    /* Back button — applies all pending changes, spans the first column */
-    lv_obj_t *back_btn = lv_button_create(s_screen);
-    lv_obj_set_size(back_btn, 360, 40);
-    lv_obj_set_pos(back_btn, 20, 543);
-    lv_obj_add_event_cb(back_btn, back_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *back_lbl = lv_label_create(back_btn);
-    lv_label_set_text(back_lbl, "Back");
-    lv_obj_center(back_lbl);
+    lv_dropdown_set_selected(s_dd_agc_enable,   0);   /* Off */
+    lv_dropdown_set_selected(s_dd_agc_target,   agc_target_dbfs_to_index(-12));
+    lv_dropdown_set_selected(s_dd_agc_speed,    AGC_SPEED_SLOW);
+    lv_dropdown_set_selected(s_dd_splash,       splash_seconds_to_index(5));
 
     ESP_LOGI(TAG, "settings screen created");
     return ESP_OK;
@@ -1005,6 +1056,7 @@ void screen_settings_collect(settings_t *out)
     out->agc_enabled             = (lv_dropdown_get_selected(s_dd_agc_enable) == 1);
     out->agc_target_dbfs         = agc_target_index_to_dbfs(lv_dropdown_get_selected(s_dd_agc_target));
     out->agc_speed               = (int)lv_dropdown_get_selected(s_dd_agc_speed);
+    out->splash_seconds          = splash_index_to_seconds(lv_dropdown_get_selected(s_dd_splash));
 }
 
 /* Update every widget + s_cur_cfg from cfg WITHOUT firing the changed
@@ -1050,6 +1102,7 @@ void screen_settings_sync_from(const settings_t *cfg)
     update_cal_status_label();
     screen_settings_sync_profile(cfg->active_profile);
     lv_dropdown_set_selected(s_dd_timezone, timezone_tz_to_index(cfg->timezone));
+    lv_dropdown_set_selected(s_dd_splash, splash_seconds_to_index(cfg->splash_seconds));
     screen_settings_sync_agc(cfg->agc_enabled, cfg->agc_target_dbfs, cfg->agc_speed);
 
     if (cfg->ambient_noise_enabled) lv_obj_add_state(s_sw_ambient, LV_STATE_CHECKED);

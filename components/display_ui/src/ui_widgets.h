@@ -17,7 +17,15 @@
  *        [AGC ][GRD ][ ||  ][RST ][ PK ][ MX ][shot][gear]
  *
  * Slot 1 is deliberately skipped by the spectrum screen: it belongs to the
- * screenshot button, which is created elsewhere. */
+ * screenshot button, which is created elsewhere.
+ *
+ * On every OTHER screen slot 0 is free, so navigation lives there instead:
+ *
+ *   slot   2      1      0
+ *        [Home][shot][Back]
+ *
+ * Home takes slot 2 rather than slot 1 because slot 1 is the global screenshot
+ * button, which keeps the same position on every screen by design. */
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -43,6 +51,18 @@
 lv_obj_t *ui_status_btn_create(lv_obj_t *parent, int slot, bool in_status_bar,
                                const char *text, lv_event_cb_t cb,
                                lv_obj_t **out_label);
+
+/* Navigation for the secondary screens (Settings, Wi-Fi, the file dialogs).
+ *
+ * `screen` is the screen object itself — these are not in a status bar, and a
+ * plain LVGL screen carries no padding, so they land on exactly the same
+ * pixels as the screenshot button above them.
+ *
+ * Back leaves for the screen you came from; Home jumps straight to the
+ * spectrum view, which otherwise takes two or three Backs from a nested
+ * dialog. */
+lv_obj_t *ui_nav_back_create(lv_obj_t *screen, lv_event_cb_t cb);
+lv_obj_t *ui_nav_home_create(lv_obj_t *screen, lv_event_cb_t cb);
 
 /* Add a button that positions itself (the waterfall speed overlay) to the
  * theme registry, so it recolours with everything else. */
