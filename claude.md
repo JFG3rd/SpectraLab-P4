@@ -279,3 +279,39 @@ See instructions.md (user guide) and README.md before editing docs.
     out. Anything before `TIME_VALID_EPOCH` (2021) is reported as "unknown"
     rather than shown. Note FAT stores **local** time, so `settings_t.timezone`
     changes what is written, not just what is rendered.
+
+23. **Colour theming is styles + a theme hook, never a walk of the object
+    tree.** `components/display_ui/src/ui_theme.{c,h}` owns the palette table
+    (it used to be `static` inside screen_spectrum.c, which is exactly why the
+    spectrum view was the only screen that followed the user's choice). Two
+    mechanisms, and both are needed:
+    - **Shared `lv_style_t` objects.** `ui_theme_apply()` mutates them in place
+      and calls `lv_obj_report_style_change(NULL)`. Screens here are built once
+      at boot and never rebuilt (there is no `screen_settings_destroy()`), and
+      most labels are created as locals with no stored handle, so there is
+      nothing to walk — this is the only workable refresh path.
+    - **An LVGL theme hook** (`ui_theme_attach_display()`), chained onto the
+      port's theme with `lv_theme_set_parent()`, so every widget gets the
+      palette *as it is created*. Without it each new widget is a call site to
+      remember. `lv_theme_t` is opaque — use `lv_theme_create()` +
+      `lv_theme_copy()`, not a static struct.
+    Ordering traps: the hook only reaches objects created *after* it is
+    installed, so `ui_theme_attach_display()` runs in `display_ui_init()` right
+    after `display_hw_init()` and before the first screen; and
+    `display_ui_preconfigure()` must run before `display_ui_init()` so the
+    splash and every screen come up in the saved scheme rather than flashing
+    the default. Layers (`lv_layer_top()`) are created with the display, i.e.
+    before the hook, which is deliberate — painting an opaque background onto
+    the top layer would cover the whole UI.
+    Test any theme change against **HIGH CONTRAST**: it is the only light
+    scheme, so anything still using a hardcoded or stock colour is unreadable
+    there and nowhere else.
+
+24. **`tools/gen_web_assets.py` has a hardcoded ASSETS list, not a glob**, and
+    is *not* wired into the build (`platformio.ini` has only
+    `pre:tools/fix_openocd_upload.py`). A new file in `web/` that is not added
+    to that list is silently never served, and editing an existing one without
+    re-running the script silently ships the old page. After touching `web/`:
+    `python3 tools/gen_web_assets.py`, then rebuild. Each page also needs a
+    route in `web_server.c` — and the `/*` catch-all must stay registered
+    **last**, or it shadows everything after it.

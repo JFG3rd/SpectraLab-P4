@@ -1,11 +1,13 @@
 # SpectraLab-P4 User Guide
 
-This is the operator-facing guide for SpectraLab-P4 (v1.3.0). It focuses
+This is the operator-facing guide for SpectraLab-P4 (v1.3.1). It focuses
 on how to use the current firmware, with extra detail on the newest user-visible
-functionality: screenshot capture and the SD file browser, the peak readout
-cursor, SPL calibration controls, settings profiles, camera QR Wi-Fi
-provisioning, the optional front-panel keycaps, USB mono policy selection,
-richer preset persistence, pinch zoom, Scope mode, and the web workflow.
+functionality: the browser settings page, the three-column Settings screen and
+the colour theme that now covers all of it, the configurable boot splash,
+screenshot capture and the SD file browser, the peak readout cursor, SPL
+calibration controls, settings profiles, camera QR Wi-Fi provisioning, the
+optional front-panel keycaps, USB mono policy selection, richer preset
+persistence, pinch zoom, Scope mode, and the web workflow.
 
 ## Related Documents
 
@@ -44,6 +46,12 @@ The most important functional additions are:
 23. Static IP can now also be configured from the browser, and the device's `.local` address is shown on the Wi-Fi screen.
 24. The analyzer knows the time. It syncs from an NTP server when it can reach one, and otherwise takes the time from whichever browser opens a page, so screenshots carry real dates. Timezone is selectable on the device and in the browser. See section 14.
 25. Access-point mode is now a deliberate choice, not just a fallback: the analyzer can be its own Wi-Fi network permanently, with the full web interface, for use where there is none. Phones and laptops open the portal automatically. See section 14.
+26. The analyzer names the board it is running on. A P4X (EV board v1.6, rev-3 silicon) shows `SpectraLab-P4X`; the v1.5.2 board shows `SpectraLab-P4`. Read from the silicon at boot, so it is right whichever way the firmware was flashed.
+27. The boot splash lasts five seconds by default and is configurable — on the device, in the browser, or switched off entirely. See section 17.
+28. **The colour theme now applies to every screen.** Settings, Wi-Fi setup, the file dialogs, the splash and the on-screen messages used to stay dark blue whatever you chose, and their dropdowns and buttons were never themed at all. Choosing High Contrast now gives you a genuinely light UI throughout.
+29. **The Settings screen is three columns and fits on one screen.** Three groups — SPL Calibration, Settings Profile and Auto Gain — used to sit below the fold where they were easy to miss entirely.
+30. `Back` is now in the top-right button row on every screen, next to the screenshot button, and the screens opened from Settings also have a `Home` button that returns straight to the analyzer.
+31. **The browser can now configure the analyzer.** A new Settings page exposes every measurement, display, auto-gain and startup setting, and all five pages share a navigation bar. See section 17.
 
 If you only remember one thing: the analyzer now preserves more of its real
 runtime state, and the display is much more interactive.
@@ -866,7 +874,47 @@ loading from the file browser does.
 If a preset is deleted or renamed elsewhere, the profile name clears itself the
 next time you open Settings rather than pointing at something that is gone.
 
-## 17. Practical Measurement Workflows
+## 17. The Web Interface
+
+Everything below works over a network the analyzer has joined *and* over its
+own access point — the web server was never gated on the station.
+
+Five pages share a navigation bar at the top:
+
+| Page | What it is for |
+|---|---|
+| **Dashboard** (`/`) | Version, board, network, audio source, and the `.local` address worth bookmarking |
+| **Settings** (`/settings.html`) | Every device setting: DSP, display, noise reduction, SPL calibration, auto gain, startup, clock |
+| **Network** (`/wifi-setup.html`) | Join a network, choose station or access-point mode, per-network static IP |
+| **Files** (`/files.html`) | Browse and download what is on the SD card; take and delete screenshots |
+| **Calibration** (`/cal-upload.html`) | Upload a microphone calibration file |
+
+### The Settings page
+
+This is the same configuration the on-device Settings screen edits, not a copy:
+a change made here is applied to the running analyzer and written to the SD
+card immediately. `Reload` re-reads the device if you want to discard what you
+have typed.
+
+Two settings behave differently from the rest:
+
+- **Splash screen** takes effect on the next restart, because the splash is
+  long gone by the time you can change it. `Off` skips it entirely.
+- **Timezone** changes what is written into file timestamps, not merely how
+  dates are displayed — FAT stores local time. Existing files keep the date
+  they were written with.
+
+### The clock
+
+The board has no battery-backed clock. It syncs from an NTP server when it can
+reach one, preferring whatever server DHCP advertised so it works on a LAN with
+no route out. Where there is no route at all — in access-point mode, for
+instance — every page you open quietly hands the device your browser's clock
+instead. A browser is only trusted while the device has no time of its own, so
+a machine with a skewed clock cannot degrade a good sync. Files written before
+the clock was known show no date and are never restamped.
+
+## 18. Practical Measurement Workflows
 
 ### Stereo Program Material Through UCA222
 
@@ -891,7 +939,7 @@ next time you open Settings rather than pointing at something that is gone.
 3. Save a preset.
 4. The preset now carries both the visible settings and the captured baseline.
 
-## 18. Troubleshooting
+## 19. Troubleshooting
 
 ### The Scope Trace Is Too Small or Seems Missing
 
@@ -930,7 +978,7 @@ Wait briefly and retry. It means the request was too close to the previous write
 - Use short shielded RCA cables.
 - Try a line isolation transformer if needed.
 
-## 19. Files You May See on SD Card
+## 20. Files You May See on SD Card
 
 - `settings.json` - last live settings snapshot
 - `<preset>.json` - named preset config
@@ -941,7 +989,7 @@ Wait briefly and retry. It means the request was too close to the previous write
 All of these live under `/sdcard/spectrum/`, and all are visible in the
 browser's file page.
 
-## 20. Recommended Habits
+## 21. Recommended Habits
 
 - Use `Average L+R` for normal stereo USB program feeds.
 - Save presets after capturing a good static noise floor if repeatability matters.

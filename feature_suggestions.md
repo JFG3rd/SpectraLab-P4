@@ -148,3 +148,58 @@ On long-press of a bar, calculate the fundamental frequency and its harmonics (�
 Wi-Fi is now live via the on-board ESP32-C6 over SDIO, and the web server and
 REST config API have shipped, so the groundwork this depended on is done. Stream each FFT frame as a JSON or binary WebSocket message to a browser tab for logging, export, and remote monitoring.  
 **Why:** Enables data logging to a laptop, real-time visualization with browser-side tooling (e.g. D3.js), and remote monitoring of a permanently-installed sensor.
+
+---
+
+## Web Interface Reorganization
+
+The v1.3.1 pass did the structural work: a shared navigation bar, a real
+Settings page driven by `/api/config` (which had been complete and unused since
+M4), and moving the clock/timezone controls off the file browser where a
+device-wide setting had no business living. What follows is what was
+deliberately left for later, roughly in order of value per unit of risk.
+
+### 1. Rename the pages to match what they now do — small, worth doing
+
+`wifi-setup.html` grew into three unrelated sections (join a network, choose
+station/AP mode, per-network IP configuration) and is really the *Network*
+page; `cal-upload.html` is *Calibration*. Rename both, and keep the old paths
+as alias routes — the captive portal, the on-device Wi-Fi screen and any
+bookmark all point at the current names, and a 404 there strands someone who is
+already having network trouble. Route budget is fine: 25 of 32 used.
+
+### 2. Split the Network page into cards — small
+
+Its three sections currently run together as one column. They are independent
+tasks with independent failure modes, and the mode switch in particular
+restarts the device and takes it off the LAN. Visually separate cards would
+stop the two-tap confirmation from reading as part of the form above it.
+
+### 3. Make the dashboard a real dashboard — medium
+
+It is currently four links and a status line. Everything for a live overview is
+already in `GET /api/status`: board, version, network, audio source, clock and
+its source, free heap, whether a calibration is loaded. Showing SD state and
+the most recent screenshot as a thumbnail would make it the page worth leaving
+open.
+
+### 4. Trim `style.css` — medium, mostly mechanical
+
+1457 lines, copied wholesale from another project (see `web/README.md`), of
+which roughly a dozen classes are used. The dead sections (`.dashboard`,
+`.logs-page`, `.log-entry.*`, `.filter-tabs`, `.info-grid`, `.card*`) are ~60%
+of the file and every byte of it is baked into flash as a C array. Worth doing
+alongside item 3, since a real dashboard may want some of those classes back.
+
+### 5. Live spectrum in the browser — large, and already tracked
+
+This is Phase 2 M5 (WebSocket spectrum stream), above. It is the one addition
+that would change what the web interface is *for* rather than how it is
+arranged.
+
+### Deliberately not suggested
+
+A single-page app or any client-side framework. The assets are C arrays in
+flash, there is no bundler, and in access-point mode there is no route to a CDN
+— a framework would have to be vendored into flash to serve a UI that is five
+mostly-static forms.

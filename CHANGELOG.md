@@ -1,6 +1,65 @@
 ## [Unreleased]
 
 
+## [1.3.1] - 2026-08-10
+
+### Added
+- The analyzer names the board it is actually running on. A P4X (rev-3
+  silicon, EV board v1.6) now reads "SpectraLab-P4X" on the status bar, the
+  splash and in `GET /api/status`; the older v1.5.2 board still reads
+  "SpectraLab-P4". Detected from the silicon revision at runtime rather than
+  from the build environment, so it stays correct down the raw `idf.py` path,
+  which skips `tools/check_chip_rev.py`.
+- Configurable boot splash. Five seconds by default (was a hardcoded 2.5), set
+  from the on-device Settings screen or the browser, and **Off** skips it
+  entirely. The credit line pulses rather than sitting still.
+- **A device settings page in the browser** — `/settings.html`. The REST config
+  API has been complete since M4 and no HTML page had ever called it, so every
+  setting except the network was device-only. The form is built from a single
+  descriptor array rather than 25 hand-written fields.
+- Shared navigation across every web page. Navigation used to be hub-and-spoke:
+  each page had one link home and none to its siblings, so Files to Network was
+  two hops.
+- `Home` button beside `Back` on the screens reached from Settings, so leaving a
+  nested dialog is one tap instead of three.
+
+### Changed
+- **The colour theme now applies to the whole UI.** It used to cover only the
+  spectrum screen and the status-row buttons; Settings, Wi-Fi setup, the file
+  dialogs, the splash and the toast were permanently dark-blue, and their
+  dropdowns, buttons, sliders and switches were not styled at all — they
+  inherited LVGL's stock theme, which this project builds in its *light*
+  variant. Choosing HIGH CONTRAST turned the spectrum light and left everything
+  else dark. The palette moved into a shared `ui_theme` module which also
+  installs an LVGL theme hook, so every widget picks up the scheme as it is
+  created — including screens added later.
+- **Settings is three columns instead of two.** The old layout wasted 160 px
+  down the middle, gave a 220 px dropdown to text like "50%", and pushed three
+  whole groups (SPL Calibration, Settings Profile, Auto Gain) below the 600 px
+  fold where they were easy to miss. Everything now fits on one screen. Built
+  with flex containers, so a row fills its column by itself.
+- `Back` sits in the top-right button row on every screen that has one, in line
+  with the settings gear and the screenshot button, instead of at the bottom of
+  a column where it moved whenever a group grew.
+- The clock and timezone controls moved off the file browser onto the new
+  settings page, where a device-wide setting belongs.
+- The theme toggle and the browser-clock push are served once from `/app.js`
+  instead of being pasted into all four pages.
+
+### Fixed
+- Two long-standing overlaps on the Settings screen: the profile hint wrapped
+  into the timezone dropdown, and the Wi-Fi Setup button sat inside the mic
+  calibration band despite being unrelated to it.
+- The toast overlay was unreadable on the light scheme (fixed dark green on
+  dark red); it now takes its colours from the active palette.
+- A status-row button created before the spectrum screen came up used hardcoded
+  DARK colours until the next theme change.
+
+### Note
+- `settings_t` grew a field (`splash_seconds`), which invalidates the NVS blob.
+  Devices without an SD card get a one-time settings reset on first boot; SD
+  `settings.json` keeps every existing value. Expected, not a bug.
+
 ## [1.3.0] - 2026-08-09
 
 ### Added
