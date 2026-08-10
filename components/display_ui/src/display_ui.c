@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "esp_chip_info.h"
 #include "bsp/esp32_p4_function_ev_board.h"
 #include "lvgl.h"
 
@@ -26,6 +27,7 @@
 #include "screen_wifi.h"
 #include "screenshot.h"
 #include "ui_widgets.h"
+#include "ui_theme.h"
 
 static const char *TAG = "display_ui";
 
@@ -59,6 +61,7 @@ static bool         s_last_cal_enabled = false;
 static char         s_last_cal_file[32] = "";
 static char         s_last_profile[SETTINGS_NAME_MAX] = "";
 static char         s_last_timezone[40] = SETTINGS_TZ_DEFAULT;
+static int          s_last_splash_s   = 5;
 static bool         s_last_agc_enabled = false;
 static int          s_last_agc_target  = -12;
 static int          s_last_agc_speed   = AGC_SPEED_SLOW;
@@ -137,7 +140,8 @@ static void save_current_settings(void)
                      .cal_enabled             = s_last_cal_enabled,
                      .agc_enabled             = s_last_agc_enabled,
                      .agc_target_dbfs         = s_last_agc_target,
-                     .agc_speed               = s_last_agc_speed };
+                     .agc_speed               = s_last_agc_speed,
+                     .splash_seconds          = s_last_splash_s };
     strlcpy(s.cal_file, s_last_cal_file, sizeof(s.cal_file));
     strlcpy(s.active_profile, s_last_profile, sizeof(s.active_profile));
     strlcpy(s.timezone, s_last_timezone, sizeof(s.timezone));
@@ -230,6 +234,7 @@ void display_ui_sync_settings(const settings_t *cfg)
     s_last_agc_speed   = cfg->agc_speed;
     strlcpy(s_last_profile, cfg->active_profile, sizeof(s_last_profile));
     strlcpy(s_last_timezone, cfg->timezone, sizeof(s_last_timezone));
+    s_last_splash_s    = cfg->splash_seconds;
     screen_settings_sync_from(cfg);
 }
 
@@ -422,10 +427,16 @@ void display_ui_toast(const char *msg, bool ok)
 {
     if (!s_toast || !msg) return;
 
+    /* Colours come from the palette rather than a fixed dark green/red, which
+     * was unreadable on the light HIGH CONTRAST scheme: the panel colour is
+     * always a legible ground for that scheme's own accents. */
+    const ui_palette_t *pal = ui_theme_palette();
     lv_label_set_text(lv_obj_get_child(s_toast, 0), msg);
-    lv_obj_set_style_bg_color(s_toast, lv_color_hex(ok ? 0x14361F : 0x3C1418), 0);
+    lv_obj_set_style_bg_color(s_toast, lv_color_hex(pal->panel), 0);
+    lv_obj_set_style_border_color(s_toast,
+                                  lv_color_hex(ok ? ui_theme_ok_color() : ui_theme_err_color()), 0);
     lv_obj_set_style_text_color(lv_obj_get_child(s_toast, 0),
-                                lv_color_hex(ok ? 0x8CE8A8 : 0xFF9A9A), 0);
+                                lv_color_hex(ok ? ui_theme_ok_color() : ui_theme_err_color()), 0);
     lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
 
     /* Restart rather than stack: back-to-back captures should not queue up a
@@ -468,7 +479,10 @@ static void create_global_overlay(void)
     s_toast = lv_obj_create(top);
     lv_obj_set_size(s_toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_pad_all(s_toast, 10, 0);
-    lv_obj_set_style_border_width(s_toast, 0, 0);
+    /* A border rather than none: on the light scheme the panel fill is close
+     * to the page, so the accent outline is what makes the toast read as an
+     * overlay. Its colour is set per message in display_ui_toast(). */
+    lv_obj_set_style_border_width(s_toast, 2, 0);
     lv_obj_set_style_radius(s_toast, 6, 0);
     lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -30);
     lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_SCROLLABLE);
@@ -606,6 +620,46 @@ static void spectrum_timer_cb(lv_timer_t *timer)
 void display_ui_lock(void)   { bsp_display_lock(0); }
 void display_ui_unlock(void) { bsp_display_unlock(); }
 
+const char *display_ui_board_name(void)
+{
+    /* esp_chip_info() reports the revision as major*100 + minor. The two
+     * boards this project supports are distinguished by exactly that: the
+     * P4X (EV board v1.6) carries rev-3 silicon, the older v1.5.2 rev-1.
+     * Cached because the answer cannot change while we are running. */
+    static const char *s_name;
+    if (!s_name) {
+        esp_chip_info_t info;
+        esp_chip_info(&info);
+        s_name = (info.revision / 100) >= 3 ? "SpectraLab-P4X" : "SpectraLab-P4";
+        ESP_LOGI(TAG, "board: %s (chip rev v%d.%d)", s_name,
+                 info.revision / 100, info.revision % 100);
+    }
+    return s_name;
+}
+
+void display_ui_preconfigure(const settings_t *cfg)
+{
+    if (!cfg) return;
+    screen_splash_set_seconds(cfg->splash_seconds);
+    s_last_splash_s = cfg->splash_seconds;
+    s_last_scheme   = cfg->color_scheme;
+
+    /* Styles first, then the palette: ui_theme_apply() is a no-op on the
+     * styles until they exist. Both run before any screen is built, so every
+     * widget comes up in the right colours instead of flashing the default. */
+    ui_theme_init();
+    ui_theme_apply(cfg->color_scheme);
+}
+
+void display_ui_set_splash_seconds(int seconds)
+{
+    if (seconds < 0)  seconds = 0;
+    if (seconds > 15) seconds = 15;
+    if (seconds == s_last_splash_s) return;   /* nothing to persist */
+    s_last_splash_s = seconds;
+    save_current_settings();
+}
+
 esp_err_t display_ui_init(void)
 {
     ESP_RETURN_ON_FALSE(!s_initialized, ESP_ERR_INVALID_STATE, TAG, "already initialized");
@@ -626,6 +680,9 @@ esp_err_t display_ui_init(void)
 
     /* Create screens — must hold LVGL lock */
     bsp_display_lock(0);
+    /* Before the first screen exists: the theme hook only reaches objects
+     * created after it is installed. */
+    ui_theme_attach_display();
     ESP_RETURN_ON_ERROR(screen_spectrum_create(), TAG, "spectrum screen create failed");
     screen_spectrum_set_agc_cb(on_agc_button);
     ESP_RETURN_ON_ERROR(screen_settings_create(on_settings_changed, NULL,

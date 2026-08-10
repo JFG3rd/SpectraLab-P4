@@ -178,6 +178,7 @@ static char *_settings_to_json(const settings_t *cfg)
     cJSON_AddNumberToObject(root, "agc_speed",                  cfg->agc_speed);
     cJSON_AddStringToObject(root, "active_profile",             cfg->active_profile);
     cJSON_AddStringToObject(root, "timezone",                   cfg->timezone);
+    cJSON_AddNumberToObject(root, "splash_seconds",             cfg->splash_seconds);
 
     char *str = cJSON_Print(root);
     cJSON_Delete(root);
@@ -231,6 +232,7 @@ static bool _json_to_settings(const char *json_str, settings_t *out)
     if ((item = cJSON_GetObjectItem(root, "timezone")) && cJSON_IsString(item) &&
         item->valuestring != NULL)
         strlcpy(out->timezone, item->valuestring, sizeof(out->timezone));
+    GET_INT ("splash_seconds",           splash_seconds);
 
 #undef GET_INT
 #undef GET_FLT
@@ -417,6 +419,11 @@ void settings_mgr_sanitize(settings_t *s)
      * handed to setenv(), never used to build a path. */
     s->timezone[sizeof(s->timezone) - 1] = '\0';
 
+    /* Splash: 0 means "skip it", so 0 is a legal value rather than a default
+     * to be replaced. The upper bound just stops a bad value from stranding
+     * the user on the splash screen. */
+    s->splash_seconds = _clampi(s->splash_seconds, 0, 15, 5);
+
     /* AGC: target is a display headroom (below 0 dBFS); speed is an enum */
     s->agc_target_dbfs = _clampi(s->agc_target_dbfs, -30, -3, -12);
     if ((unsigned)s->agc_speed >= AGC_SPEED_COUNT) s->agc_speed = AGC_SPEED_SLOW;
@@ -444,6 +451,7 @@ static void _set_defaults(settings_t *out)
     out->agc_enabled              = false;   /* opt-in */
     out->agc_target_dbfs          = -12;     /* mid-range display headroom */
     out->agc_speed                = AGC_SPEED_SLOW;
+    out->splash_seconds           = 5;
 }
 
 esp_err_t settings_mgr_load(settings_t *out)

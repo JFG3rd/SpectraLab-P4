@@ -135,6 +135,11 @@ void app_main(void)
      * displayed. The clock itself is set later by SNTP (or a browser). */
     net_mgr_apply_timezone(loaded.timezone);
 
+    /* display_ui_init() builds every screen and shows the splash, so the
+     * splash duration and the colour theme have to be handed over before it —
+     * which works out, because the settings are already loaded by this point. */
+    display_ui_preconfigure(&loaded);
+
     /* 3. Display UI: LCD hardware init + LVGL port + spectrum screen */
     ESP_LOGI(TAG, "Step 3: display_ui_init");
     ESP_ERROR_CHECK(display_ui_init());

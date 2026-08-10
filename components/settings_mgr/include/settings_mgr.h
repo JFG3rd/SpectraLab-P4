@@ -80,6 +80,8 @@ typedef struct {
      * time, so this decides what timestamp a file is written with, not merely
      * how it is displayed. "" means UTC. */
     char           timezone[40];
+    /* Boot splash duration in seconds; 0 skips the splash entirely. */
+    int            splash_seconds;
 } settings_t;
 
 /* Everything this project writes lives under one root, so the web file
