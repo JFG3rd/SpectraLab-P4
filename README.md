@@ -93,6 +93,7 @@ Features include:
 |----------|-------------|
 | [User Guide](UserGuide.md) | How to operate the analyzer, feature by feature |
 | [Hardware Setup](hardware-setup.md) | Wiring, front-panel keycaps, signal chain |
+| [Known-Good Config](KNOWN_GOOD.md) | Verified toolchain, component and C6 firmware versions |
 | [Quick Start](#quick-start) | Build and flash the analyzer |
 | [Display Modes](#display-modes) | Supported on-device analyzer views |
 | [Embedded Web Interface](#-embedded-web-interface) | Browser dashboard, Wi-Fi setup and calibration upload |
