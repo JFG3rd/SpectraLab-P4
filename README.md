@@ -154,22 +154,41 @@ I am releasing the project as open source in the hope that other engineers, stud
 
 ## User Interface
 
-| Spectrum | Waterfall |
-|----------|-----------|
-| ![](Docu/images/Screenshots/bars-green.jpg) | ![](Docu/images/Screenshots/hero-waterfall.jpg) |
+Everything the analyzer can do is configurable on the device itself. Settings
+apply as you leave the screen — there is no Apply button — and are written to
+the SD card automatically.
 
-| Oscilloscope | Line |
-|--------------|------|
-| ![](Docu/images/Screenshots/scope-matrix.jpg) | ![](Docu/images/Screenshots/line-high-contrast.jpg) |
+<p align="center">
+<img src="Docu/images/Screenshots/settings.png" alt="On-device Settings screen: audio/DSP, display and presets in three columns" width="900">
+</p>
 
-| Settings |
-|-----------|
-| ![](Docu/images/Screenshots/settings.jpg) |
+<table>
+<tr>
+<td align="center"><strong>Saved network</strong><br>Password, addressing, forget</td>
+<td align="center"><strong>IP settings</strong><br>DHCP or per-network static address</td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/Wi-Fi%20Setup%20-%20Saved%20Nets%20-%20SSID.png" alt="Saved Wi-Fi network detail screen" width="440"></td>
+<td><img src="Docu/images/Screenshots/IP%20settings.png" alt="Per-network IP configuration screen with on-screen numeric keypad" width="440"></td>
+</tr>
+<tr>
+<td align="center"><strong>Save preset</strong><br>Named settings profiles on SD</td>
+<td align="center"><strong>Wi-Fi QR scan</strong><br>Camera provisioning</td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/Preset%20Profile%20-%20Save%20As.png" alt="Save-as screen for named settings profiles" width="440"></td>
+<td><img src="Docu/images/Screenshots/WiFi%20setup%20-%20Scan%20QR.png" alt="Wi-Fi QR scanner screen showing the camera preview" width="440"></td>
+</tr>
+</table>
 
 Touch drives everything. The one exception is the Wi-Fi QR scanner: the
 camera and the touch controller share an I2C bus, so touch pauses while the
 camera is live. Optional front-panel keycaps cover that gap and add a
 hardware display-mode shortcut — see [hardware-setup.md](hardware-setup.md).
+
+The camera can also only be started once per boot, which is why the scanner
+screen above offers a restart rather than a second scan; use **Manual** to type
+the network details instead if you would rather not reboot.
 
 ---
 
@@ -430,18 +449,62 @@ No recompilation required.
 
 # Display Modes
 
-Eight modes, cycled from the Settings screen or from the optional front-panel keycap:
+Eight modes, cycled from the Settings screen or from the optional front-panel keycap.
 
-- Bars — classic bar spectrum
-- Line — filled line/area spectrum
-- 1/3 Octave — 31-band RTA
-- Persistence — phosphor-style ghost trails
-- Waterfall — scrolling spectrogram
-- Oscilloscope — raw waveform
-- VU Meter — large SPL and peak readouts
-- Mirror — bars growing from the vertical centre
+<table>
+<tr>
+<td align="center"><strong>Bars</strong><br>Classic bar spectrum</td>
+<td align="center"><strong>Line</strong><br>Filled line/area spectrum</td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/Bars.png" alt="Bars display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/line.png" alt="Line display mode" width="440"></td>
+</tr>
+<tr>
+<td align="center"><strong>1/3 Octave</strong><br>31-band RTA</td>
+<td align="center"><strong>Persistence</strong><br>Phosphor-style ghost trails</td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/third%20octave.png" alt="One-third octave display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/persistence.png" alt="Persistence display mode" width="440"></td>
+</tr>
+<tr>
+<td align="center"><strong>Waterfall</strong><br>Scrolling spectrogram</td>
+<td align="center"><strong>Oscilloscope</strong><br>Raw waveform</td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/Waterfall.png" alt="Waterfall display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/scope.png" alt="Oscilloscope display mode" width="440"></td>
+</tr>
+<tr>
+<td align="center"><strong>VU Meter</strong><br>Large SPL and peak readouts</td>
+<td align="center"><strong>Mirror</strong><br>Bars growing from the vertical centre</td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/VU%20Meter.png" alt="VU meter display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/mirror.png" alt="Mirror display mode" width="440"></td>
+</tr>
+</table>
 
 Most analyzer views support two-finger pinch zoom for frequency span and display range.
+
+## Colour Themes
+
+Since v1.3.1 the selected scheme applies to every screen, not just the analyzer
+view. HIGH CONTRAST is the only light scheme.
+
+<table>
+<tr>
+<td align="center"><strong>Green</strong></td>
+<td align="center"><strong>Amber</strong></td>
+<td align="center"><strong>High Contrast</strong></td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/bars-green.jpg" alt="Bars in the green colour scheme" width="300"></td>
+<td><img src="Docu/images/Screenshots/bars-amber.jpg" alt="Bars in the amber colour scheme" width="300"></td>
+<td><img src="Docu/images/Screenshots/line-high-contrast.jpg" alt="Line view in the high contrast light scheme" width="300"></td>
+</tr>
+</table>
 
 ---
 

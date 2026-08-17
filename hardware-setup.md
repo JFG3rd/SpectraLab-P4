@@ -49,6 +49,26 @@ Pins and the key count are set in `menuconfig` under **Panel Button
 (Grove-Mech Keycap)**. Set a key's LED GPIO to `-1` to run that key without
 its status light, or `PANEL_BUTTON_COUNT` to 1 to fit only the abort key.
 
+### Grove Connector Orientation
+
+Use this to work out which position on the 4-pin Grove plug is which before
+you cut the cable — the numbering is easy to get backwards.
+
+<p align="center">
+<img src="Docu/images/grove%20pinout.png" alt="Grove 4-pin connector, top and side views, positions numbered 1 to 4" width="700">
+</p>
+
+> **The signal labels do not apply to this module.** That is the *generic*
+> Grove I2C pinout, so it names positions 3 and 4 `SDA` and `SCL`. The
+> Grove-Mech Keycap is not an I2C device: those two pins carry the switch
+> contact and the SK6805 LED data instead — `SIG1` and `SIG2` in the wiring
+> block above. Only positions 1 (GND) and 2 (VCC) mean what the diagram says.
+> The black/red/white/yellow wires shown are a standard Grove cable; the
+> colours named in the wiring block above are plain jumper leads.
+
+Position 2 goes to **3V3, not 5V** — see
+[Unsafe Connection](#unsafe-connection-do-not-do-this) below for why.
+
 ### Do Not Wire the Switches in Parallel
 
 ```text
