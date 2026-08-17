@@ -87,10 +87,30 @@ listed are pinned deliberately — changing them has broken this project before.
 
 ## 4. Per-board hardware state
 
-| Board | P4 chip rev | Build env | C6 ESP-Hosted slave FW | Host esp_hosted | Match | Verified |
-|---|---|---|---|---|---|---|
-| ESP32-P4-Function-EV-Board v1.5.2 | v1.x | `esp32-p4-evboard` | **2.12.9** | 2.12.9 | ✅ | v1.3.2 |
-| ESP32-P4X-Function-EV-Board v1.6 | v3.x | `esp32-p4x-evboard` | **2.12.9** | 2.12.9 | ✅ | v1.3.2 |
+| Board | P4 chip rev | Build env | C6 ESP-Hosted slave FW | Host esp_hosted | Match | Base MAC | Verified |
+|---|---|---|---|---|---|---|---|
+| ESP32-P4-Function-EV-Board v1.5.2 | v1.x | `esp32-p4-evboard` | **2.12.9** | 2.12.9 | ✅ | *not recorded* | v1.3.2 |
+| ESP32-P4X-Function-EV-Board v1.6 | v3.2 | `esp32-p4x-evboard` | **2.12.9** | 2.12.9 | ✅ | `e8:f6:0a:e7:6f:cb` | v1.3.2, 2026-08-17 |
+
+**Identify a connected board conventionally first** — ask the silicon, don't
+match serial numbers:
+
+```bash
+python3 -m esptool --port /dev/cu.usbmodem1101 --no-stub read-mac   # -> "revision v3.2"
+```
+
+Chip rev v1.x → `esp32-p4-evboard`, rev v3.x → `esp32-p4x-evboard`. This is
+also what `tools/check_chip_rev.py` does before every upload.
+
+The **MAC column is a last resort**, for when the chip cannot be queried at
+all. That case is real: if the P4 is running (or latched in ROM download mode)
+esptool reports "No serial data received" and cannot read the revision — and
+`check_chip_rev.py` treats an unanswerable probe as *skip the check*, not as
+*abort*, so the guard will not save you there. Tap `RST` and re-probe. Only if
+that still fails, fall back to matching the USB serial number from
+`pio device list` against the table above. The device's own mDNS name encodes
+the last two MAC bytes (`spectralab-p4-6fcb.local`), which is a useful
+cross-check.
 
 Both C6 co-processors have been reflashed off the factory v0.0.6 image. If a
 *third* board is ever added, assume its C6 is factory and reflash it before
@@ -101,10 +121,17 @@ on the `PROG_C6` UART header, VDD left disconnected).
 
 Capture a boot log (`/dev/cu.usbmodem1101` @ 115200) and check:
 
-- ✅ `transport: Identified slave [esp32c6]` is present.
+- ✅ `transport: Slave chip Id[12]` is present — chip id 12 is the ESP32-C6, so
+  the link came up and the slave answered. (esp_hosted 2.12.9 prints this;
+  C6Update.md quotes an `Identified slave [esp32c6]` form from an earlier
+  version. Either line means the same thing — the slave responded.)
 - ✅ `transport: Version mismatch` is **absent** anywhere in the log.
-- ✅ `STA_START` → `STA_GOT_IP` completes in roughly **1.7 s**. Nine seconds or
-  worse is the signature of an ESP-Hosted RPC timeout, i.e. a version gap.
+- ✅ `STA_START` → `STA_GOT_IP` completes in well under two seconds. Nine
+  seconds or worse is the signature of an ESP-Hosted RPC timeout, i.e. a
+  version gap.
+
+Measured on the P4X board at v1.3.2 (2026-08-17): `STA_START` at 4846 ms →
+`STA_GOT_IP` at 6180 ms = **1.33 s**, no version-mismatch warning.
 
 After a build, confirm the camera ISP tuning table won the link — if the
 prebuilt archive wins instead, white balance is never configured and
