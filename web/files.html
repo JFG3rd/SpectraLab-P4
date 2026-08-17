@@ -16,9 +16,18 @@
         .file-table th { font-weight: 600; opacity: 0.75; }
         .file-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
         .file-table td.actions { text-align: right; white-space: nowrap; }
+        /* Download (an <a>) and delete (a <button>) must end up exactly the
+           same height. The shared .button rule carries min-height:48px — a
+           touch-target size that is wrong inside a table row, and which the
+           two elements resolve differently against their own content. Kill
+           the floor and pin an explicit height so neither the "Sure?" label
+           nor the 🗑 glyph can change it. */
         .file-table .row-btn {
-            display: inline-block; width: auto; margin: 0 0 0 6px;
-            padding: 3px 10px; font-size: 0.95em; line-height: 1.4;
+            display: inline-flex; align-items: center; justify-content: center;
+            width: auto; margin: 0 0 0 6px;
+            padding: 0 10px; font-size: 0.95em; line-height: 1;
+            min-height: 0; height: 26px;
+            vertical-align: middle; white-space: nowrap;
         }
     </style>
     <script src="/app.js"></script>
