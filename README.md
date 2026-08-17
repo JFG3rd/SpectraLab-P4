@@ -27,6 +27,66 @@ The animation below was generated from the actual hardware demonstration video.
 The animation demonstrates live spectrum analysis, waterfall display, oscilloscope mode, display mode switching and the touchscreen user interface.
 
 ---
+# Display Modes
+
+Eight modes, cycled from the Settings screen or from the optional front-panel keycap.
+
+<table>
+<tr>
+<td align="center"><strong>Bars</strong><br>Classic bar spectrum</td>
+<td align="center"><strong>Line</strong><br>Filled line/area spectrum</td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/Bars.png" alt="Bars display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/line.png" alt="Line display mode" width="440"></td>
+</tr>
+<tr>
+<td align="center"><strong>1/3 Octave</strong><br>31-band RTA</td>
+<td align="center"><strong>Persistence</strong><br>Phosphor-style ghost trails</td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/third%20octave.png" alt="One-third octave display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/persistence.png" alt="Persistence display mode" width="440"></td>
+</tr>
+<tr>
+<td align="center"><strong>Waterfall</strong><br>Scrolling spectrogram</td>
+<td align="center"><strong>Oscilloscope</strong><br>Raw waveform</td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/Waterfall.png" alt="Waterfall display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/scope.png" alt="Oscilloscope display mode" width="440"></td>
+</tr>
+<tr>
+<td align="center"><strong>VU Meter</strong><br>Large SPL and peak readouts</td>
+<td align="center"><strong>Mirror</strong><br>Bars growing from the vertical centre</td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/VU%20Meter.png" alt="VU meter display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/mirror.png" alt="Mirror display mode" width="440"></td>
+</tr>
+</table>
+
+Most analyzer views support two-finger pinch zoom for frequency span and display range.
+
+## Colour Themes
+
+Since v1.3.1 the selected scheme applies to every screen, not just the analyzer
+view. HIGH CONTRAST is the only light scheme.
+
+<table>
+<tr>
+<td align="center"><strong>Green</strong></td>
+<td align="center"><strong>Amber</strong></td>
+<td align="center"><strong>High Contrast</strong></td>
+</tr>
+<tr>
+<td><img src="Docu/images/Screenshots/bars-green.jpg" alt="Bars in the green colour scheme" width="300"></td>
+<td><img src="Docu/images/Screenshots/bars-amber.jpg" alt="Bars in the amber colour scheme" width="300"></td>
+<td><img src="Docu/images/Screenshots/line-high-contrast.jpg" alt="Line view in the high contrast light scheme" width="300"></td>
+</tr>
+</table>
+
+---
 
 # 🌐 Embedded Web Interface
 
@@ -85,7 +145,19 @@ Features include:
 </tr>
 </table>
 
+## Why I Built This Project
 
+This project began as a personal engineering challenge while I was undergoing treatment for acute myeloid leukemia (AML). During an extended hospital stay I wanted to continue learning, solving problems and building something real — work I could pick up and put down around treatment, and that would still be there when I came back to it.
+
+Engineering has always been one of the ways I make sense of complex problems, and this project became an opportunity to keep learning while facing a very different kind of challenge.
+
+The ESP32-P4 is a remarkably capable embedded platform, yet most audio examples stop at demonstrating individual peripherals or basic FFT processing. What started as an exploration of the ESP32-P4 and real-time DSP gradually evolved into a much more capable audio measurement instrument. Every new feature was added with the same goal in mind: to make it behave like a real piece of laboratory equipment rather than a technology demonstration.
+
+It combines modern embedded graphics, DSP, USB Audio Class support, persistent configuration, touchscreen interaction and web-based configuration into a single standalone application.
+
+I am releasing the project as open source in the hope that other engineers, students, makers, and audio enthusiasts will find it useful, learn from it, and perhaps extend it in directions I never anticipated.
+
+---
 
 ## Documentation
 
@@ -103,19 +175,7 @@ Features include:
 
 ---
 
-## Why I Built This Project
 
-This project began as a personal engineering challenge while I was undergoing treatment for acute myeloid leukemia (AML). During an extended hospital stay I wanted to continue learning, solving problems and building something real — work I could pick up and put down around treatment, and that would still be there when I came back to it.
-
-Engineering has always been one of the ways I make sense of complex problems, and this project became an opportunity to keep learning while facing a very different kind of challenge.
-
-The ESP32-P4 is a remarkably capable embedded platform, yet most audio examples stop at demonstrating individual peripherals or basic FFT processing. What started as an exploration of the ESP32-P4 and real-time DSP gradually evolved into a much more capable audio measurement instrument. Every new feature was added with the same goal in mind: to make it behave like a real piece of laboratory equipment rather than a technology demonstration.
-
-It combines modern embedded graphics, DSP, USB Audio Class support, persistent configuration, touchscreen interaction and web-based configuration into a single standalone application.
-
-I am releasing the project as open source in the hope that other engineers, students, makers, and audio enthusiasts will find it useful, learn from it, and perhaps extend it in directions I never anticipated.
-
----
 
 # Highlights
 
@@ -447,66 +507,6 @@ No recompilation required.
 
 ---
 
-# Display Modes
-
-Eight modes, cycled from the Settings screen or from the optional front-panel keycap.
-
-<table>
-<tr>
-<td align="center"><strong>Bars</strong><br>Classic bar spectrum</td>
-<td align="center"><strong>Line</strong><br>Filled line/area spectrum</td>
-</tr>
-<tr>
-<td><img src="Docu/images/Screenshots/Bars.png" alt="Bars display mode" width="440"></td>
-<td><img src="Docu/images/Screenshots/line.png" alt="Line display mode" width="440"></td>
-</tr>
-<tr>
-<td align="center"><strong>1/3 Octave</strong><br>31-band RTA</td>
-<td align="center"><strong>Persistence</strong><br>Phosphor-style ghost trails</td>
-</tr>
-<tr>
-<td><img src="Docu/images/Screenshots/third%20octave.png" alt="One-third octave display mode" width="440"></td>
-<td><img src="Docu/images/Screenshots/persistence.png" alt="Persistence display mode" width="440"></td>
-</tr>
-<tr>
-<td align="center"><strong>Waterfall</strong><br>Scrolling spectrogram</td>
-<td align="center"><strong>Oscilloscope</strong><br>Raw waveform</td>
-</tr>
-<tr>
-<td><img src="Docu/images/Screenshots/Waterfall.png" alt="Waterfall display mode" width="440"></td>
-<td><img src="Docu/images/Screenshots/scope.png" alt="Oscilloscope display mode" width="440"></td>
-</tr>
-<tr>
-<td align="center"><strong>VU Meter</strong><br>Large SPL and peak readouts</td>
-<td align="center"><strong>Mirror</strong><br>Bars growing from the vertical centre</td>
-</tr>
-<tr>
-<td><img src="Docu/images/Screenshots/VU%20Meter.png" alt="VU meter display mode" width="440"></td>
-<td><img src="Docu/images/Screenshots/mirror.png" alt="Mirror display mode" width="440"></td>
-</tr>
-</table>
-
-Most analyzer views support two-finger pinch zoom for frequency span and display range.
-
-## Colour Themes
-
-Since v1.3.1 the selected scheme applies to every screen, not just the analyzer
-view. HIGH CONTRAST is the only light scheme.
-
-<table>
-<tr>
-<td align="center"><strong>Green</strong></td>
-<td align="center"><strong>Amber</strong></td>
-<td align="center"><strong>High Contrast</strong></td>
-</tr>
-<tr>
-<td><img src="Docu/images/Screenshots/bars-green.jpg" alt="Bars in the green colour scheme" width="300"></td>
-<td><img src="Docu/images/Screenshots/bars-amber.jpg" alt="Bars in the amber colour scheme" width="300"></td>
-<td><img src="Docu/images/Screenshots/line-high-contrast.jpg" alt="Line view in the high contrast light scheme" width="300"></td>
-</tr>
-</table>
-
----
 
 # Software Architecture
 
