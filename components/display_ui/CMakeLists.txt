@@ -8,6 +8,7 @@ idf_component_register(
         "src/screen_file_dialog.c"
         "src/screen_wifi.c"
         "src/screen_splash.c"
+        "src/splash_logo.c"
         "src/screenshot.c"
         "src/ui_widgets.c"
         "src/ui_theme.c"

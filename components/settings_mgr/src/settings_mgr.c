@@ -391,7 +391,7 @@ void settings_mgr_sanitize(settings_t *s)
         s->usb_stereo_policy > SETTINGS_USB_STEREO_POLICY_RIGHT)
         s->usb_stereo_policy = SETTINGS_USB_STEREO_POLICY_SUM;
 
-    if ((unsigned)s->color_scheme > COLOR_SCHEME_RED_NEON)
+    if ((unsigned)s->color_scheme > COLOR_SCHEME_RAINBOW)
         s->color_scheme = COLOR_SCHEME_DARK;
     if (s->display_mode < 0 || s->display_mode >= DISPLAY_MODE_COUNT)
         s->display_mode = DISPLAY_MODE_BARS;

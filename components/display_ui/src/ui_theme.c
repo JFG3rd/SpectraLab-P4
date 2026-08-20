@@ -46,6 +46,14 @@ static const ui_palette_t s_palettes[COLOR_SCHEME_COUNT] = {
     { 0x0F0004, 0x30000A, 0x1E0006, 0xFF6688, 0x990022, 0xDD1133, 0xFF3355, 0xFFFFFF,
       0xFF88AA, 0xFFAA66, 0xAA4455, 0xFF99BB, 0xEE7799,
       0x180008, 0x40000E, 0xFFAABB, 0x600018, 0xFF3355 },
+    /* RAINBOW — bars take their hue from the frequency axis (see
+     * bar_color_for_db in screen_spectrum.c). bar_lo/mid/hi still serve the
+     * modes that have no band index — VU, line, persist ghosts, hold markers —
+     * so they keep a level ramp. The background is a neutral near-black so no
+     * single hue is favoured. */
+    { 0x08080C, 0x2A2A33, 0x14141A, 0xE0E0E8, 0x00CC66, 0xFFCC00, 0xFF3355, 0xFFFFFF,
+      0x00FFAA, 0xFFAA00, 0x9999AA, 0x00DDFF, 0x99AAEE,
+      0x101018, 0x2A2A38, 0xEEEEF5, 0x3C3C50, 0x00CCFF },
 };
 
 static const ui_palette_t *s_pal    = &s_palettes[0];

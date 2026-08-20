@@ -1,6 +1,11 @@
 # SpectraLab-P4
 ### Professional real-time audio spectrum analyzer for the ESP32-P4 Function EV Board
 
+<p align="center">
+  <img src="Docu/images/SpectraLab-P4-splash.png" width="680"
+       alt="SpectraLab-P4 — Precision Audio Spectrum Analyser">
+</p>
+
 ![SpectraLab-P4](Docu/images/hero-hospital-workbench-1600.jpg)
 ![Waterfall Display Preview](Docu/images/Screenshots/hero-waterfall.jpg)
 
@@ -70,25 +75,35 @@ Most analyzer views support two-finger pinch zoom for frequency span and display
 
 ## Colour Themes
 
-Since v1.3.1 the selected scheme applies to every screen, not just the analyzer
-view. HIGH CONTRAST is the only light scheme.
+Eight schemes. Since v1.3.1 the selected one applies to every screen, not just
+the analyzer view. HIGH CONTRAST is the only light scheme. **RAINBOW** is the
+odd one out: instead of colouring a bar by how loud it is, it gives every band
+its own hue, sweeping red to violet across the frequency axis.
 
 <table>
 <tr>
 <td align="center"><strong>Green</strong></td>
 <td align="center"><strong>Amber</strong></td>
 <td align="center"><strong>High Contrast</strong></td>
+<td align="center"><strong>Rainbow</strong></td>
 </tr>
 <tr>
 <td><img src="Docu/images/Screenshots/bars-green.jpg" alt="Bars in the green colour scheme" width="300"></td>
 <td><img src="Docu/images/Screenshots/bars-amber.jpg" alt="Bars in the amber colour scheme" width="300"></td>
 <td><img src="Docu/images/Screenshots/line-high-contrast.jpg" alt="Line view in the high contrast light scheme" width="300"></td>
+<td><img src="Docu/images/Screenshots/bars-rainbow.jpg" alt="Bars in the rainbow colour scheme" width="300"></td>
 </tr>
 </table>
 
 ---
 
 # 🌐 Embedded Web Interface
+
+<img src="Docu/images/SpectraLab-P4-icon.png" width="72" align="right"
+     alt="SpectraLab-P4 app icon">
+
+The app icon is the browser tab icon on every page, and the badge in front of
+the title on the dashboard.
 
 The analyzer includes a fully integrated responsive web interface. No additional software is required—any modern browser on your local network can access the device.
 
@@ -217,6 +232,13 @@ I am releasing the project as open source in the hope that other engineers, stud
 Everything the analyzer can do is configurable on the device itself. Settings
 apply as you leave the screen — there is no Apply button — and are written to
 the SD card automatically.
+
+Boot opens on a splash screen carrying the logo above, in the active colour
+scheme; Settings sets it to anything from off to 15 seconds.
+
+<p align="center">
+<img src="Docu/images/Screenshots/splash.jpg" alt="Boot splash screen showing the SpectraLab-P4 logo" width="700">
+</p>
 
 <p align="center">
 <img src="Docu/images/Screenshots/settings.png" alt="On-device Settings screen: audio/DSP, display and presets in three columns" width="900">

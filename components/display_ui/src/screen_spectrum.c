@@ -681,8 +681,17 @@ static char     s_dsp_info_base[72] = "";  /* base string set by set_dsp_info(),
 
 /* ── helpers ──────────────────────────────────────────────────── */
 
-static lv_color_t bar_color_for_db(float db)
+/* `i`/`n_bands` identify the band being drawn; pass n_bands = 0 from callers
+ * that have no band index (the VU meter), which keeps the level ramp.
+ *
+ * RAINBOW is the one scheme that colours by POSITION rather than by level: the
+ * hue sweeps red→violet from left to right across the frequency axis, so every
+ * bar keeps its own colour no matter how loud it is. */
+static lv_color_t bar_color_for_db(int i, int n_bands, float db)
 {
+    if (n_bands > 1 && ui_theme_scheme() == COLOR_SCHEME_RAINBOW)
+        return lv_color_hsv_to_rgb((uint16_t)(i * 280 / (n_bands - 1)), 100, 100);
+
     if (db > -20.0f) return lv_color_hex(s_pal->bar_hi);
     if (db > -40.0f) return lv_color_hex(s_pal->bar_mid);
     return lv_color_hex(s_pal->bar_lo);
@@ -899,7 +908,7 @@ static void draw_mode_bars(lv_layer_t *layer, const lv_area_t *oa,
         int32_t x_hi = (int32_t)((float)(i + 1) / (float)n_bands * (float)w) - 1;
         if (x_hi - BAR_GAP_PX > x_lo) x_hi -= BAR_GAP_PX;
 
-        rdsc.bg_color = bar_color_for_db(disp_db);
+        rdsc.bg_color = bar_color_for_db(i, n_bands, disp_db);
 
         lv_area_t bar;
         if (mirrored) {
@@ -1009,7 +1018,7 @@ static void draw_mode_persist(lv_layer_t *layer, const lv_area_t *oa,
         int32_t x_lo = (int32_t)((float)i       / (float)NUM_BARS * (float)w);
         int32_t x_hi = (int32_t)((float)(i + 1) / (float)NUM_BARS * (float)w) - 1;
         if (x_hi - BAR_GAP_PX > x_lo) x_hi -= BAR_GAP_PX;
-        rdsc.bg_color = bar_color_for_db(db);
+        rdsc.bg_color = bar_color_for_db(i, NUM_BARS, db);
         lv_area_t bar = { oa->x1 + x_lo, oa->y2 - bar_h, oa->x1 + x_hi, oa->y2 - 1 };
         lv_draw_rect(layer, &rdsc, &bar);
 
@@ -1245,7 +1254,7 @@ static void draw_mode_vu(lv_layer_t *layer, const lv_area_t *oa,
     lv_area_t track = { m_x, pk_y, m_x + m_w, pk_y + 28 };
     lv_draw_rect(layer, &rdsc, &track);
 
-    rdsc.bg_color = bar_color_for_db(s_peak_db);
+    rdsc.bg_color = bar_color_for_db(0, 0, s_peak_db);
     lv_area_t fill = { m_x, pk_y, m_x + (int32_t)(pk_frac * (float)m_w), pk_y + 28 };
     if (fill.x2 > fill.x1) lv_draw_rect(layer, &rdsc, &fill);
 }

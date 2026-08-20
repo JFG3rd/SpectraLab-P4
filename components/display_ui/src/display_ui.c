@@ -89,6 +89,7 @@ static const uint8_t s_scheme_rgb[COLOR_SCHEME_COUNT][3] = {
     [COLOR_SCHEME_BLUE_NEON]     = {  40,  60, 255 },  /* blue            */
     [COLOR_SCHEME_MATRIX]        = { 150, 255,   0 },  /* yellow-green    */
     [COLOR_SCHEME_RED_NEON]      = { 255,   0,  40 },  /* red             */
+    [COLOR_SCHEME_RAINBOW]       = { 255,   0, 200 },  /* magenta         */
 };
 
 /* Rainbow order, so stepping through the modes reads as a progression. */

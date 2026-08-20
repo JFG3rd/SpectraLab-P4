@@ -16,3 +16,5 @@ extern const char style_css[];
 extern const size_t style_css_len;
 extern const char app_js[];
 extern const size_t app_js_len;
+extern const char favicon_png[];
+extern const size_t favicon_png_len;

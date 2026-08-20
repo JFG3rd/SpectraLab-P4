@@ -18,6 +18,9 @@ ASSETS = [
     ("settings_html",   ROOT / "web/settings.html"),
     ("style_css",       ROOT / "web/style.css"),
     ("app_js",          ROOT / "web/app.js"),
+    # Binary is fine here — the bytes are emitted raw and _len is exact.
+    # Regenerate this one with tools/gen_brand_icon.py first.
+    ("favicon_png",     ROOT / "web/favicon.png"),
 ]
 OUT_C = ROOT / "components/web_server/src/web_assets.c"
 OUT_H = ROOT / "components/web_server/src/web_assets.h"

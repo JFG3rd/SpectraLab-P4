@@ -155,6 +155,16 @@ body {
     position: relative;
 }
 
+/* App icon in front of the dashboard title, sized to the title text: 1em of the
+   2.2em H1 it sits in, so it tracks the heading at any font size. The negative
+   vertical-align pulls the square down onto the text's optical centre — the
+   baseline alone would leave it floating above the letters. */
+.brand-icon {
+    height: 1em;
+    width: auto;
+    vertical-align: -0.17em;
+}
+
 h1 {
     font-size: 2.2em;
     color: var(--header-text);

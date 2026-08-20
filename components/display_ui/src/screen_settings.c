@@ -36,7 +36,7 @@ static dsp_config_t s_cur_cfg;
 static int           s_cur_gain_db = 6;
 
 /* Dropdown option strings */
-static const char *color_scheme_opts = "Dark\nClassic\nHigh Contrast\nAmber\nBlue Neon\nMatrix\nRed Neon";
+static const char *color_scheme_opts = "Dark\nClassic\nHigh Contrast\nAmber\nBlue Neon\nMatrix\nRed Neon\nRainbow";
 static const char *bar_decay_opts   = "Instant\nSlow\nMedium\nFast\nVery Fast";
 static const char *peak_decay_opts  = "Very Slow\nSlow\nMedium\nFast\nVery Fast";
 static const char *db_range_opts    = "120 dB\n100 dB\n80 dB\n60 dB";

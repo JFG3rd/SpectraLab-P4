@@ -315,3 +315,18 @@ See instructions.md (user guide) and README.md before editing docs.
     `python3 tools/gen_web_assets.py`, then rebuild. Each page also needs a
     route in `web_server.c` — and the `/*` catch-all must stay registered
     **last**, or it shadows everything after it.
+    One asset is binary: `web/favicon.png`, itself generated from
+    `Docu/images/SpectraLab-P4-icon.png` by `tools/gen_brand_icon.py`. That
+    works because the generator emits raw bytes with an exact `_len` (the
+    trailing NUL is only a convenience for the text assets) — so run
+    `gen_brand_icon.py` *before* `gen_web_assets.py`.
+
+25. **The splash logo is a generated RGB565 C array**
+    (`components/display_ui/src/splash_logo.c`, from
+    `tools/gen_splash_logo.py`). No LVGL image decoder is compiled in —
+    `LV_USE_LODEPNG`, `LV_USE_BMP` and `LV_USE_TJPGD` are all off — so a PNG
+    cannot be loaded at runtime, and `LV_COLOR_DEPTH=16` fixes the format.
+    Upstream's `LVGLImage.py` needs Pillow, which is not installed in any
+    interpreter here, so the script drives ImageMagick and packs the pixels
+    itself. Re-run it after changing the artwork; it is not wired into the
+    build. The array is ~506 KB of `.rodata`, memory-mapped from flash.

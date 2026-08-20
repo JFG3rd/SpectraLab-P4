@@ -27,6 +27,7 @@ typedef enum {
     COLOR_SCHEME_BLUE_NEON,       /* blue neon on near-black                  */
     COLOR_SCHEME_MATRIX,          /* matrix green on deep black               */
     COLOR_SCHEME_RED_NEON,        /* hot red on near-black                    */
+    COLOR_SCHEME_RAINBOW,         /* bars coloured by frequency, not by level */
     COLOR_SCHEME_COUNT,           /* sentinel — keep last                     */
 } color_scheme_t;
 

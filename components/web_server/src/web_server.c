@@ -81,6 +81,10 @@ static esp_err_t style_get(httpd_req_t *req)
 { return send_asset(req, "text/css", style_css, style_css_len); }
 static esp_err_t app_js_get(httpd_req_t *req)
 { return send_asset(req, "application/javascript", app_js, app_js_len); }
+/* The one binary asset: the browser tab icon, which index.html also shows as
+ * the badge in front of the title. */
+static esp_err_t favicon_get(httpd_req_t *req)
+{ return send_asset(req, "image/png", favicon_png, favicon_png_len); }
 
 /* ── WiFi endpoints (contract of wifi-setup.html) ─────────────── */
 
@@ -1053,6 +1057,7 @@ esp_err_t web_server_start(void)
         { .uri = "/settings.html",   .method = HTTP_GET,  .handler = settings_page_get },
         { .uri = "/style.css",       .method = HTTP_GET,  .handler = style_get },
         { .uri = "/app.js",          .method = HTTP_GET,  .handler = app_js_get },
+        { .uri = "/favicon.png",     .method = HTTP_GET,  .handler = favicon_get },
         { .uri = "/scanWifi",        .method = HTTP_GET,  .handler = scan_wifi_get },
         { .uri = "/wifiScanResults", .method = HTTP_GET,  .handler = scan_results_get },
         { .uri = "/saveWiFi",        .method = HTTP_POST, .handler = save_wifi_post },
