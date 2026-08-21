@@ -1495,6 +1495,18 @@ body.dark-mode .sl-field input {
     opacity: 0.75;
 }
 
+/* Fields carrying a hint stack instead: the hint gets the full width and the
+   control sits under it, rather than the hint wrapping to four lines beside a
+   control parked at the vertical centre. */
+.sl-field-stacked {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+}
+
+.sl-field-stacked select,
+.sl-field-stacked input { max-width: 100%; }
+
 @media screen and (max-width: 520px) {
     .sl-field { flex-direction: column; align-items: stretch; }
     .sl-field select, .sl-field input { max-width: 100%; }

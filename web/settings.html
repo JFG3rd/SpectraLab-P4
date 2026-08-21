@@ -138,7 +138,10 @@ function buildForm() {
 
         groups[name].forEach(function (f) {
             var row = document.createElement("div");
-            row.className = "sl-field";
+            /* A hint needs the full column width. Left as a side-by-side row it
+             * wraps to four lines against a ~150px label and leaves the control
+             * floating at the vertical centre. */
+            row.className = f.hint ? "sl-field sl-field-stacked" : "sl-field";
 
             var lab = document.createElement("label");
             lab.setAttribute("for", "f_" + f.k);
@@ -209,7 +212,11 @@ function loadSettings() {
                     el.value = v;
                 }
             } else {
-                el.value = v;
+                /* The device stores these as float32, so JSON widens them to
+                 * double and 0.05 arrives as 0.05000000074505806 — which a
+                 * number input shows in full. Round to the field's own step. */
+                var dp = (String(f.step).split(".")[1] || "").length;
+                el.value = parseFloat(Number(v).toFixed(dp));
             }
         });
         slStatus("settingsStatus", "Loaded current settings.", "ok");
