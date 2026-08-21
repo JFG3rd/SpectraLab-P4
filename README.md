@@ -113,7 +113,7 @@ All eight, same view and same signal so only the palette differs:
 
 # 🌐 Embedded Web Interface
 
-<img src="Docu/images/SpectraLab-P4-icon.png" width="72" align="right"
+<img src="Docu/images/SpectraLab-P4-icon-transparant.png" width="72" align="right"
      alt="SpectraLab-P4 app icon">
 
 The app icon is the browser tab icon on every page, and the badge in front of
