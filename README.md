@@ -42,32 +42,32 @@ Eight modes, cycled from the Settings screen or from the optional front-panel ke
 <td align="center"><strong>Line</strong><br>Filled line/area spectrum</td>
 </tr>
 <tr>
-<td><img src="Docu/images/Screenshots/mode-bars.jpg" alt="Bars display mode" width="440"></td>
-<td><img src="Docu/images/Screenshots/mode-line.jpg" alt="Line display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/bars-dark.jpg" alt="Bars display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/line-dark.jpg" alt="Line display mode" width="440"></td>
 </tr>
 <tr>
 <td align="center"><strong>1/3 Octave</strong><br>31-band RTA</td>
 <td align="center"><strong>Persistence</strong><br>Phosphor-style ghost trails</td>
 </tr>
 <tr>
-<td><img src="Docu/images/Screenshots/mode-rta.jpg" alt="One-third octave display mode" width="440"></td>
-<td><img src="Docu/images/Screenshots/mode-persist.jpg" alt="Persistence display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/third-octave-dark.jpg" alt="One-third octave display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/persistence-dark.jpg" alt="Persistence display mode" width="440"></td>
 </tr>
 <tr>
 <td align="center"><strong>Waterfall</strong><br>Scrolling spectrogram</td>
 <td align="center"><strong>Oscilloscope</strong><br>Raw waveform</td>
 </tr>
 <tr>
-<td><img src="Docu/images/Screenshots/mode-waterfall.jpg" alt="Waterfall display mode" width="440"></td>
-<td><img src="Docu/images/Screenshots/mode-scope.jpg" alt="Oscilloscope display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/waterfall-dark.jpg" alt="Waterfall display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/scope-dark.jpg" alt="Oscilloscope display mode" width="440"></td>
 </tr>
 <tr>
 <td align="center"><strong>VU Meter</strong><br>Large SPL and peak readouts</td>
 <td align="center"><strong>Mirror</strong><br>Bars growing from the vertical centre</td>
 </tr>
 <tr>
-<td><img src="Docu/images/Screenshots/mode-vu.jpg" alt="VU meter display mode" width="440"></td>
-<td><img src="Docu/images/Screenshots/mode-mirror.jpg" alt="Mirror display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/vu-meter-dark.jpg" alt="VU meter display mode" width="440"></td>
+<td><img src="Docu/images/Screenshots/mirror-dark.jpg" alt="Mirror display mode" width="440"></td>
 </tr>
 </table>
 
@@ -90,10 +90,10 @@ All eight, same view and same signal so only the palette differs:
 <td align="center"><strong>Amber</strong><br>Warm retro CRT</td>
 </tr>
 <tr>
-<td><img src="Docu/images/Screenshots/theme-dark.jpg" alt="Bars in the Dark colour scheme" width="300"></td>
-<td><img src="Docu/images/Screenshots/theme-classic.jpg" alt="Bars in the Classic green-phosphor colour scheme" width="300"></td>
-<td><img src="Docu/images/Screenshots/theme-high-contrast.jpg" alt="Bars in the High Contrast light colour scheme" width="300"></td>
-<td><img src="Docu/images/Screenshots/theme-amber.jpg" alt="Bars in the Amber colour scheme" width="300"></td>
+<td><img src="Docu/images/Screenshots/bars-dark.jpg" alt="Bars in the Dark colour scheme" width="300"></td>
+<td><img src="Docu/images/Screenshots/bars-classic.jpg" alt="Bars in the Classic green-phosphor colour scheme" width="300"></td>
+<td><img src="Docu/images/Screenshots/bars-hicontrast.jpg" alt="Bars in the High Contrast light colour scheme" width="300"></td>
+<td><img src="Docu/images/Screenshots/bars-amber.jpg" alt="Bars in the Amber colour scheme" width="300"></td>
 </tr>
 <tr>
 <td align="center"><strong>Blue Neon</strong><br>Electric blue</td>
@@ -102,10 +102,10 @@ All eight, same view and same signal so only the palette differs:
 <td align="center"><strong>Rainbow</strong><br>Hue by frequency</td>
 </tr>
 <tr>
-<td><img src="Docu/images/Screenshots/theme-blue-neon.jpg" alt="Bars in the Blue Neon colour scheme" width="300"></td>
-<td><img src="Docu/images/Screenshots/theme-matrix.jpg" alt="Bars in the Matrix colour scheme" width="300"></td>
-<td><img src="Docu/images/Screenshots/theme-red-neon.jpg" alt="Bars in the Red Neon colour scheme" width="300"></td>
-<td><img src="Docu/images/Screenshots/theme-rainbow.jpg" alt="Bars in the Rainbow colour scheme" width="300"></td>
+<td><img src="Docu/images/Screenshots/bars-blue-neon.jpg" alt="Bars in the Blue Neon colour scheme" width="300"></td>
+<td><img src="Docu/images/Screenshots/bars-matrix.jpg" alt="Bars in the Matrix colour scheme" width="300"></td>
+<td><img src="Docu/images/Screenshots/bars-red-neon.jpg" alt="Bars in the Red Neon colour scheme" width="300"></td>
+<td><img src="Docu/images/Screenshots/bars-rainbow.jpg" alt="Bars in the Rainbow colour scheme" width="300"></td>
 </tr>
 </table>
 

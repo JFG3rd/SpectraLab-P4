@@ -267,6 +267,16 @@ See instructions.md (user guide) and README.md before editing docs.
     `MZ_MALLOC`, which cannot be steered off internal RAM, and wants the whole
     1.84 MB RGB888 image resident. Output streams to the file as successive
     IDAT chunks (multiple IDATs are legal PNG).
+    Captures are named `<mode>-<theme>-NNN.png` from the slug tables in
+    screenshot.c. **31 characters is a hard ceiling**, not a style choice:
+    `name_is_plain()` rejects `strlen >= SETTINGS_NAME_MAX` (32), and it gates
+    both the `/api/files` listing and the delete path — so an over-long name
+    gets written to the card and is then invisible in the web browser and
+    undeletable. `third-octave-hicontrast-001.png` spends exactly 31, which is
+    why HIGH CONTRAST is the one abbreviated slug and the index is 3 digits.
+    Check any new display mode or colour scheme against that budget.
+    `next_index()` scans for the *current* stem — change the naming scheme
+    without changing it and every capture restarts at 001 and overwrites.
 
 22. **File timestamps come from the system clock, so they need SNTP.** The
     board has no RTC. ESP-IDF's `get_fattime()` builds the FAT timestamp from

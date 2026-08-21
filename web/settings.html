@@ -10,7 +10,7 @@
 </head>
 <body>
     <button class="button theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark / light mode">🌙 Dark Mode</button>
-    <div class="wifi-setup-container">
+    <div class="wifi-setup-container settings-wide">
         <h1>⚙️ Device Settings</h1>
         <nav class="sl-nav" id="slNav"></nav>
 
@@ -101,9 +101,31 @@ var FIELDS = [
 var FLOAT_KEYS = ["ambient_margin", "mic_sensitivity_dbv",
                   "bar_decay_db_per_frame", "peak_decay_db_per_frame"];
 
+/* Which of the three cards each group lands in. Grouped by what the settings
+ * are for, and balanced so the columns come out roughly the same height
+ * (9 / 7 / 8 rows). Mirrors the on-device Settings screen where the web page
+ * has an equivalent — the device's third column is mostly SD, preset and
+ * Wi-Fi actions, which have no field here. */
+var COLUMN = {
+    "Audio / DSP": 0, "Noise Reduction": 0,
+    "Display": 1, "Startup": 1,
+    "SPL Calibration": 2, "Auto Gain": 2, "Clock & Timezone": 2
+};
+
 function buildForm() {
     var form = document.getElementById("settingsForm");
     form.innerHTML = "";
+
+    var cols = document.createElement("div");
+    cols.className = "sl-cols";
+    var cards = [0, 1, 2].map(function () {
+        var c = document.createElement("div");
+        c.className = "sl-card";
+        cols.appendChild(c);
+        return c;
+    });
+    form.appendChild(cols);
+
     var groups = {};
     FIELDS.forEach(function (f) { (groups[f.g] = groups[f.g] || []).push(f); });
 
@@ -148,7 +170,7 @@ function buildForm() {
             row.appendChild(ctl);
             sec.appendChild(row);
         });
-        form.appendChild(sec);
+        cards[COLUMN[name] || 0].appendChild(sec);
     });
 
     /* Clock and timezone. Moved here from the file browser, where a
@@ -162,7 +184,7 @@ function buildForm() {
         '</label><select id="f_timezone"></select></div>' +
         '<div class="sl-field"><label>Device clock<span class="sl-hint" id="clockSrc"></span></label>' +
         '<span id="clockNow">—</span></div>';
-    form.appendChild(sec);
+    cards[COLUMN["Clock & Timezone"]].appendChild(sec);
 }
 
 function loadSettings() {

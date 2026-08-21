@@ -242,23 +242,46 @@ typedef struct {
 
 static volatile bool s_busy;   /* one capture at a time: each holds ~1.5 MB */
 
-/* Next free shot-NNNN.png. Scans rather than counting so a deleted file in the
- * middle never causes an overwrite.
+/* Filename slugs. A capture is named for what is in it — <mode>-<theme>-NNN.png
+ * — so the SD card and the web file browser are readable without opening
+ * anything.
+ *
+ * Length is not a style question here. settings_mgr's name_is_plain() rejects
+ * any basename with strlen >= SETTINGS_NAME_MAX (32), and that check gates both
+ * the /api/files listing and the delete path — an over-long name would be
+ * written to the card and then be invisible in the browser and undeletable. So
+ * the budget is 31 characters, and the worst case
+ * "third-octave-hicontrast-001.png" spends exactly all of it. That is why HIGH
+ * CONTRAST is the one name abbreviated, and why the index is 3 digits. Check
+ * any new mode or theme against that ceiling before adding it here. */
+static const char *const k_mode_slug[DISPLAY_MODE_COUNT] = {
+    "bars", "line", "third-octave", "persistence",
+    "waterfall", "scope", "vu-meter", "mirror",
+};
+static const char *const k_scheme_slug[COLOR_SCHEME_COUNT] = {
+    "dark", "classic", "hicontrast", "amber",
+    "blue-neon", "matrix", "red-neon", "rainbow",
+};
+
+/* Next free <stem>-NNN.png. Scans rather than counting so a deleted file in the
+ * middle never causes an overwrite. Numbering is per stem, so each mode+theme
+ * pair counts from 001.
  *
  * Parsed by hand rather than with sscanf: this runs on the LVGL task, and with
  * CONFIG_NEWLIB_NANO_FORMAT off the full scanf pulls a large stack frame into
  * an already deep event-callback chain. */
-static int next_index(void)
+static int next_index(const char *stem)
 {
     DIR *d = opendir(SETTINGS_SHOT_DIR);
     if (!d) return 1;
 
+    size_t stem_len = strlen(stem);
     int  hi = 0;
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         const char *p = e->d_name;
-        if (strncmp(p, "shot-", 5) != 0) continue;
-        p += 5;
+        if (strncmp(p, stem, stem_len) != 0 || p[stem_len] != '-') continue;
+        p += stem_len + 1;
 
         int n = 0, digits = 0;
         while (*p >= '0' && *p <= '9' && digits < 7) { n = n * 10 + (*p++ - '0'); digits++; }
@@ -291,7 +314,8 @@ static void shot_task(void *arg)
     vTaskDelete(NULL);
 }
 
-esp_err_t screenshot_capture(char *path_out, size_t path_len)
+esp_err_t screenshot_capture(display_mode_t mode, color_scheme_t scheme,
+                             char *path_out, size_t path_len)
 {
     if (!settings_mgr_sd_available()) return ESP_ERR_NOT_FOUND;
     if (s_busy)                       return ESP_ERR_INVALID_STATE;
@@ -310,7 +334,12 @@ esp_err_t screenshot_capture(char *path_out, size_t path_len)
         return ESP_ERR_NO_MEM;
     }
 
-    snprintf(job->path, sizeof(job->path), SETTINGS_SHOT_DIR "/shot-%04d.png", next_index());
+    char stem[SETTINGS_NAME_MAX];
+    snprintf(stem, sizeof(stem), "%s-%s",
+             k_mode_slug[(unsigned)mode < DISPLAY_MODE_COUNT ? mode : DISPLAY_MODE_BARS],
+             k_scheme_slug[(unsigned)scheme < COLOR_SCHEME_COUNT ? scheme : COLOR_SCHEME_DARK]);
+    snprintf(job->path, sizeof(job->path), SETTINGS_SHOT_DIR "/%s-%03d.png",
+             stem, next_index(stem));
 
     void *fb = NULL;
     esp_err_t err = esp_lcd_dpi_panel_get_frame_buffer(panel, 1, &fb);

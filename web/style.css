@@ -1416,6 +1416,40 @@ body.dark-mode .sl-nav-link { color: var(--dark-text, #eee); }
 /* ── settings form grid ───────────────────────────────────────────
  * Used by settings.html, which builds its controls from one descriptor
  * array rather than hand-written markup. */
+
+/* Only settings.html widens. .wifi-setup-container's 500px is right for the
+   other four pages, so this is a page-scoped modifier rather than an edit to
+   the shared rule (files.html overrides the same width inline). */
+.settings-wide { max-width: 1180px; }
+
+.sl-cols {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 22px;
+    align-items: start;      /* each card sizes to its own content */
+    text-align: left;        /* body centres text; these are label/control rows */
+}
+
+/* A border, not a fill: the outer container already paints
+   --wifi-container-bg, and in dark mode --card-bg is the same #333, so a
+   filled card would be invisible inside it. Inheriting the text colour is
+   also what keeps this working in both themes with no .dark-mode companion. */
+.sl-card {
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    border-radius: 8px;
+    padding: 16px 16px 4px;
+}
+
+.sl-card .sl-group:last-child { margin-bottom: 0; }
+
+/* Columns land around 350px, where the 170px control floor leaves the label
+   too little room and every second one wraps. */
+.sl-cols .sl-field select,
+.sl-cols .sl-field input { min-width: 150px; }
+
+@media (max-width: 1000px) { .sl-cols { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 700px)  { .sl-cols { grid-template-columns: 1fr; } }
+
 .sl-group { margin: 0 0 22px 0; }
 
 .sl-group h2 {

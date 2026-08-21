@@ -452,7 +452,7 @@ static void global_shot_btn_cb(lv_event_t *e)
     (void)e;
     /* LVGL context. screenshot_capture() only snapshots the framebuffer here —
      * the encode and SD write run on its own task — so this never blocks. */
-    esp_err_t err = screenshot_capture(NULL, 0);
+    esp_err_t err = screenshot_capture(s_last_disp_mode, s_last_scheme, NULL, 0);
     if (err == ESP_ERR_NOT_FOUND)          display_ui_toast("No SD card", false);
     else if (err == ESP_ERR_INVALID_STATE) display_ui_toast("Capture already running", false);
     else if (err != ESP_OK)                display_ui_toast("Screenshot failed", false);
@@ -504,7 +504,7 @@ void display_ui_panel_screenshot(void)
 
 esp_err_t display_ui_take_screenshot(char *path_out, size_t path_len)
 {
-    return screenshot_capture(path_out, path_len);
+    return screenshot_capture(s_last_disp_mode, s_last_scheme, path_out, path_len);
 }
 
 void display_ui_notify_screenshot(const char *path, bool ok)
@@ -586,7 +586,7 @@ static void spectrum_timer_cb(lv_timer_t *timer)
     if (s_panel_shot_request) {
         s_panel_shot_request = false;
         char path[SETTINGS_PATH_MAX];
-        esp_err_t err = screenshot_capture(path, sizeof(path));
+        esp_err_t err = screenshot_capture(s_last_disp_mode, s_last_scheme, path, sizeof(path));
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "screenshot: %s", esp_err_to_name(err));
             display_ui_notify_screenshot(NULL, false);
