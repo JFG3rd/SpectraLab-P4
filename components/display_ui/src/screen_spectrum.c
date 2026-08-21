@@ -63,9 +63,13 @@ static const char *TAG = "scr_spectrum";
 
 /* ── oscilloscope view ────────────────────────────────────────────
  * WAVE_N: waveform ring buffer length (PSRAM, alloc'd in create()).
- * At 48 kHz the buffer holds ~341 ms; the visible window is
- * SCREEN_W × samples-per-pixel wide. */
-#define WAVE_N          16384
+ * At 48 kHz the buffer holds ~1.37 s, which is the slowest sweep the scope can
+ * offer — the fully zoomed-out window is the whole buffer. It was 16384 (~341
+ * ms) and that was not long enough to see anything slower than a note decay.
+ * Two of these are allocated (ring + linearized snapshot) at 128 KB each, which
+ * is nothing against 32 MB of PSRAM. The visible window is SCREEN_W ×
+ * samples-per-pixel wide. */
+#define WAVE_N          65536
 #define SCOPE_SPP_MIN    0.25f                            /* zoom in: 4 px per sample */
 #define SCOPE_SPP_MAX  ((float)WAVE_N / (float)SCREEN_W)  /* zoom out: whole buffer */
 #define SCOPE_GAIN_MIN   0.25f
@@ -107,7 +111,7 @@ static float s_db_view_max   = DB_ZOOM_MAX;
  * vertical pinch sets the gain. Gain starts in auto mode (scale to the
  * loudest sample in the window); the first vertical pinch switches to
  * manual, seeded from the auto gain in effect at that moment. */
-static float s_scope_spp         = 1.0f;
+static float s_scope_spp         = SCOPE_SPP_MAX;  /* default: slowest sweep */
 static float s_scope_gain        = 1.0f;   /* manual gain (when s_scope_gain_manual) */
 static float s_scope_gain_active = 1.0f;   /* gain actually used by the last frame */
 static bool  s_scope_gain_manual = false;
@@ -178,7 +182,7 @@ static void reset_view_ranges(void)
     s_freq_view_min = FREQ_ZOOM_MIN;
     s_freq_view_max = FREQ_ZOOM_MAX;
     s_db_view_max   = DB_ZOOM_MAX;
-    s_scope_spp         = 1.0f;
+    s_scope_spp         = SCOPE_SPP_MAX;
     s_scope_gain        = 1.0f;
     s_scope_gain_manual = false;
 }
@@ -686,7 +690,43 @@ static lv_obj_t *s_btn_stop_lbl;
 static int16_t *s_wave      = NULL;   /* circular buffer, WAVE_N samples */
 static int16_t *s_wave_snap = NULL;   /* draw-side linearized snapshot */
 static size_t   s_wave_wr   = 0;      /* next write index */
+static bool     s_wave_snap_valid = false;
 static SemaphoreHandle_t s_wave_mutex;
+
+/* Linearize the ring into s_wave_snap, oldest sample first.
+ *
+ * Called from LV_EVENT_REFR_START, which fires exactly once per refresh cycle
+ * before any tile is drawn. That timing is the whole point. LVGL renders
+ * through a 50-line partial draw buffer (full_refresh and direct_mode are both
+ * off — see display_init.c), so LV_EVENT_DRAW_MAIN fires once per refresh
+ * *tile*. The audio task writes this ring continuously, so snapshotting inside
+ * the draw callback gave every horizontal tile a different moment of audio and
+ * the trace broke into stacked slices.
+ *
+ * Snapshotting once per update timer tick is not good enough either: that timer
+ * and the refresh timer run independently, so an update landing between two
+ * tiles of the same frame reintroduces the tear, and the slow drift between the
+ * two phases is what made the banding creep back the longer the scope was
+ * left open. Hanging it off the refresh is what makes it exact. */
+static void scope_snapshot_wave(void)
+{
+    if (s_wave_mutex == NULL || s_wave == NULL || s_wave_snap == NULL) return;
+    if (xSemaphoreTake(s_wave_mutex, 0) != pdTRUE) return;   /* keep last frame */
+
+    size_t wr = s_wave_wr;
+    memcpy(s_wave_snap, s_wave + wr, (WAVE_N - wr) * sizeof(int16_t));
+    if (wr > 0)
+        memcpy(s_wave_snap + (WAVE_N - wr), s_wave, wr * sizeof(int16_t));
+
+    xSemaphoreGive(s_wave_mutex);
+    s_wave_snap_valid = true;
+}
+
+static void refr_start_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_mode == DISPLAY_MODE_SCOPE) scope_snapshot_wave();
+}
 
 /* ── FPS counter ──────────────────────────────────────────────── */
 static int64_t  s_fps_last_us   = 0;
@@ -1125,19 +1165,9 @@ static void draw_mode_scope(lv_layer_t *layer, const lv_area_t *oa,
     ldsc.p2 = (lv_point_precise_t){(lv_value_precise_t)oa->x2, (lv_value_precise_t)mid};
     lv_draw_line(layer, &ldsc);
 
-    if (s_wave_mutex == NULL || s_wave == NULL || s_wave_snap == NULL) return;
-
-    static bool wave_valid = false;
-    if (xSemaphoreTake(s_wave_mutex, 0) == pdTRUE) {
-        /* linearize the circular buffer: oldest sample first */
-        size_t wr = s_wave_wr;
-        memcpy(s_wave_snap, s_wave + wr, (WAVE_N - wr) * sizeof(int16_t));
-        if (wr > 0)
-            memcpy(s_wave_snap + (WAVE_N - wr), s_wave, wr * sizeof(int16_t));
-        xSemaphoreGive(s_wave_mutex);
-        wave_valid = true;
-    }
-    if (!wave_valid) return;
+    /* Snapshot is taken once per frame by scope_snapshot_wave(); this callback
+     * runs once per refresh tile, so it must only read. */
+    if (!s_wave_snap_valid) return;
     const int16_t *wave = s_wave_snap;
 
     float spp    = clampf_local(s_scope_spp, SCOPE_SPP_MIN, SCOPE_SPP_MAX);
@@ -1162,8 +1192,14 @@ static void draw_mode_scope(lv_layer_t *layer, const lv_area_t *oa,
     if (s_scope_gain_manual) {
         gain = s_scope_gain;
     } else {
+        /* Decimated: at the slowest sweep this window is the whole 65536-sample
+         * buffer, and scanning every sample here cost as much as the drawing
+         * did. ~2048 samples is far more than enough to find the peak of an
+         * audio signal for an auto-gain estimate. */
         int32_t mxs = 0;
-        for (int i = start; i < start + window; i++) {
+        int gstep = window / 2048;
+        if (gstep < 1) gstep = 1;
+        for (int i = start; i < start + window; i += gstep) {
             int32_t v = wave[i] < 0 ? -wave[i] : wave[i];
             if (v > mxs) mxs = v;
         }
@@ -1186,6 +1222,15 @@ static void draw_mode_scope(lv_layer_t *layer, const lv_area_t *oa,
     const int32_t col = 2;
     int32_t prev_top = 0, prev_bot = 0;
     bool first = true;
+
+    /* Each column spans `col * spp` samples — 128 of them at the slowest sweep,
+     * across 512 columns, which is the whole buffer scanned again. Cap the work
+     * at ~16 samples per column: that is still a dense enough sampling of the
+     * envelope to look identical for audio, and it is what makes the slow
+     * sweeps run at full frame rate. */
+    int estep = (int)(spp * (float)col / 16.0f);
+    if (estep < 1) estep = 1;
+
     for (int32_t x = 0; x < w; x += col) {
         int i0 = start + (int)((float)x * spp);
         int i1 = start + (int)((float)(x + col) * spp);
@@ -1194,7 +1239,7 @@ static void draw_mode_scope(lv_layer_t *layer, const lv_area_t *oa,
         if (i1 > WAVE_N)  i1 = WAVE_N;
 
         int32_t smin = 32767, smax = -32768;
-        for (int i = i0; i < i1; i++) {
+        for (int i = i0; i < i1; i += estep) {
             if (wave[i] < smin) smin = wave[i];
             if (wave[i] > smax) smax = wave[i];
         }
@@ -1726,6 +1771,10 @@ esp_err_t screen_spectrum_create(void)
     lv_obj_add_flag(s_spectrum_obj, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(s_spectrum_obj, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_spectrum_obj, spectrum_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
+
+    /* One waveform snapshot per refresh cycle, before any tile is drawn. */
+    lv_display_add_event_cb(lv_display_get_default(), refr_start_cb,
+                            LV_EVENT_REFR_START, NULL);
     lv_obj_add_event_cb(s_spectrum_obj, spectrum_gesture_cb, LV_EVENT_GESTURE, NULL);
     lv_obj_add_event_cb(s_spectrum_obj, spectrum_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
 
@@ -1868,7 +1917,8 @@ void screen_spectrum_update(const float *magnitude_db, uint16_t bin_count,
         lv_label_set_text(s_lbl_vu_peak, buf);
     }
 
-    /* Scope HUD tracks the live auto-gain, so refresh it per frame */
+    /* Scope HUD tracks the live auto-gain, so refresh it per frame. The
+     * waveform snapshot deliberately does NOT happen here — see refr_start_cb. */
     if (s_mode == DISPLAY_MODE_SCOPE)
         update_scope_hud();
 
