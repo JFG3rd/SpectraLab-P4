@@ -8,6 +8,10 @@
 /* Based on JFG Gesture Controller styling */
 
 :root {
+    /* Header band height, shared by the title row and the nav bar so the two
+       read as equal-height bands. The corner logo is sized off it too. */
+    --header-band-h: 48px;
+
     /* Theme base */
     --max-log-entries: 30;
     --log-line-height: 24px;
@@ -159,17 +163,27 @@ body {
    2.2em H1 it sits in, so it tracks the heading at any font size. The negative
    vertical-align pulls the square down onto the text's optical centre — the
    baseline alone would leave it floating above the letters. */
-.brand-icon {
-    height: 1em;
+/* App icon in the card's top-left corner, one pixel in. Sized to reach the
+   bottom of the title band: the card's own padding (30px) plus the band, less
+   the pixel it started with. The card is position:relative for this. */
+.brand-logo {
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    height: calc(30px + var(--header-band-h) - 2px);
     width: auto;
-    vertical-align: -0.17em;
 }
 
 h1 {
     font-size: 2.2em;
     color: var(--header-text);
     text-shadow: var(--header-shadow);
-    margin: 20px 0;
+    /* Fixed band rather than font-driven height, so the title row and the nav
+       bar below it are exactly the same size. line-height centres the text in
+       it without changing h1 to a flex container. */
+    height: var(--header-band-h);
+    line-height: var(--header-band-h);
+    margin: 0 0 12px 0;
 }
 
 /* Header container with title aligned left */
@@ -1181,6 +1195,9 @@ footer a:hover {
         padding: 15px;
     }
 
+    /* Track the smaller card padding so the logo still ends at the title band. */
+    .brand-logo { height: calc(15px + var(--header-band-h) - 2px); }
+
     .card {
         width: 100%;
         min-width: unset;
@@ -1235,6 +1252,7 @@ footer a:hover {
 
 /* WiFi Setup Specific Styles */
 .wifi-setup-container {
+    position: relative;   /* anchor for .brand-logo */
     max-width: 500px;
     margin: 50px auto;
     padding: 30px;
@@ -1387,6 +1405,9 @@ footer a:hover {
     flex-wrap: wrap;
     gap: 6px;
     justify-content: center;
+    align-items: center;
+    box-sizing: border-box;
+    min-height: var(--header-band-h);   /* same band as the title above */
     margin: 0 auto 18px auto;
     padding: 6px;
     border-radius: 10px;
