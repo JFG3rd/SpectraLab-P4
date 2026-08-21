@@ -205,8 +205,19 @@ static void update_axis_ticks(void)
         window_ms = (float)SCREEN_W * s_scope_spp * 1000.0f / (float)sr;
     }
 
+    /* VU is a single broadband level — it has no horizontal axis at all, so a
+     * frequency scale under it is just wrong. (SCOPE keeps the row and relabels
+     * it in milliseconds.) */
+    bool axis_shown = (s_mode != DISPLAY_MODE_VU);
+
     for (int i = 0; i < FREQ_TICK_COUNT; i++) {
         if (s_freq_ticks[i] == NULL) continue;
+
+        if (!axis_shown) {
+            lv_obj_add_flag(s_freq_ticks[i], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        lv_obj_remove_flag(s_freq_ticks[i], LV_OBJ_FLAG_HIDDEN);
 
         float frac = (float)i / (float)(FREQ_TICK_COUNT - 1);
         char txt[16];
@@ -657,6 +668,10 @@ static int       s_wf_speed = 1;      /* rows pushed per frame: 1/2/4 */
 static lv_obj_t *s_btn_wf_speed;      /* overlay button, waterfall only */
 static lv_obj_t *s_btn_wf_speed_lbl;
 
+static bool      s_line_bars = true;  /* LINE: bars under the curve */
+static lv_obj_t *s_btn_line_bars;     /* overlay button, line only */
+static lv_obj_t *s_btn_line_bars_lbl;
+
 /* ── freeze / grid toggles ────────────────────────────────────── */
 static bool      s_frozen       = false;
 static bool      s_grid_enabled = true;
@@ -681,6 +696,38 @@ static char     s_dsp_info_base[72] = "";  /* base string set by set_dsp_info(),
 
 /* ── helpers ──────────────────────────────────────────────────── */
 
+/* The RAINBOW ramp. t = 0 is red, t = 1 is violet; 280° stops short of wrapping
+ * back round to red so the two ends of the sweep stay tellable apart. */
+static inline lv_color_t rainbow_at(float t)
+{
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return lv_color_hsv_to_rgb((uint16_t)(t * 280.0f), 100, 100);
+}
+
+static inline bool scheme_is_rainbow(void)
+{
+    return ui_theme_scheme() == COLOR_SCHEME_RAINBOW;
+}
+
+/* Colour of the RAINBOW VU scale at sweep fraction t (0 = 30 dB, 1 = 120 dB).
+ *
+ * The ramp is spent by 100 dB and everything above it is one deep red, so the
+ * overload end reads as its own zone instead of just more of the same sweep —
+ * it replaces the red zone the other schemes draw as a separate arc. The needle
+ * takes its colour from here too, so the two can never disagree. */
+#define VU_RED_DB    100.0f
+#define VU_SCALE_LO   30.0f
+#define VU_SCALE_SPAN 90.0f
+#define VU_DEEP_RED  0x8B0000
+
+static lv_color_t vu_scale_color(float t)
+{
+    const float t_red = (VU_RED_DB - VU_SCALE_LO) / VU_SCALE_SPAN;
+    if (t >= t_red) return lv_color_hex(VU_DEEP_RED);
+    return rainbow_at(1.0f - t / t_red);
+}
+
 /* `i`/`n_bands` identify the band being drawn; pass n_bands = 0 from callers
  * that have no band index (the VU meter), which keeps the level ramp.
  *
@@ -689,8 +736,8 @@ static char     s_dsp_info_base[72] = "";  /* base string set by set_dsp_info(),
  * bar keeps its own colour no matter how loud it is. */
 static lv_color_t bar_color_for_db(int i, int n_bands, float db)
 {
-    if (n_bands > 1 && ui_theme_scheme() == COLOR_SCHEME_RAINBOW)
-        return lv_color_hsv_to_rgb((uint16_t)(i * 280 / (n_bands - 1)), 100, 100);
+    if (n_bands > 1 && scheme_is_rainbow())
+        return rainbow_at((float)i / (float)(n_bands - 1));
 
     if (db > -20.0f) return lv_color_hex(s_pal->bar_hi);
     if (db > -40.0f) return lv_color_hex(s_pal->bar_mid);
@@ -827,6 +874,14 @@ static void grid_btn_cb(lv_event_t *e)
     if (s_canvas)       lv_obj_invalidate(s_canvas);   /* waterfall grid overlay */
 }
 
+static void line_bars_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    s_line_bars = !s_line_bars;
+    if (s_btn_line_bars_lbl)
+        lv_label_set_text(s_btn_line_bars_lbl, s_line_bars ? "BARS " LV_SYMBOL_OK : "BARS");
+}
+
 static void wf_speed_btn_cb(lv_event_t *e)
 {
     (void)e;
@@ -841,10 +896,16 @@ static void wf_speed_btn_cb(lv_event_t *e)
 /* ── mode renderers (called from spectrum_draw_cb, mutex held) ─── */
 
 /* Draw PK/MX hold markers for band i at pixel range x_lo..x_hi.
- * `db` is the raw band level (holds always track the raw signal). */
+ * `db` is the raw band level (holds always track the raw signal).
+ *
+ * The PK marker takes its band's own hue under RAINBOW, so the decaying peaks
+ * read as part of the same sweep as the bars under them. MX deliberately stays
+ * on the palette's max_hold (white in every scheme) — it is the one marker that
+ * has to stand apart from whatever it is sitting on. */
 static void draw_hold_markers(lv_layer_t *layer, lv_draw_rect_dsc_t *rdsc,
                               const lv_area_t *oa, int32_t h,
-                              int i, float db, int32_t x_lo, int32_t x_hi)
+                              int i, int n_bands, float db,
+                              int32_t x_lo, int32_t x_hi)
 {
     if (s_peak_hold_enabled) {
         if (db > s_peak_hold_db[i]) {
@@ -855,7 +916,9 @@ static void draw_hold_markers(lv_layer_t *layer, lv_draw_rect_dsc_t *rdsc,
         }
         if (s_peak_hold_db[i] > DB_MIN) {
             int32_t pk_y = oa->y2 - (int32_t)(db_to_frac(s_peak_hold_db[i]) * (float)h);
-            rdsc->bg_color = lv_color_hex(s_pal->bar_hi);
+            rdsc->bg_color = (n_bands > 1 && scheme_is_rainbow())
+                             ? rainbow_at((float)i / (float)(n_bands - 1))
+                             : lv_color_hex(s_pal->bar_hi);
             lv_area_t pk = { oa->x1 + x_lo, pk_y - 3, oa->x1 + x_hi, pk_y };
             lv_draw_rect(layer, rdsc, &pk);
         }
@@ -922,7 +985,7 @@ static void draw_mode_bars(lv_layer_t *layer, const lv_area_t *oa,
         lv_draw_rect(layer, &rdsc, &bar);
 
         if (!mirrored)
-            draw_hold_markers(layer, &rdsc, oa, h, i, db, x_lo, x_hi);
+            draw_hold_markers(layer, &rdsc, oa, h, i, n_bands, db, x_lo, x_hi);
     }
 }
 
@@ -943,16 +1006,21 @@ static void draw_mode_line(lv_layer_t *layer, const lv_area_t *oa,
         float disp_db = apply_bar_decay(i, db);
         ys[i] = oa->y2 - (int32_t)(db_to_frac(disp_db) * (float)h);
 
-        /* translucent area fill under the curve */
+        /* Bars under the curve, per band, in the same colour they would take in
+         * BARS mode — so RAINBOW sweeps here too instead of one flat wash. The
+         * BARS button turns them off for a bare line. */
         int32_t x_lo = (int32_t)((float)i       / (float)NUM_BARS * (float)w);
         int32_t x_hi = (int32_t)((float)(i + 1) / (float)NUM_BARS * (float)w) - 1;
-        rdsc.bg_opa   = LV_OPA_40;
-        rdsc.bg_color = lv_color_hex(s_pal->bar_lo);
-        lv_area_t fill = { oa->x1 + x_lo, ys[i], oa->x1 + x_hi, oa->y2 - 1 };
-        if (fill.y1 < fill.y2) lv_draw_rect(layer, &rdsc, &fill);
+        if (s_line_bars) {
+            if (x_hi - BAR_GAP_PX > x_lo) x_hi -= BAR_GAP_PX;
+            rdsc.bg_opa   = LV_OPA_60;
+            rdsc.bg_color = bar_color_for_db(i, NUM_BARS, disp_db);
+            lv_area_t fill = { oa->x1 + x_lo, ys[i], oa->x1 + x_hi, oa->y2 - 1 };
+            if (fill.y1 < fill.y2) lv_draw_rect(layer, &rdsc, &fill);
+        }
 
         rdsc.bg_opa = LV_OPA_COVER;
-        draw_hold_markers(layer, &rdsc, oa, h, i, db, x_lo, x_hi);
+        draw_hold_markers(layer, &rdsc, oa, h, i, NUM_BARS, db, x_lo, x_hi);
     }
 
     /* polyline connecting band centers */
@@ -1022,7 +1090,7 @@ static void draw_mode_persist(lv_layer_t *layer, const lv_area_t *oa,
         lv_area_t bar = { oa->x1 + x_lo, oa->y2 - bar_h, oa->x1 + x_hi, oa->y2 - 1 };
         lv_draw_rect(layer, &rdsc, &bar);
 
-        draw_hold_markers(layer, &rdsc, oa, h, i, db, x_lo, x_hi);
+        draw_hold_markers(layer, &rdsc, oa, h, i, NUM_BARS, db, x_lo, x_hi);
     }
 }
 
@@ -1178,13 +1246,49 @@ static void draw_mode_vu(lv_layer_t *layer, const lv_area_t *oa,
     adsc.opa         = LV_OPA_COVER;
     adsc.start_angle = 225;
     adsc.end_angle   = 315;
-    lv_draw_arc(layer, &adsc);
 
-    /* red zone: 90…120 dB SPL (the last third of the sweep) */
-    adsc.color       = lv_color_hex(s_pal->bar_hi);
-    adsc.start_angle = 285;
-    adsc.end_angle   = 315;
-    lv_draw_arc(layer, &adsc);
+    if (scheme_is_rainbow()) {
+        /* Violet at 30 dB through to red at 100 dB, then deep red to 120 — see
+         * vu_scale_color(). The scale itself carries the warning the separate
+         * red-zone arc does in the other schemes.
+         *
+         * Segments have to be lines, not arcs. lv_draw_arc takes one flat
+         * colour, so a gradient needs many calls, and it is expensive enough
+         * that 90 of them per frame dropped this screen to ~2 fps. A thick
+         * chord costs a fraction of that, and at this radius the sagitta over
+         * 3° is about 0.1 px, so the result is indistinguishable from an arc.
+         * Rounded caps let consecutive segments meet without a notch. */
+        lv_draw_line_dsc_t sdsc;
+        lv_draw_line_dsc_init(&sdsc);
+        sdsc.width       = 8;
+        sdsc.opa         = LV_OPA_COVER;
+        sdsc.round_start = 1;
+        sdsc.round_end   = 1;
+
+        /* 36 steps so the 100 dB boundary lands exactly on a segment edge
+         * (28/36 = 0.7778), leaving a clean line between ramp and deep red. */
+        const int steps = 36;
+        for (int s = 0; s < steps; s++) {
+            float t0 = (float)s / (float)steps;
+            float t1 = (float)(s + 1) / (float)steps;
+            float a0 = (225.0f + t0 * 90.0f) * VU_PI / 180.0f;
+            float a1 = (225.0f + t1 * 90.0f) * VU_PI / 180.0f;
+            sdsc.color = vu_scale_color(t0);
+            sdsc.p1 = (lv_point_precise_t){(lv_value_precise_t)(cx + cosf(a0) * (float)R),
+                                           (lv_value_precise_t)(cy + sinf(a0) * (float)R)};
+            sdsc.p2 = (lv_point_precise_t){(lv_value_precise_t)(cx + cosf(a1) * (float)R),
+                                           (lv_value_precise_t)(cy + sinf(a1) * (float)R)};
+            lv_draw_line(layer, &sdsc);
+        }
+    } else {
+        lv_draw_arc(layer, &adsc);
+
+        /* red zone: 90…120 dB SPL (the last third of the sweep) */
+        adsc.color       = lv_color_hex(s_pal->bar_hi);
+        adsc.start_angle = 285;
+        adsc.end_angle   = 315;
+        lv_draw_arc(layer, &adsc);
+    }
 
     /* tick marks + dB numbers every 10 dB */
     lv_draw_line_dsc_t ldsc;
@@ -1225,7 +1329,11 @@ static void draw_mode_vu(lv_layer_t *layer, const lv_area_t *oa,
     if (frac > 1) frac = 1;
     float na = (225.0f + frac * 90.0f) * VU_PI / 180.0f;
 
-    ldsc.color = lv_color_hex(s_pal->bar_hi);
+    /* Under RAINBOW the needle takes the colour of the scale at its own angle,
+     * so the reading and the scale agree — including going deep red once it is
+     * past 100 dB. */
+    ldsc.color = scheme_is_rainbow() ? vu_scale_color(frac)
+                                     : lv_color_hex(s_pal->bar_hi);
     ldsc.width = 5;
     ldsc.p1 = (lv_point_precise_t){(lv_value_precise_t)cx, (lv_value_precise_t)cy};
     ldsc.p2 = (lv_point_precise_t){(lv_value_precise_t)(cx + cosf(na) * (float)(R - 24)),
@@ -1626,16 +1734,23 @@ esp_err_t screen_spectrum_create(void)
      * just below it, the peak text above the bottom peak bar. */
     s_lbl_vu_spl = lv_label_create(s_spectrum_obj);
     lv_label_set_text(s_lbl_vu_spl, "--- dB SPL");
+    /* The gauge fills most of the plot: the pivot sits at 0.72 of the height
+     * and the peak bar at y2-56, leaving a ~76 px band between them for both
+     * readouts. At montserrat_48 the SPL text ran into the pivot above it and
+     * the peak text below — a montserrat_48 label is ~57 px of line height,
+     * which does not fit that band at all. It is 36 here (newly enabled in both
+     * sdkconfigs) and the two are spaced to clear the pivot, each other and the
+     * bar. */
     lv_obj_set_style_text_color(s_lbl_vu_spl, lv_color_hex(s_pal->text), 0);
-    lv_obj_set_style_text_font(s_lbl_vu_spl, &lv_font_montserrat_48, 0);
-    lv_obj_align(s_lbl_vu_spl, LV_ALIGN_CENTER, 0, 128);
+    lv_obj_set_style_text_font(s_lbl_vu_spl, &lv_font_montserrat_36, 0);
+    lv_obj_align(s_lbl_vu_spl, LV_ALIGN_CENTER, 0, 150);
     lv_obj_add_flag(s_lbl_vu_spl, LV_OBJ_FLAG_HIDDEN);
 
     s_lbl_vu_peak = lv_label_create(s_spectrum_obj);
     lv_label_set_text(s_lbl_vu_peak, "--- dBFS");
-    lv_obj_set_style_text_color(s_lbl_vu_peak, lv_color_hex(s_pal->text), 0);
-    lv_obj_set_style_text_font(s_lbl_vu_peak, &lv_font_montserrat_24, 0);
-    lv_obj_align(s_lbl_vu_peak, LV_ALIGN_BOTTOM_MID, 0, -88);
+    lv_obj_set_style_text_color(s_lbl_vu_peak, lv_color_hex(s_pal->info), 0);
+    lv_obj_set_style_text_font(s_lbl_vu_peak, &lv_font_montserrat_16, 0);
+    lv_obj_align(s_lbl_vu_peak, LV_ALIGN_BOTTOM_MID, 0, -62);
     lv_obj_add_flag(s_lbl_vu_peak, LV_OBJ_FLAG_HIDDEN);
 
     /* SCOPE HUD — pinch axis + time window + gain, top-left of the trace */
@@ -1660,6 +1775,20 @@ esp_err_t screen_spectrum_create(void)
     /* Positions itself (it overlays the spectrum area, not the status row)
      * but should still recolour with everything else. */
     ui_status_btn_register(s_btn_wf_speed);
+
+    /* Line-mode bars toggle — same overlay slot as the waterfall button, which
+     * is free because the two modes are mutually exclusive. Turns off the bars
+     * under the curve for a bare line. */
+    s_btn_line_bars = lv_button_create(s_spectrum_obj);
+    lv_obj_set_size(s_btn_line_bars, 76, 32);
+    lv_obj_align(s_btn_line_bars, LV_ALIGN_TOP_RIGHT, -8, 8);
+    lv_obj_add_event_cb(s_btn_line_bars, line_bars_btn_cb, LV_EVENT_CLICKED, NULL);
+    s_btn_line_bars_lbl = lv_label_create(s_btn_line_bars);
+    lv_label_set_text(s_btn_line_bars_lbl, "BARS " LV_SYMBOL_OK);
+    lv_obj_set_style_text_font(s_btn_line_bars_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(s_btn_line_bars_lbl);
+    lv_obj_add_flag(s_btn_line_bars, LV_OBJ_FLAG_HIDDEN);
+    ui_status_btn_register(s_btn_line_bars);
 
     /* ── info bar (frequency axis labels) ──
      * Each label is positioned individually (see update_axis_ticks(), which
@@ -1829,6 +1958,10 @@ void screen_spectrum_set_mode(int mode)
     if (s_btn_wf_speed) {
         if (s_mode == DISPLAY_MODE_WATERFALL) lv_obj_remove_flag(s_btn_wf_speed, LV_OBJ_FLAG_HIDDEN);
         else                                  lv_obj_add_flag(s_btn_wf_speed, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_btn_line_bars) {
+        if (s_mode == DISPLAY_MODE_LINE) lv_obj_remove_flag(s_btn_line_bars, LV_OBJ_FLAG_HIDDEN);
+        else                             lv_obj_add_flag(s_btn_line_bars, LV_OBJ_FLAG_HIDDEN);
     }
 
     /* VU labels visible only in VU mode */
