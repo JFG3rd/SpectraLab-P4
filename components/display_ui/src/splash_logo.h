@@ -2,5 +2,5 @@
 #pragma once
 #include "lvgl.h"
 
-/* 760x333 RGB565 wordmark shown by the boot splash. */
+/* 250x300 RGB565A8 logo mark shown by the boot splash. */
 extern const lv_image_dsc_t splash_logo;

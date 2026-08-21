@@ -61,25 +61,33 @@ void screen_splash_show(void)
     lv_obj_set_style_bg_color(scr, lv_color_hex(pal->bg), 0);
     lv_obj_set_style_pad_all(scr, 0, 0);
 
-    /* The wordmark replaces what used to be a montserrat_48 board-name label.
-     * It carries its own light background, so it reads as a card on whatever
-     * the active scheme paints behind it. Note it says "SpectraLab-P4" on both
-     * boards — the P4/P4X distinction only shows on the spectrum screen. */
+    /* The mark is RGB565A8, so it composes onto whatever the active scheme
+     * paints behind it rather than sitting on a card of its own. The wordmark
+     * under it in the source artwork is deliberately NOT part of the image:
+     * that text is near-black and would vanish on the seven dark schemes, so
+     * the title and tagline are labels in the scheme's own colours — which
+     * also lets the title read P4X on the P4X board. */
     lv_obj_t *logo = lv_image_create(scr);
     lv_image_set_src(logo, &splash_logo);
-    lv_obj_align(logo, LV_ALIGN_CENTER, 0, -80);
+    lv_obj_align(logo, LV_ALIGN_CENTER, 0, -120);
+
+    lv_obj_t *title = lv_label_create(scr);
+    lv_label_set_text(title, display_ui_board_name());
+    lv_obj_set_style_text_color(title, lv_color_hex(pal->spl), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_48, 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, 80);
 
     lv_obj_t *sub = lv_label_create(scr);
-    lv_label_set_text(sub, "ESP32-P4 Real-Time Audio Spectrum Analyzer");
+    lv_label_set_text(sub, "Precision Audio Spectrum Analyser");
     lv_obj_set_style_text_color(sub, lv_color_hex(pal->info), 0);
     lv_obj_set_style_text_font(sub, &lv_font_montserrat_16, 0);
-    lv_obj_align(sub, LV_ALIGN_CENTER, 0, 115);
+    lv_obj_align(sub, LV_ALIGN_CENTER, 0, 130);
 
     lv_obj_t *credit = lv_label_create(scr);
     lv_label_set_text(credit, "made by JFG3rd");
     lv_obj_set_style_text_color(credit, lv_color_hex(pal->text), 0);
     lv_obj_set_style_text_font(credit, &lv_font_montserrat_24, 0);
-    lv_obj_align(credit, LV_ALIGN_CENTER, 0, 170);
+    lv_obj_align(credit, LV_ALIGN_CENTER, 0, 190);
 
     /* Blink the credit. A fade down and back rather than a hard on/off — at
      * this size a hard blink reads as a rendering fault. */

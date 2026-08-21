@@ -1,12 +1,26 @@
 #!/usr/bin/env python3
-"""Convert the wordmark into a compiled-in LVGL image for the boot splash.
+"""Convert the logo mark into a compiled-in LVGL image for the boot splash.
 
 No image decoder is built into this LVGL configuration (LV_USE_LODEPNG,
 LV_USE_BMP and LV_USE_TJPGD are all off) and LV_COLOR_DEPTH is 16, so the
-splash logo has to be a raw RGB565 C array rather than a PNG on the SD card.
-The upstream converter (managed_components/lvgl__lvgl/scripts/LVGLImage.py)
-needs Pillow, which is not installed in any interpreter here — ImageMagick
-does the decode and resize instead and this script packs the pixels.
+splash logo has to be a raw C array rather than a PNG on the SD card. The
+upstream converter (managed_components/lvgl__lvgl/scripts/LVGLImage.py) needs
+Pillow, which is not installed in any interpreter here — ImageMagick does the
+decode and resize instead and this script packs the pixels.
+
+Two things worth knowing about what it emits:
+
+  * RGB565A8, not plain RGB565, so the mark keeps its alpha and composes onto
+    whatever the active colour scheme paints behind it. LVGL wants the two
+    planes concatenated: the RGB565 image first, then a byte of alpha per
+    pixel, with header.stride describing only the RGB565 plane (w * 2). See
+    lv_draw_sw_img.c, which reads the mask at `data + stride * h`.
+  * Only the mark, cropped above the wordmark baked into the source. That text
+    is #00050F — near-black — and seven of the eight colour schemes paint a
+    near-black splash background, so it would be invisible on all but HIGH
+    CONTRAST. screen_splash.c draws the title and tagline as LVGL labels in the
+    scheme's own text colour instead, which also lets the title say P4X on the
+    P4X board.
 
 Run after changing the source artwork, then rebuild:
 
@@ -15,29 +29,60 @@ Run after changing the source artwork, then rebuild:
 import pathlib
 import subprocess
 
-ROOT  = pathlib.Path(__file__).resolve().parent.parent
-SRC   = ROOT / "Docu/images/SpectraLab-P4-splash.png"
-OUT_C = ROOT / "components/display_ui/src/splash_logo.c"
-OUT_H = ROOT / "components/display_ui/src/splash_logo.h"
-WIDTH = 760          # of a 1024 px panel, leaving room for the credit + spinner
+ROOT   = pathlib.Path(__file__).resolve().parent.parent
+SRC    = ROOT / "Docu/images/SpectraLab-P4-icon-transparant-text.png"
+OUT_C  = ROOT / "components/display_ui/src/splash_logo.c"
+OUT_H  = ROOT / "components/display_ui/src/splash_logo.h"
+HEIGHT = 300          # of a 600 px panel, leaving room for the text below
 
-# -depth 8 RGB: gives packed 8-bit R,G,B triples on stdout, no header.
-size = subprocess.run(["magick", str(SRC), "-resize", f"{WIDTH}x",
-                       "-format", "%w %h", "info:"],
-                      check=True, capture_output=True, text=True).stdout.split()
-w, h = int(size[0]), int(size[1])
-rgb = subprocess.run(["magick", str(SRC), "-resize", f"{WIDTH}x",
-                      "-depth", "8", "RGB:-"],
-                     check=True, capture_output=True).stdout
-assert len(rgb) == w * h * 3, f"expected {w * h * 3} bytes, got {len(rgb)}"
 
-# RGB565, little-endian — the byte order LVGL reads for LV_COLOR_FORMAT_RGB565.
-px = bytearray(w * h * 2)
-for i in range(w * h):
-    r, g, b = rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]
+def run(args, **kw):
+    return subprocess.run(args, check=True, capture_output=True, **kw).stdout
+
+
+# ── find where the mark ends and the wordmark begins ──────────────
+# One byte of mean alpha per source row; the gap between the two is a run of
+# fully transparent rows.
+h = int(run(["magick", str(SRC), "-format", "%h", "info:"]).split()[0])
+rows = run(["magick", str(SRC), "-alpha", "extract",
+            "-scale", f"1x{h}!", "-depth", "8", "GRAY:-"])
+assert len(rows) == h, f"expected {h} row samples, got {len(rows)}"
+
+first = next(i for i, v in enumerate(rows) if v > 2)
+gap = None
+run_len = 0
+for i in range(first, h):
+    run_len = run_len + 1 if rows[i] <= 2 else 0
+    if run_len >= 8:                      # a real gap, not an antialiased edge
+        gap = i - run_len + 1
+        break
+assert gap, "no transparent gap between the mark and the wordmark"
+print(f"mark occupies rows {first}..{gap - 1} of {h}")
+
+# ── decode, crop, scale ───────────────────────────────────────────
+# Plain -resize: ImageMagick 7 already handles an unassociated alpha channel
+# correctly here. Do NOT reach for -alpha associate/disassociate to premultiply
+# around it — `associate` marks the alpha as associated, and the RGBA: writer
+# then emits a fully opaque alpha channel, which silently turns the mark into
+# an opaque black box on screen.
+size = run(["magick", str(SRC), "-crop", f"x{gap}+0+0", "+repage", "-trim", "+repage",
+            "-format", "%w %h", "info:"]).split()
+src_w, src_h = int(size[0]), int(size[1])
+w = round(src_w * HEIGHT / src_h)
+rgba = run(["magick", str(SRC), "-crop", f"x{gap}+0+0", "+repage", "-trim", "+repage",
+            "-resize", f"{w}x{HEIGHT}!", "-depth", "8", "RGBA:-"])
+h_out = HEIGHT
+assert len(rgba) == w * h_out * 4, f"expected {w * h_out * 4} bytes, got {len(rgba)}"
+
+# ── pack: RGB565 plane (little-endian), then the A8 plane ─────────
+px = bytearray(w * h_out * 3)
+alpha_at = w * h_out * 2
+for i in range(w * h_out):
+    r, g, b, a = rgba[i * 4:i * 4 + 4]
     v = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
-    px[i * 2]     = v & 0xFF
-    px[i * 2 + 1] = v >> 8
+    px[i * 2]         = v & 0xFF
+    px[i * 2 + 1]     = v >> 8
+    px[alpha_at + i]  = a
 
 body = []
 for i in range(0, len(px), 16):
@@ -47,13 +92,14 @@ OUT_H.write_text(f"""/* GENERATED by tools/gen_splash_logo.py — do not edit. *
 #pragma once
 #include "lvgl.h"
 
-/* {w}x{h} RGB565 wordmark shown by the boot splash. */
+/* {w}x{h_out} RGB565A8 logo mark shown by the boot splash. */
 extern const lv_image_dsc_t splash_logo;
 """)
 
 OUT_C.write_text(f"""/* GENERATED by tools/gen_splash_logo.py — do not edit. */
 #include "splash_logo.h"
 
+/* RGB565 plane ({w * h_out * 2} bytes) followed by the A8 plane ({w * h_out} bytes). */
 static const uint8_t splash_logo_map[] = {{
 {chr(10).join(body)}
 }};
@@ -61,13 +107,13 @@ static const uint8_t splash_logo_map[] = {{
 const lv_image_dsc_t splash_logo = {{
     .header = {{
         .magic  = LV_IMAGE_HEADER_MAGIC,
-        .cf     = LV_COLOR_FORMAT_RGB565,
+        .cf     = LV_COLOR_FORMAT_RGB565A8,
         .w      = {w},
-        .h      = {h},
-        .stride = {w * 2},
+        .h      = {h_out},
+        .stride = {w * 2},   /* RGB565 plane only — LVGL finds A8 after it */
     }},
     .data_size = sizeof(splash_logo_map),
     .data      = splash_logo_map,
 }};
 """)
-print(f"wrote {OUT_C.name} ({w}x{h}, {len(px)} bytes of pixels) + {OUT_H.name}")
+print(f"wrote {OUT_C.name} ({w}x{h_out} RGB565A8, {len(px)} bytes) + {OUT_H.name}")
